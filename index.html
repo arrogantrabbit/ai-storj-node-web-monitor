@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Storagenode Pro Monitor</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; }
+        .container { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; max-width: 1600px; margin: auto; }
+        .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; }
+        h1 { grid-column: 1 / -1; text-align: center; color: #1c1e21; }
+        #map-card { grid-column: 1 / 8; grid-row: 2 / 4; }
+        #map { height: 620px; border-radius: 8px; background-color: #aad3df; }
+        #stats-card { grid-column: 8 / 13; grid-row: 2 / 3; }
+        #bandwidth-card { grid-column: 1 / 7; grid-row: 4 / 5; }
+        #satellite-card { grid-column: 7 / 13; grid-row: 4 / 5; }
+        #errors-card { grid-column: 1 / 7; grid-row: 5 / 6; }
+        #pie-charts-card { grid-column: 7 / 13; grid-row: 5 / 6; display: flex; justify-content: space-around; }
+        h3 { border-bottom: 1px solid #ddd; padding-bottom: 8px; margin-bottom: 15px; }
+        .stat { text-align: center; padding: 10px 0; }
+        .stat-value { font-size: 2em; font-weight: bold; color: #007bff; }
+        .stat-label { font-size: 0.9em; color: #606770; }
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        #error-list { list-style: none; padding: 0; max-height: 200px; overflow-y: auto; }
+        #error-list li { padding: 5px; border-bottom: 1px solid #eee; font-size: 0.9em; }
+        .pie-chart-container { width: 48%; }
+        @keyframes pulse { 0% { transform: scale(0.2); opacity: 1; } 50% { opacity: 0.7; } 100% { transform: scale(1.5); opacity: 0; } }
+        .map-marker { border-radius: 50%; animation: pulse 1.5s ease-out forwards; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Storagenode Pro Monitor</h1>
+        <div id="map-card" class="card"><h3>Live Traffic Map</h3><div id="map"></div></div>
+        <div id="stats-card" class="card"><h3 id="stats-title">Overall Success Rates</h3><div class="stats-grid"><div class="stat"><div id="dl-rate" class="stat-value">...%</div><div class="stat-label">Download Success</div><small>(<span id="dl-success">0</span> succ / <span id="dl-fail">0</span> fail)</small></div><div class="stat"><div id="ul-rate" class="stat-value">...%</div><div class="stat-label">Upload Success</div><small>(<span id="ul-success">0</span> succ / <span id="ul-fail">0</span> fail)</small></div></div></div>
+        <div id="bandwidth-card" class="card"><h3>Live Bandwidth (Mbps)</h3><canvas id="bandwidthChart"></canvas></div>
+        <div id="satellite-card" class="card"><h3 id="satellite-title">Traffic by Satellite</h3><canvas id="satelliteChart"></canvas></div>
+        <div id="errors-card" class="card"><h3>Recent Errors & Cancellations</h3><ul id="error-list"><li>Waiting for data...</li></ul></div>
+        <div id="pie-charts-card" class="card"><div class="pie-chart-container"><h3 id="dl-pie-title">Download Sizes</h3><canvas id="downloadPieChart"></canvas></div><div class="pie-chart-container"><h3 id="ul-pie-title">Upload Sizes</h3><canvas id="uploadPieChart"></canvas></div></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script>
+        const map = L.map('map').setView([20, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors', maxZoom: 18 }).addTo(map);
+
+        const DOWNLOAD_COLOR = '#0ea5e9';
+        const UPLOAD_COLOR = '#22c55e';
+
+        function addAnimatedMarker(lat, lon, color) {
+            const icon = L.divIcon({ className: 'map-marker-container', html: `<div class="map-marker" style="width: 12px; height: 12px; background-color: ${color};"></div>` });
+            const marker = L.marker([lat, lon], { icon: icon }).addTo(map);
+            setTimeout(() => map.removeLayer(marker), 1500);
+        }
+
+        const PIE_CHART_COLORS = ['#36A2EB', '#FF6384', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40', '#E7E9ED', '#8DDF3C', '#F17171', '#3B5998'];
+        const bandwidthChart = new Chart(document.getElementById('bandwidthChart').getContext('2d'), { type: 'line', data: { datasets: [{ label: 'Ingress (Upload)', data: [], borderColor: UPLOAD_COLOR, tension: 0.1 }, { label: 'Egress (Download)', data: [], borderColor: DOWNLOAD_COLOR, tension: 0.1 }] }, options: { scales: { x: { type: 'time', time: { unit: 'minute' } }, y: { beginAtZero: true, title: { display: true, text: 'Mbps'} } } } });
+        const satelliteChart = new Chart(document.getElementById('satelliteChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Downloads', data: [], backgroundColor: DOWNLOAD_COLOR }] }, options: { indexAxis: 'y', responsive: true, scales: { x: { stacked: true }, y: { stacked: true } } } });
+        const downloadPieChart = new Chart(document.getElementById('downloadPieChart').getContext('2d'), { type: 'pie', data: { labels: [], datasets: [{ data: [], backgroundColor: PIE_CHART_COLORS }] }});
+        const uploadPieChart = new Chart(document.getElementById('uploadPieChart').getContext('2d'), { type: 'pie', data: { labels: [], datasets: [{ data: [], backgroundColor: PIE_CHART_COLORS }] }});
+        
+        function updateOverallStats(stats) {
+            const totalDownloads = (stats.dl_success || 0) + (stats.dl_fail || 0);
+            const totalUploads = (stats.ul_success || 0) + (stats.ul_fail || 0);
+            const dlRate = totalDownloads > 0 ? ((stats.dl_success || 0) / totalDownloads * 100).toFixed(1) : '100.0';
+            const ulRate = totalUploads > 0 ? ((stats.ul_success || 0) / totalUploads * 100).toFixed(1) : '100.0';
+            document.getElementById('dl-rate').textContent = `${dlRate}%`;
+            document.getElementById('ul-rate').textContent = `${ulRate}%`;
+            document.getElementById('dl-success').textContent = stats.dl_success || 0;
+            document.getElementById('dl-fail').textContent = stats.dl_fail || 0;
+            document.getElementById('ul-success').textContent = stats.ul_success || 0;
+            document.getElementById('ul-fail').textContent = stats.ul_fail || 0;
+        }
+        function addError(timestamp, reason) {
+            const list = document.getElementById('error-list'), item = document.createElement('li');
+            item.textContent = `[${new Date(timestamp).toLocaleTimeString()}] ${reason ? reason.substring(0, 100) : 'Unknown Error'}`;
+            if (list.firstChild?.textContent === 'Waiting for data...') list.innerHTML = '';
+            list.prepend(item);
+            if (list.children.length > 20) list.removeChild(list.lastChild);
+        }
+        function updateSatelliteChart(satStats) {
+            const shortId = (id) => id.substring(0, 12) + '...';
+            satelliteChart.data.labels = satStats.map(s => shortId(s.satellite_id));
+            satelliteChart.data.datasets[0].data = satStats.map(s => s.uploads);
+            satelliteChart.data.datasets[1].data = satStats.map(s => s.downloads);
+            satelliteChart.update();
+        }
+        function updatePieChart(chart, sizeData) {
+            chart.data.labels = sizeData.map(d => d.bucket);
+            chart.data.datasets[0].data = sizeData.map(d => d.count);
+            chart.update();
+        }
+        
+        function updateStatTitles(firstIso, lastIso) {
+            const formatTime = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            let timeWindowStr;
+            if (!firstIso || !lastIso) {
+                timeWindowStr = "(Last 60 Mins)";
+            } else {
+                const startTime = new Date(firstIso);
+                const endTime = new Date(lastIso);
+                timeWindowStr = `(${formatTime(startTime)} - ${formatTime(endTime)})`;
+            }
+            document.getElementById('stats-title').textContent = `Overall Success Rates ${timeWindowStr}`;
+            document.getElementById('satellite-title').textContent = `Traffic by Satellite ${timeWindowStr}`;
+            document.getElementById('dl-pie-title').textContent = `Download Sizes ${timeWindowStr}`;
+            document.getElementById('ul-pie-title').textContent = `Upload Sizes ${timeWindowStr}`;
+        }
+
+        function connect() {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                switch(data.type) {
+                    case 'log_entry':
+                        if (data.location) {
+                            const isDownload = data.action.toLowerCase().includes('get');
+                            addAnimatedMarker(data.location.lat, data.location.lon, isDownload ? DOWNLOAD_COLOR : UPLOAD_COLOR);
+                        }
+                        if (data.status !== 'success') addError(data.timestamp, data.error_reason);
+                        break;
+                    case 'bandwidth':
+                        const now = new Date(data.timestamp);
+                        bandwidthChart.data.datasets[0].data.push({ x: now, y: data.ingress_mbps });
+                        bandwidthChart.data.datasets[1].data.push({ x: now, y: data.egress_mbps });
+                        if(bandwidthChart.data.datasets[0].data.length > 120) {
+                            bandwidthChart.data.datasets.forEach(d => d.data.shift());
+                        }
+                        bandwidthChart.update();
+                        break;
+                    case 'stats_update':
+                        updateOverallStats(data.overall);
+                        updateSatelliteChart(data.satellites);
+                        updatePieChart(downloadPieChart, data.download_sizes);
+                        updatePieChart(uploadPieChart, data.upload_sizes);
+                        updateStatTitles(data.first_event_iso, data.last_event_iso);
+                        break;
+                }
+            };
+            ws.onclose = () => setTimeout(connect, 5000);
+            ws.onerror = () => ws.close();
+        }
+        connect();
+    </script>
+</body>
+</html>
