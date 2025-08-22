@@ -39,7 +39,7 @@ app_state = {
     'geoip_cache': {}
 }
 
-# --- Database Setup ---
+# --- Database Setup (unchanged) ---
 def init_db():
     conn = sqlite3.connect(DATABASE_FILE, timeout=10)
     cursor = conn.cursor()
@@ -48,7 +48,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- Helper function for better piece size bucketing ---
+# --- Helper function for better piece size bucketing (unchanged) ---
 def get_size_bucket(size_in_bytes):
     if size_in_bytes < 1024: return "< 1 KB"
     kb = size_in_bytes / 1024
@@ -59,51 +59,75 @@ def get_size_bucket(size_in_bytes):
     if kb < 1024: return "256 KB - 1 MB"
     return "> 1 MB"
 
-# --- Async Log Tailing Task ---
+# --- THE NEW, LOG-ROTATION-AWARE Tailing Task ---
 async def log_tailer_task(app):
-    print(f"Starting to tail log file: {LOG_FILE_PATH}")
+    print(f"Starting log monitoring for: {LOG_FILE_PATH}")
     geoip_reader = geoip2.database.Reader(GEOIP_DATABASE_PATH)
     geoip_cache, db_executor, loop = app_state['geoip_cache'], app['db_executor'], asyncio.get_running_loop()
-    try:
-        with open(LOG_FILE_PATH, 'r') as f:
-            f.seek(0, os.SEEK_END)
-            while True:
-                line = f.readline()
-                if not line:
-                    await asyncio.sleep(0.1)
-                    continue
-                try:
-                    timestamp_str = line.split("INFO")[0].strip() if "INFO" in line else line.split("ERROR")[0].strip()
-                    timestamp_obj = datetime.datetime.fromisoformat(timestamp_str)
-                    json_match = re.search(r'\{.*\}', line)
-                    if not json_match: continue
-                    log_data = json.loads(json_match.group(0))
-                    status, error_reason = "success", None
-                    if "download canceled" in line: status, error_reason = "canceled", log_data.get("reason")
-                    elif "failed" in line or "ERROR" in line: status, error_reason = "failed", log_data.get("error")
-                    action, size, sat_id, remote_addr = log_data.get("Action"), log_data.get("Size"), log_data.get("Satellite ID"), log_data.get("Remote Address")
-                    if not all([action, size, sat_id, remote_addr]): continue
-                    remote_ip = remote_addr.split(':')[0]
-                    location = geoip_cache.get(remote_ip)
-                    if location is None:
-                        try:
-                            geo_response = geoip_reader.city(remote_ip)
-                            location = {"lat": geo_response.location.latitude, "lon": geo_response.location.longitude}
-                        except geoip2.errors.AddressNotFoundError: location = {"lat": None, "lon": None}
-                        if len(geoip_cache) > MAX_GEOIP_CACHE_SIZE: geoip_cache.pop(next(iter(geoip_cache)))
-                        geoip_cache[remote_ip] = location
-                    event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size,
-                             "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason}
-                    app_state['live_events'].append(event)
-                    broadcast_payload = {"type": "log_entry", "action": action, "status": status, "location": location,
-                                         "error_reason": error_reason, "timestamp": timestamp_obj.isoformat()}
-                    for ws in set(app_state['websockets']): await ws.send_json(broadcast_payload)
-                    await loop.run_in_executor(db_executor, blocking_db_write, DATABASE_FILE, event)
-                except Exception: continue
-    except FileNotFoundError: print(f"FATAL ERROR: Log file not found at '{LOG_FILE_PATH}'. The application cannot start.")
-    except Exception as e: print(f"Error in log tailer task: {e}")
+    
+    current_inode = None
+    
+    # This outer loop handles re-opening the file if it's rotated or disappears
+    while True:
+        try:
+            with open(LOG_FILE_PATH, 'r') as f:
+                # Get the inode of the newly opened file
+                current_inode = os.fstat(f.fileno()).st_ino
+                print(f"Tailing log file with inode {current_inode}")
+                f.seek(0, os.SEEK_END) # Go to the end of the file
 
-# --- aiohttp Handlers ---
+                # This inner loop reads from the current file handle
+                while True:
+                    line = f.readline()
+                    if not line:
+                        await asyncio.sleep(0.2) # Wait for new lines
+                        # Check for rotation every few seconds
+                        try:
+                            if os.stat(LOG_FILE_PATH).st_ino != current_inode:
+                                print(f"Log rotation detected. Re-opening file...")
+                                break # Exit inner loop to trigger re-open
+                        except FileNotFoundError:
+                            print(f"Log file not found. Waiting for it to reappear...")
+                            break # Exit inner loop
+                        continue
+                    
+                    # --- Same processing logic as before ---
+                    try:
+                        timestamp_str = line.split("INFO")[0].strip() if "INFO" in line else line.split("ERROR")[0].strip()
+                        timestamp_obj = datetime.datetime.fromisoformat(timestamp_str)
+                        json_match = re.search(r'\{.*\}', line)
+                        if not json_match: continue
+                        log_data = json.loads(json_match.group(0))
+                        status, error_reason = "success", None
+                        if "download canceled" in line: status, error_reason = "canceled", log_data.get("reason")
+                        elif "failed" in line or "ERROR" in line: status, error_reason = "failed", log_data.get("error")
+                        action, size, sat_id, remote_addr = log_data.get("Action"), log_data.get("Size"), log_data.get("Satellite ID"), log_data.get("Remote Address")
+                        if not all([action, size, sat_id, remote_addr]): continue
+                        remote_ip = remote_addr.split(':')[0]
+                        location = geoip_cache.get(remote_ip)
+                        if location is None:
+                            try:
+                                geo_response = geoip_reader.city(remote_ip)
+                                location = {"lat": geo_response.location.latitude, "lon": geo_response.location.longitude}
+                            except geoip2.errors.AddressNotFoundError: location = {"lat": None, "lon": None}
+                            if len(geoip_cache) > MAX_GEOIP_CACHE_SIZE: geoip_cache.pop(next(iter(geoip_cache)))
+                            geoip_cache[remote_ip] = location
+                        event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size,
+                                 "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason}
+                        app_state['live_events'].append(event)
+                        broadcast_payload = {"type": "log_entry", "action": action, "status": status, "location": location,
+                                             "error_reason": error_reason, "timestamp": timestamp_obj.isoformat()}
+                        for ws in set(app_state['websockets']): await ws.send_json(broadcast_payload)
+                        await loop.run_in_executor(db_executor, blocking_db_write, DATABASE_FILE, event)
+                    except Exception: continue
+        except FileNotFoundError:
+            print(f"Log file not found. Retrying in 5 seconds...")
+            await asyncio.sleep(5)
+        except Exception as e:
+            print(f"An unexpected error occurred in the log tailer: {e}. Retrying in 15 seconds.")
+            await asyncio.sleep(15)
+
+# --- All other functions are unchanged ---
 async def handle_index(request): return web.FileResponse('./index.html')
 async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=10)
@@ -114,38 +138,21 @@ async def websocket_handler(request):
         async for msg in ws: pass
     finally: app_state['websockets'].remove(ws)
     return ws
-
-# --- Background Tasks ---
-# THE FINAL, ROBUST, IN-MEMORY BANDWIDTH CALCULATOR
 async def bandwidth_calculator(app):
     while True:
         await asyncio.sleep(BANDWIDTH_INTERVAL_SECONDS)
-        
-        # If there's no data, do nothing.
-        if not app_state['live_events']:
-            continue
-
+        if not app_state['live_events']: continue
         ingress_bytes, egress_bytes = 0, 0
-        
-        # --- THE FIX ---
-        # Calculate the cutoff relative to the *newest event's timestamp*, not the system clock.
         last_event_time = app_state['live_events'][-1]['ts_unix']
         cutoff_unix = last_event_time - BANDWIDTH_INTERVAL_SECONDS
-        
         for event in reversed(app_state['live_events']):
-            if event['ts_unix'] < cutoff_unix:
-                break
+            if event['ts_unix'] < cutoff_unix: break
             if 'GET' in event['action']: egress_bytes += event['size']
             else: ingress_bytes += event['size']
-        
         payload = { "type": "bandwidth", "timestamp": datetime.datetime.utcnow().isoformat(),
                     "ingress_mbps": round((ingress_bytes * 8) / (BANDWIDTH_INTERVAL_SECONDS * 1e6), 2),
                     "egress_mbps": round((egress_bytes * 8) / (BANDWIDTH_INTERVAL_SECONDS * 1e6), 2) }
-        
-        for ws in set(app_state['websockets']):
-            await ws.send_json(payload)
-
-# All other tasks are unchanged
+        for ws in set(app_state['websockets']): await ws.send_json(payload)
 async def prune_live_events_task(app):
     while True:
         await asyncio.sleep(60)
