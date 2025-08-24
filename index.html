@@ -27,9 +27,34 @@
         .pie-chart-container { width: 48%; }
         @keyframes pulse { 0% { transform: scale(0.2); opacity: 1; } 50% { opacity: 0.7; } 100% { transform: scale(1.5); opacity: 0; } }
         .map-marker { border-radius: 50%; animation: pulse 1.5s ease-out forwards; }
+
+        /* --- NEW: Style for the disconnection overlay --- */
+        #connection-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            display: none; /* Initially hidden */
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            font-size: 1.5em;
+            z-index: 10000;
+        }
     </style>
 </head>
 <body>
+    <!-- NEW: Overlay div -->
+    <div id="connection-overlay">
+        <div>
+            <p>Connection Lost</p>
+            <p style="font-size: 0.6em;">Attempting to reconnect...</p>
+        </div>
+    </div>
+
     <div class="container">
         <h1>Storagenode Pro Monitor</h1>
         <div id="map-card" class="card"><h3>Live Traffic Map</h3><div id="map"></div></div>
@@ -67,12 +92,9 @@
             const totalUploads = (stats.ul_success || 0) + (stats.ul_fail || 0);
             const dlRate = totalDownloads > 0 ? ((stats.dl_success || 0) / totalDownloads * 100).toFixed(1) : '100.0';
             const ulRate = totalUploads > 0 ? ((stats.ul_success || 0) / totalUploads * 100).toFixed(1) : '100.0';
-            document.getElementById('dl-rate').textContent = `${dlRate}%`;
-            document.getElementById('ul-rate').textContent = `${ulRate}%`;
-            document.getElementById('dl-success').textContent = stats.dl_success || 0;
-            document.getElementById('dl-fail').textContent = stats.dl_fail || 0;
-            document.getElementById('ul-success').textContent = stats.ul_success || 0;
-            document.getElementById('ul-fail').textContent = stats.ul_fail || 0;
+            document.getElementById('dl-rate').textContent = `${dlRate}%`; document.getElementById('ul-rate').textContent = `${ulRate}%`;
+            document.getElementById('dl-success').textContent = stats.dl_success || 0; document.getElementById('dl-fail').textContent = stats.dl_fail || 0;
+            document.getElementById('ul-success').textContent = stats.ul_success || 0; document.getElementById('ul-fail').textContent = stats.ul_fail || 0;
         }
         function addError(timestamp, reason) {
             const list = document.getElementById('error-list'), item = document.createElement('li');
@@ -93,58 +115,79 @@
             chart.data.datasets[0].data = sizeData.map(d => d.count);
             chart.update();
         }
-        
         function updateStatTitles(firstIso, lastIso) {
             const formatTime = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            let timeWindowStr;
-            if (!firstIso || !lastIso) {
-                timeWindowStr = "(Last 60 Mins)";
-            } else {
-                const startTime = new Date(firstIso);
-                const endTime = new Date(lastIso);
-                timeWindowStr = `(${formatTime(startTime)} - ${formatTime(endTime)})`;
-            }
+            let timeWindowStr = "(Last 60 Mins)";
+            if (firstIso && lastIso) { timeWindowStr = `(${formatTime(new Date(firstIso))} - ${formatTime(new Date(lastIso))})`; }
             document.getElementById('stats-title').textContent = `Overall Success Rates ${timeWindowStr}`;
             document.getElementById('satellite-title').textContent = `Traffic by Satellite ${timeWindowStr}`;
             document.getElementById('dl-pie-title').textContent = `Download Sizes ${timeWindowStr}`;
             document.getElementById('ul-pie-title').textContent = `Upload Sizes ${timeWindowStr}`;
         }
 
-        function connect() {
-            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                switch(data.type) {
-                    case 'log_entry':
-                        if (data.location) {
-                            const isDownload = data.action.toLowerCase().includes('get');
-                            addAnimatedMarker(data.location.lat, data.location.lon, isDownload ? DOWNLOAD_COLOR : UPLOAD_COLOR);
-                        }
-                        if (data.status !== 'success') addError(data.timestamp, data.error_reason);
-                        break;
-                    case 'bandwidth':
-                        const now = new Date(data.timestamp);
-                        bandwidthChart.data.datasets[0].data.push({ x: now, y: data.ingress_mbps });
-                        bandwidthChart.data.datasets[1].data.push({ x: now, y: data.egress_mbps });
-                        if(bandwidthChart.data.datasets[0].data.length > 120) {
-                            bandwidthChart.data.datasets.forEach(d => d.data.shift());
-                        }
-                        bandwidthChart.update();
-                        break;
-                    case 'stats_update':
-                        updateOverallStats(data.overall);
-                        updateSatelliteChart(data.satellites);
-                        updatePieChart(downloadPieChart, data.download_sizes);
-                        updatePieChart(uploadPieChart, data.upload_sizes);
-                        updateStatTitles(data.first_event_iso, data.last_event_iso);
-                        break;
-                }
-            };
-            ws.onclose = () => setTimeout(connect, 5000);
-            ws.onerror = () => ws.close();
-        }
-        connect();
+        // --- NEW: Resilient WebSocket Connection Logic ---
+        const connectionManager = {
+            overlay: document.getElementById('connection-overlay'),
+            reconnectDelay: 1000, // Start with a 1-second delay
+            maxReconnectDelay: 30000, // Don't wait more than 30 seconds
+            
+            connect: function() {
+                const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+
+                ws.onopen = () => {
+                    console.log("WebSocket connection established.");
+                    this.overlay.style.display = 'none';
+                    this.reconnectDelay = 1000; // Reset delay on successful connection
+                };
+
+                ws.onmessage = (event) => {
+                    // (Message handling logic is unchanged)
+                    const data = JSON.parse(event.data);
+                    switch(data.type) {
+                        case 'log_entry':
+                            if (data.location) {
+                                const isDownload = data.action.toLowerCase().includes('get');
+                                addAnimatedMarker(data.location.lat, data.location.lon, isDownload ? DOWNLOAD_COLOR : UPLOAD_COLOR);
+                            }
+                            if (data.status !== 'success') addError(data.timestamp, data.error_reason);
+                            break;
+                        case 'bandwidth':
+                            const now = new Date(data.timestamp);
+                            bandwidthChart.data.datasets[0].data.push({ x: now, y: data.ingress_mbps });
+                            bandwidthChart.data.datasets[1].data.push({ x: now, y: data.egress_mbps });
+                            if(bandwidthChart.data.datasets[0].data.length > 120) {
+                                bandwidthChart.data.datasets.forEach(d => d.data.shift());
+                            }
+                            bandwidthChart.update();
+                            break;
+                        case 'stats_update':
+                            updateOverallStats(data.overall);
+                            updateSatelliteChart(data.satellites);
+                            updatePieChart(downloadPieChart, data.download_sizes);
+                            updatePieChart(uploadPieChart, data.upload_sizes);
+                            updateStatTitles(data.first_event_iso, data.last_event_iso);
+                            break;
+                    }
+                };
+
+                ws.onclose = (event) => {
+                    console.log(`WebSocket closed. Reconnecting in ${this.reconnectDelay / 1000}s...`);
+                    this.overlay.style.display = 'flex';
+                    setTimeout(() => this.connect(), this.reconnectDelay);
+                    
+                    // Exponential backoff
+                    this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2);
+                };
+
+                ws.onerror = (err) => {
+                    console.error("WebSocket error:", err);
+                    ws.close(); // This will trigger the onclose handler
+                };
+            }
+        };
+        
+        connectionManager.connect(); // Start the connection
     </script>
 </body>
 </html>
