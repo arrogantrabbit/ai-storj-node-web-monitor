@@ -43,13 +43,7 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, timestamp DATETIME, action TEXT, status TEXT, size INTEGER, satellite_id TEXT, remote_ip TEXT, latitude REAL, longitude REAL, error_reason TEXT)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS hourly_stats (
-            hour_timestamp TEXT PRIMARY KEY,
-            dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0,
-            ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0
-        )
-    ''')
+    cursor.execute('CREATE TABLE IF NOT EXISTS hourly_stats (hour_timestamp TEXT PRIMARY KEY, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0)')
     conn.commit()
     conn.close()
 
@@ -148,18 +142,27 @@ def blocking_db_write(db_path, event):
         cursor.execute('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (event['timestamp'].isoformat(), event['action'], event['status'], event['size'], event['satellite_id'], event['remote_ip'], event['location']['lat'], event['location']['lon'], event['error_reason']))
         conn.commit()
 def blocking_hourly_aggregation():
-    # --- THE FIX: Use local time to construct the query window ---
-    now = datetime.datetime.now().astimezone() # Get current time in the system's local timezone
-    hour_start = now.replace(minute=0, second=0, microsecond=0)
-    hour_start_iso = hour_start.isoformat()
-    next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
-    
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
-        stats = conn.execute("SELECT SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' THEN 1 ELSE 0 END) as dl_s, SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' THEN 1 ELSE 0 END) as dl_f, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s, SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f FROM events WHERE timestamp >= ? AND timestamp < ?", (hour_start_iso, next_hour_start_iso)).fetchone()
-        if stats and stats['dl_s'] is not None:
-            conn.execute("INSERT INTO hourly_stats (hour_timestamp, dl_success, dl_fail, ul_success, ul_fail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(hour_timestamp) DO UPDATE SET dl_success = excluded.dl_success, dl_fail = excluded.dl_fail, ul_success = excluded.ul_success, ul_fail = excluded.ul_fail", (hour_start_iso, stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f']))
-            conn.commit()
+        last_agg_row = conn.execute("SELECT MAX(hour_timestamp) as last_ts FROM hourly_stats").fetchone()
+        min_event_row = conn.execute("SELECT MIN(timestamp) as first_ts FROM events").fetchone()
+        if not min_event_row or not min_event_row['first_ts']: return
+        start_dt = None
+        if last_agg_row and last_agg_row['last_ts']:
+            start_dt = datetime.datetime.fromisoformat(last_agg_row['last_ts']) + datetime.timedelta(hours=1)
+        else:
+            start_dt = datetime.datetime.fromisoformat(min_event_row['first_ts'])
+        end_dt = datetime.datetime.now().astimezone()
+        current_hour = start_dt.replace(minute=0, second=0, microsecond=0)
+        while current_hour < end_dt:
+            hour_start_iso = current_hour.isoformat(); next_hour_start_iso = (current_hour + datetime.timedelta(hours=1)).isoformat()
+            stats = conn.execute("SELECT SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' THEN 1 ELSE 0 END) as dl_s, SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' THEN 1 ELSE 0 END) as dl_f, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s, SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f FROM events WHERE timestamp >= ? AND timestamp < ?", (hour_start_iso, next_hour_start_iso)).fetchone()
+            if stats and stats['dl_s'] is not None:
+                print(f"Aggregating stats for hour: {hour_start_iso}")
+                conn.execute("INSERT INTO hourly_stats VALUES (?, ?, ?, ?, ?) ON CONFLICT(hour_timestamp) DO UPDATE SET dl_success=excluded.dl_success, dl_fail=excluded.dl_fail, ul_success=excluded.ul_success, ul_fail=excluded.ul_fail",
+                             (hour_start_iso, stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f']))
+            current_hour += datetime.timedelta(hours=1)
+        conn.commit()
 async def hourly_aggregator_task(app):
     while True:
         loop = asyncio.get_running_loop(); await loop.run_in_executor(app['db_executor'], blocking_hourly_aggregation)
@@ -183,9 +186,16 @@ async def broadcast_full_stats(app, target_ws=None):
         size_bucket = get_size_bucket(event['size'])
         if is_dl: dl_sizes[size_bucket] = dl_sizes.get(size_bucket, 0) + 1
         else: ul_sizes[size_bucket] = ul_sizes.get(size_bucket, 0) + 1
+    
+    # --- THE FIX: Exclude the current hour from the historical query ---
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
-        historical_stats = [dict(row) for row in conn.execute("SELECT * FROM hourly_stats ORDER BY hour_timestamp DESC LIMIT ?", (HISTORICAL_HOURS_TO_SHOW,)).fetchall()]
+        current_hour_start_iso = datetime.datetime.now().astimezone().replace(minute=0, second=0, microsecond=0).isoformat()
+        historical_stats = [dict(row) for row in conn.execute(
+            "SELECT * FROM hourly_stats WHERE hour_timestamp < ? ORDER BY hour_timestamp DESC LIMIT ?",
+            (current_hour_start_iso, HISTORICAL_HOURS_TO_SHOW)
+        ).fetchall()]
+
     sat_list = [{'satellite_id': k, **v} for k, v in satellites.items()]
     dl_sizes_list = [{'bucket': k, 'count': v} for k, v in dl_sizes.items()]
     ul_sizes_list = [{'bucket': k, 'count': v} for k, v in ul_sizes.items()]
@@ -197,7 +207,6 @@ async def broadcast_full_stats(app, target_ws=None):
         for ws in set(app_state['websockets']): await ws.send_json(payload)
 def blocking_db_cleanup():
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
-        # --- THE FIX: Use timezone-aware UTC for cleanup ---
         cutoff_time = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=DB_MAX_DATA_AGE_HOURS)).isoformat()
         cursor = conn.cursor(); cursor.execute("DELETE FROM events WHERE timestamp < ?", (cutoff_time,)); deleted_events = cursor.rowcount
         cursor.execute("DELETE FROM hourly_stats WHERE hour_timestamp < ?", (cutoff_time,)); deleted_hourly = cursor.rowcount
