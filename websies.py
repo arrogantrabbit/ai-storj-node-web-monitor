@@ -53,26 +53,18 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- CORRECTED Helper function for better piece size bucketing ---
+# --- Helper function for better piece size bucketing ---
 def get_size_bucket(size_in_bytes):
-    """Categorizes a size in bytes into a human-readable bucket."""
-    if size_in_bytes < 1024:
-        return "< 1 KB"
+    if size_in_bytes < 1024: return "< 1 KB"
     kb = size_in_bytes / 1024
-    if kb < 4:
-        return "1-4 KB"
-    elif kb < 16:
-        return "4-16 KB"
-    elif kb < 64:
-        return "16-64 KB"
-    elif kb < 256:
-        return "64-256 KB"
-    elif kb < 1024:
-        return "256 KB - 1 MB"
-    else:
-        return "> 1 MB"
+    if kb < 4: return "1-4 KB"
+    elif kb < 16: return "4-16 KB"
+    elif kb < 64: return "16-64 KB"
+    elif kb < 256: return "64-256 KB"
+    elif kb < 1024: return "256 KB - 1 MB"
+    else: return "> 1 MB"
 
-# --- Async Log Tailing Task ---
+# --- High-Performance Async Log Tailing Task ---
 async def log_tailer_task(app):
     print(f"Starting log monitoring for: {LOG_FILE_PATH}"); geoip_reader = geoip2.database.Reader(GEOIP_DATABASE_PATH)
     geoip_cache, db_executor, loop = app_state['geoip_cache'], app['db_executor'], asyncio.get_running_loop()
@@ -156,8 +148,12 @@ def blocking_db_write(db_path, event):
         cursor.execute('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (event['timestamp'].isoformat(), event['action'], event['status'], event['size'], event['satellite_id'], event['remote_ip'], event['location']['lat'], event['location']['lon'], event['error_reason']))
         conn.commit()
 def blocking_hourly_aggregation():
-    now = datetime.datetime.now(datetime.timezone.utc); hour_start = now.replace(minute=0, second=0, microsecond=0)
-    hour_start_iso = hour_start.isoformat(); next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
+    # --- THE FIX: Use local time to construct the query window ---
+    now = datetime.datetime.now().astimezone() # Get current time in the system's local timezone
+    hour_start = now.replace(minute=0, second=0, microsecond=0)
+    hour_start_iso = hour_start.isoformat()
+    next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
+    
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
         stats = conn.execute("SELECT SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' THEN 1 ELSE 0 END) as dl_s, SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' THEN 1 ELSE 0 END) as dl_f, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s, SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f FROM events WHERE timestamp >= ? AND timestamp < ?", (hour_start_iso, next_hour_start_iso)).fetchone()
@@ -199,15 +195,18 @@ async def broadcast_full_stats(app, target_ws=None):
     if target_ws: await target_ws.send_json(payload)
     else:
         for ws in set(app_state['websockets']): await ws.send_json(payload)
+def blocking_db_cleanup():
+    with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
+        # --- THE FIX: Use timezone-aware UTC for cleanup ---
+        cutoff_time = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=DB_MAX_DATA_AGE_HOURS)).isoformat()
+        cursor = conn.cursor(); cursor.execute("DELETE FROM events WHERE timestamp < ?", (cutoff_time,)); deleted_events = cursor.rowcount
+        cursor.execute("DELETE FROM hourly_stats WHERE hour_timestamp < ?", (cutoff_time,)); deleted_hourly = cursor.rowcount
+        conn.commit()
+        print(f"[{datetime.datetime.now()}] Database cleanup: Removed {deleted_events} event records and {deleted_hourly} hourly records.")
 async def cleanup_db_task(app):
     while True:
         await asyncio.sleep(3600 * DB_CLEANUP_INTERVAL_HOURS)
         loop = asyncio.get_running_loop(); await loop.run_in_executor(app['db_executor'], blocking_db_cleanup)
-def blocking_db_cleanup():
-    with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
-        cutoff_time = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=DB_MAX_DATA_AGE_HOURS)).isoformat()
-        cursor = conn.cursor(); cursor.execute("DELETE FROM events WHERE timestamp < ?", (cutoff_time,)); cursor.execute("DELETE FROM hourly_stats WHERE hour_timestamp < ?", (cutoff_time,)); conn.commit()
-        print(f"[{datetime.datetime.now()}] Database cleanup: Removed {cursor.rowcount} old records.")
 async def start_background_tasks(app):
     app['db_executor'] = concurrent.futures.ThreadPoolExecutor()
     app['log_tailer_task'] = asyncio.create_task(log_tailer_task(app))
