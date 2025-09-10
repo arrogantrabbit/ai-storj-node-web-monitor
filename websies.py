@@ -30,12 +30,18 @@ STATS_INTERVAL_SECONDS = 5
 BANDWIDTH_INTERVAL_SECONDS = 2
 HOURLY_AGG_INTERVAL_MINUTES = 10
 HISTORICAL_HOURS_TO_SHOW = 6
+DB_WRITE_BATCH_INTERVAL_SECONDS = 10
 DB_CLEANUP_INTERVAL_HOURS = 1
 DB_MAX_DATA_AGE_HOURS = 24
 MAX_GEOIP_CACHE_SIZE = 5000
 
 # --- In-Memory State ---
-app_state = {'websockets': set(), 'live_events': deque(), 'geoip_cache': {}}
+app_state = {
+    'websockets': set(),
+    'live_events': deque(),
+    'geoip_cache': {},
+    'db_write_queue': asyncio.Queue(maxsize=20000)
+}
 
 # --- Database Setup ---
 def init_db():
@@ -47,21 +53,28 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- Helper function for better piece size bucketing ---
+# --- CORRECTED Helper function for better piece size bucketing ---
 def get_size_bucket(size_in_bytes):
-    if size_in_bytes < 1024: return "< 1 KB"
+    if size_in_bytes < 1024:
+        return "< 1 KB"
     kb = size_in_bytes / 1024
-    if kb < 4: return "1-4 KB"
-    elif kb < 16: return "4-16 KB"
-    elif kb < 64: return "16-64 KB"
-    elif kb < 256: return "64-256 KB"
-    elif kb < 1024: return "256 KB - 1 MB"
-    else: return "> 1 MB"
+    if kb < 4:
+        return "1-4 KB"
+    elif kb < 16:
+        return "4-16 KB"
+    elif kb < 64:
+        return "16-64 KB"
+    elif kb < 256:
+        return "64-256 KB"
+    elif kb < 1024:
+        return "256 KB - 1 MB"
+    else:
+        return "> 1 MB"
 
-# --- High-Performance Async Log Tailing Task ---
+# --- Log Tailing Task (MODIFIED to not write to DB directly) ---
 async def log_tailer_task(app):
     print(f"Starting log monitoring for: {LOG_FILE_PATH}"); geoip_reader = geoip2.database.Reader(GEOIP_DATABASE_PATH)
-    geoip_cache, db_executor, loop = app_state['geoip_cache'], app['db_executor'], asyncio.get_running_loop()
+    geoip_cache = app_state['geoip_cache']
     while True:
         try:
             with open(LOG_FILE_PATH, 'r') as f:
@@ -93,16 +106,40 @@ async def log_tailer_task(app):
                             geoip_cache[remote_ip] = location
                         event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size,
                                  "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason}
+                        
                         app_state['live_events'].append(event)
+                        await app_state['db_write_queue'].put(event)
+
                         broadcast_payload = {"type": "log_entry", "action": action, "status": status, "location": location,
                                              "error_reason": error_reason, "timestamp": timestamp_obj.isoformat()}
                         for ws in set(app_state['websockets']): await ws.send_json(broadcast_payload)
-                        await loop.run_in_executor(db_executor, blocking_db_write, DATABASE_FILE, event)
                     except Exception: continue
         except FileNotFoundError: await asyncio.sleep(5)
         except Exception as e: print(f"Error in log tailer: {e}"); await asyncio.sleep(15)
 
-# --- aiohttp Handlers ---
+# --- Database Batch Writing Function and Task ---
+def blocking_db_batch_write(db_path, events):
+    if not events: return
+    with sqlite3.connect(db_path, timeout=10) as conn:
+        cursor = conn.cursor()
+        data_to_insert = [(e['timestamp'].isoformat(), e['action'], e['status'], e['size'], e['satellite_id'], e['remote_ip'], e['location']['lat'], e['location']['lon'], e['error_reason']) for e in events]
+        cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
+        conn.commit()
+    print(f"[{datetime.datetime.now()}] Wrote {len(events)} events to database.")
+
+async def database_writer_task(app):
+    while True:
+        await asyncio.sleep(DB_WRITE_BATCH_INTERVAL_SECONDS)
+        events_to_write = []
+        while not app_state['db_write_queue'].empty():
+            try:
+                events_to_write.append(app_state['db_write_queue'].get_nowait())
+            except asyncio.QueueEmpty: break
+        if events_to_write:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(app['db_executor'], blocking_db_batch_write, DATABASE_FILE, events_to_write)
+
+# --- aiohttp Handlers and other tasks ---
 async def handle_index(request): return web.FileResponse('./index.html')
 async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=10); await ws.prepare(request); app_state['websockets'].add(ws)
@@ -111,12 +148,10 @@ async def websocket_handler(request):
         async for msg in ws: pass
     finally: app_state['websockets'].remove(ws)
     return ws
-
-# --- Background Tasks ---
 async def bandwidth_calculator(app):
     last_processed_ts = 0.0
     while True:
-        await asyncio.sleep(BANDWIDTH_INTERVAL_SECONDS)
+        await asyncio.sleep(BANDWIDTH_INTERVAL_SECONDS);
         if not app_state['live_events']: continue
         ingress_bytes, egress_bytes = 0, 0
         if last_processed_ts == 0.0: last_processed_ts = app_state['live_events'][-1]['ts_unix']
@@ -136,33 +171,16 @@ async def prune_live_events_task(app):
 async def periodic_stats_updater(app):
     while True:
         await asyncio.sleep(STATS_INTERVAL_SECONDS); await broadcast_full_stats(app)
-def blocking_db_write(db_path, event):
-    with sqlite3.connect(db_path, timeout=10) as conn:
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (event['timestamp'].isoformat(), event['action'], event['status'], event['size'], event['satellite_id'], event['remote_ip'], event['location']['lat'], event['location']['lon'], event['error_reason']))
-        conn.commit()
 def blocking_hourly_aggregation():
+    now = datetime.datetime.now().astimezone(); hour_start = now.replace(minute=0, second=0, microsecond=0)
+    hour_start_iso = hour_start.isoformat(); next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
-        last_agg_row = conn.execute("SELECT MAX(hour_timestamp) as last_ts FROM hourly_stats").fetchone()
-        min_event_row = conn.execute("SELECT MIN(timestamp) as first_ts FROM events").fetchone()
-        if not min_event_row or not min_event_row['first_ts']: return
-        start_dt = None
-        if last_agg_row and last_agg_row['last_ts']:
-            start_dt = datetime.datetime.fromisoformat(last_agg_row['last_ts']) + datetime.timedelta(hours=1)
-        else:
-            start_dt = datetime.datetime.fromisoformat(min_event_row['first_ts'])
-        end_dt = datetime.datetime.now().astimezone()
-        current_hour = start_dt.replace(minute=0, second=0, microsecond=0)
-        while current_hour < end_dt:
-            hour_start_iso = current_hour.isoformat(); next_hour_start_iso = (current_hour + datetime.timedelta(hours=1)).isoformat()
-            stats = conn.execute("SELECT SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' THEN 1 ELSE 0 END) as dl_s, SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' THEN 1 ELSE 0 END) as dl_f, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s, SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f FROM events WHERE timestamp >= ? AND timestamp < ?", (hour_start_iso, next_hour_start_iso)).fetchone()
-            if stats and stats['dl_s'] is not None:
-                print(f"Aggregating stats for hour: {hour_start_iso}")
-                conn.execute("INSERT INTO hourly_stats VALUES (?, ?, ?, ?, ?) ON CONFLICT(hour_timestamp) DO UPDATE SET dl_success=excluded.dl_success, dl_fail=excluded.dl_fail, ul_success=excluded.ul_success, ul_fail=excluded.ul_fail",
-                             (hour_start_iso, stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f']))
-            current_hour += datetime.timedelta(hours=1)
-        conn.commit()
+        stats = conn.execute("SELECT SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' THEN 1 ELSE 0 END) as dl_s, SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' THEN 1 ELSE 0 END) as dl_f, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s, SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f FROM events WHERE timestamp >= ? AND timestamp < ?", (hour_start_iso, next_hour_start_iso)).fetchone()
+        if stats and stats['dl_s'] is not None:
+            conn.execute("INSERT INTO hourly_stats VALUES (?, ?, ?, ?, ?) ON CONFLICT(hour_timestamp) DO UPDATE SET dl_success=excluded.dl_success, dl_fail=excluded.dl_fail, ul_success=excluded.ul_success, ul_fail=excluded.ul_fail",
+                         (hour_start_iso, stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f']))
+            conn.commit()
 async def hourly_aggregator_task(app):
     while True:
         loop = asyncio.get_running_loop(); await loop.run_in_executor(app['db_executor'], blocking_hourly_aggregation)
@@ -186,16 +204,10 @@ async def broadcast_full_stats(app, target_ws=None):
         size_bucket = get_size_bucket(event['size'])
         if is_dl: dl_sizes[size_bucket] = dl_sizes.get(size_bucket, 0) + 1
         else: ul_sizes[size_bucket] = ul_sizes.get(size_bucket, 0) + 1
-    
-    # --- THE FIX: Exclude the current hour from the historical query ---
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
         current_hour_start_iso = datetime.datetime.now().astimezone().replace(minute=0, second=0, microsecond=0).isoformat()
-        historical_stats = [dict(row) for row in conn.execute(
-            "SELECT * FROM hourly_stats WHERE hour_timestamp < ? ORDER BY hour_timestamp DESC LIMIT ?",
-            (current_hour_start_iso, HISTORICAL_HOURS_TO_SHOW)
-        ).fetchall()]
-
+        historical_stats = [dict(row) for row in conn.execute("SELECT * FROM hourly_stats WHERE hour_timestamp < ? ORDER BY hour_timestamp DESC LIMIT ?", (current_hour_start_iso, HISTORICAL_HOURS_TO_SHOW)).fetchall()]
     sat_list = [{'satellite_id': k, **v} for k, v in satellites.items()]
     dl_sizes_list = [{'bucket': k, 'count': v} for k, v in dl_sizes.items()]
     ul_sizes_list = [{'bucket': k, 'count': v} for k, v in ul_sizes.items()]
@@ -224,8 +236,9 @@ async def start_background_tasks(app):
     app['db_cleanup_task'] = asyncio.create_task(cleanup_db_task(app))
     app['bandwidth_task'] = asyncio.create_task(bandwidth_calculator(app))
     app['hourly_agg_task'] = asyncio.create_task(hourly_aggregator_task(app))
+    app['db_writer_task'] = asyncio.create_task(database_writer_task(app))
 async def cleanup_background_tasks(app):
-    app['log_tailer_task'].cancel(); app['stats_task'].cancel(); app['db_cleanup_task'].cancel(); app['prune_task'].cancel(); app['bandwidth_task'].cancel(); app['hourly_agg_task'].cancel()
+    app['log_tailer_task'].cancel(); app['stats_task'].cancel(); app['db_cleanup_task'].cancel(); app['prune_task'].cancel(); app['bandwidth_task'].cancel(); app['hourly_agg_task'].cancel(); app['db_writer_task'].cancel()
     app['db_executor'].shutdown()
 
 if __name__ == "__main__":
