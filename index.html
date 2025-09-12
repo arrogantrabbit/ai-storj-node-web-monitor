@@ -6,15 +6,14 @@
     <title>Storagenode Pro Monitor</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color 0.3s, color 0.3s; }
         .container { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; max-width: 1800px; margin: auto; }
-        .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; }
+        .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s; }
         h1 { grid-column: 1 / -1; text-align: center; color: #1c1e21; }
         h3 { border-bottom: 1px solid #ddd; padding-bottom: 8px; margin-bottom: 15px; }
         .card-title { margin-top: 0; }
         .card-content { flex-grow: 1; }
         
-        /* --- Grid Layout --- */
         #map-card { grid-column: 1 / 8; grid-row: 2 / 4; }
         #map { height: 620px; border-radius: 8px; background-color: #aad3df; }
         #stats-card { grid-column: 8 / 13; grid-row: 2 / 3; }
@@ -45,6 +44,20 @@
         .rate-good { color: #22c55e; }
         .rate-ok { color: #f59e0b; }
         .rate-bad { color: #ef4444; }
+
+        /* --- Dark Mode --- */
+        @media (prefers-color-scheme: dark) {
+            body { background-color: #121212; color: #e0e0e0; }
+            .card { background-color: #1e1e1e; box-shadow: none; border: 1px solid #333; }
+            h1, h3 { color: #ffffff; }
+            h3 { border-bottom-color: #444; }
+            .stat-label { color: #888; }
+            .info-table th, .info-table td { border-bottom-color: #333; }
+            .info-table th { color: #aaa; }
+            .toggle-link { color: #4dabf7; }
+            #map { background-color: #333; }
+            .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(95%) contrast(90%); }
+        }
     </style>
 </head>
 <body>
@@ -170,7 +183,6 @@
                 plugins: {
                     tooltip: {
                         callbacks: {
-                            // --- THIS IS THE CORRECTED/ENHANCED SECTION ---
                             footer: function(tooltipItems) {
                                 const context = tooltipItems[0];
                                 if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return '';
@@ -283,9 +295,9 @@
                 const totalAudit = hour.audit_success + hour.audit_fail, auditRate = totalAudit > 0 ? (hour.audit_success / totalAudit * 100) : 100;
                 const row = tbody.insertRow();
                 row.innerHTML = `<td>${new Date(hour.hour_timestamp).toLocaleTimeString([], { hour: 'numeric' })}</td>
-                    <td class="rate-good">${dlRate.toFixed(2)}%</td>
-                    <td class="rate-good">${ulRate.toFixed(2)}%</td>
-                    <td class="rate-good">${auditRate.toFixed(2)}%</td>`;
+                    <td class="${getRateClass(dlRate)}">${dlRate.toFixed(2)}%</td>
+                    <td class="${getRateClass(ulRate)}">${ulRate.toFixed(2)}%</td>
+                    <td class="${getRateClass(auditRate)}">${auditRate.toFixed(2)}%</td>`;
             }
         }
         
@@ -394,6 +406,31 @@
             }
         };
         connectionManager.connect();
+        
+        // --- Dark Mode Chart Handler ---
+        function updateChartColors(isDarkMode) {
+            const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+            const textColor = isDarkMode ? '#e0e0e0' : '#333';
+
+            Chart.defaults.color = textColor;
+            Chart.defaults.borderColor = gridColor;
+
+            // Update all existing chart instances
+            for (const id in Chart.instances) {
+                const chart = Chart.instances[id];
+                // Update tooltip colors
+                if(chart.options.plugins.tooltip) {
+                    chart.options.plugins.tooltip.titleColor = textColor;
+                    chart.options.plugins.tooltip.bodyColor = textColor;
+                    chart.options.plugins.tooltip.footerColor = textColor;
+                }
+                chart.update();
+            }
+        }
+
+        const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        updateChartColors(darkModeMediaQuery.matches); // Initial check
+        darkModeMediaQuery.addEventListener('change', e => updateChartColors(e.matches)); // Listen for changes
     </script>
 </body>
 </html>
