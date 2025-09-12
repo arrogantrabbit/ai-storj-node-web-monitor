@@ -40,11 +40,12 @@ DB_QUEUE_MAX_SIZE = 30000
 EXPECTED_DB_COLUMNS = 12
 HISTORICAL_HOURS_TO_SHOW = 6
 MAX_GEOIP_CACHE_SIZE = 5000
+# --- NEW: Added configuration for hourly aggregation ---
+HOURLY_AGG_INTERVAL_MINUTES = 10
 
 # --- In-Memory State ---
 app_state = { 'websockets': set(), 'live_events': deque(), 'geoip_cache': {}, 'db_write_queue': asyncio.Queue(maxsize=DB_QUEUE_MAX_SIZE), 'last_perf_event_index': 0 }
 
-# --- MODIFIED: Correctly create both tables ---
 def init_db():
     conn = sqlite3.connect(DATABASE_FILE, timeout=10)
     cursor = conn.cursor()
@@ -59,7 +60,6 @@ def init_db():
             sys.exit(1)
     
     cursor.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, timestamp DATETIME, action TEXT, status TEXT, size INTEGER, piece_id TEXT, satellite_id TEXT, remote_ip TEXT, country TEXT, latitude REAL, longitude REAL, error_reason TEXT)')
-    # --- CORRECTED: Added missing table creation ---
     cursor.execute('CREATE TABLE IF NOT EXISTS hourly_stats (hour_timestamp TEXT PRIMARY KEY, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0, audit_success INTEGER DEFAULT 0, audit_fail INTEGER DEFAULT 0)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);')
     conn.commit()
@@ -230,6 +230,31 @@ async def prune_live_events_task(app):
             app_state['last_perf_event_index'] = max(0, app_state['last_perf_event_index'] - events_to_prune_count)
             log.info(f"[PRUNER] Pruned {events_to_prune_count} events. Adjusted perf_index from {old_index} to {app_state['last_perf_event_index']}.")
 
+# --- NEW: Restored blocking function for hourly aggregation ---
+def blocking_hourly_aggregation():
+    log.info("[AGGREGATOR] Running hourly aggregation.")
+    now = datetime.datetime.now().astimezone(); hour_start = now.replace(minute=0, second=0, microsecond=0)
+    hour_start_iso = hour_start.isoformat(); next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
+    with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
+        conn.row_factory = sqlite3.Row
+        stats = conn.execute("SELECT SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_s, SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_f, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s, SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f, SUM(CASE WHEN action = 'GET_AUDIT' AND status = 'success' THEN 1 ELSE 0 END) as audit_s, SUM(CASE WHEN action = 'GET_AUDIT' AND status != 'success' THEN 1 ELSE 0 END) as audit_f FROM events WHERE timestamp >= ? AND timestamp < ?", (hour_start_iso, next_hour_start_iso)).fetchone()
+        if stats and stats['dl_s'] is not None:
+            conn.execute("INSERT INTO hourly_stats VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(hour_timestamp) DO UPDATE SET dl_success=excluded.dl_success, dl_fail=excluded.dl_fail, ul_success=excluded.ul_success, ul_fail=excluded.ul_fail, audit_success=excluded.audit_success, audit_fail=excluded.audit_fail",
+                         (hour_start_iso, stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f'], stats['audit_s'], stats['audit_f']))
+            conn.commit()
+            log.info(f"[AGGREGATOR] Wrote hourly stats for {hour_start_iso}.")
+
+# --- NEW: Restored async task for hourly aggregation ---
+async def hourly_aggregator_task(app):
+    log.info("Hourly aggregator task started.")
+    while True:
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(app['db_executor'], blocking_hourly_aggregation)
+        except Exception:
+            log.error("Error in hourly aggregator task:", exc_info=True)
+        await asyncio.sleep(60 * HOURLY_AGG_INTERVAL_MINUTES)
+
 def blocking_prepare_stats(live_events):
     events_copy = list(live_events)
     if not events_copy: return None
@@ -258,7 +283,6 @@ def blocking_prepare_stats(live_events):
     
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
-        # --- CORRECTED: Simplified and correct SQL query ---
         hist_stats = [dict(row) for row in conn.execute("SELECT * FROM hourly_stats ORDER BY hour_timestamp DESC LIMIT ?", (HISTORICAL_HOURS_TO_SHOW,)).fetchall()]
 
     return { "type": "stats_update", "first_event_iso": first_event_iso, "last_event_iso": last_event_iso, "overall": {"dl_success": dl_s, "dl_fail": dl_f, "ul_success": ul_s, "ul_fail": ul_f, "audit_success": a_s, "audit_fail": a_f}, "satellites": sorted([{'satellite_id': k, **v} for k, v in sats.items()], key=lambda x: x['uploads'] + x['downloads'], reverse=True), "download_sizes": [{'bucket': k, 'count': v} for k, v in dls.most_common(10)], "upload_sizes": [{'bucket': k, 'count': v} for k, v in uls.most_common(10)], "historical_stats": hist_stats, "error_categories": [{'reason': k, 'count': v} for k,v in errs.most_common(5)], "top_pieces": [{'id': k, 'count': v} for k,v in hp.most_common(5)], "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(5) if k], "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(5) if k] }
@@ -298,7 +322,8 @@ async def start_background_tasks(app):
     app['db_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=5)
     app['log_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     
-    tasks_to_start = [log_tailer_task, prune_live_events_task, periodic_stats_updater, performance_calculator, debug_logger_task, database_writer_task]
+    # --- MODIFIED: Added hourly_aggregator_task to the startup list ---
+    tasks_to_start = [log_tailer_task, prune_live_events_task, periodic_stats_updater, performance_calculator, debug_logger_task, database_writer_task, hourly_aggregator_task]
     for task_func in tasks_to_start:
         app[task_func.__name__] = asyncio.create_task(task_func(app))
 
