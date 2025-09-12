@@ -27,7 +27,7 @@ SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8765
 STATS_WINDOW_MINUTES = 60
 STATS_INTERVAL_SECONDS = 5
-PERFORMANCE_INTERVAL_SECONDS = 2 # Renamed from BANDWIDTH_INTERVAL_SECONDS
+PERFORMANCE_INTERVAL_SECONDS = 2
 HOURLY_AGG_INTERVAL_MINUTES = 10
 HISTORICAL_HOURS_TO_SHOW = 6
 DB_WRITE_BATCH_INTERVAL_SECONDS = 10
@@ -40,7 +40,9 @@ app_state = {
     'websockets': set(),
     'live_events': deque(),
     'geoip_cache': {},
-    'db_write_queue': asyncio.Queue(maxsize=20000)
+    'db_write_queue': asyncio.Queue(maxsize=20000),
+    # --- NEW: Robust index tracker for the performance calculator ---
+    'last_perf_event_index': 0
 }
 
 # --- Database Setup ---
@@ -77,7 +79,6 @@ async def log_tailer_task(app):
                     if not line:
                         await asyncio.sleep(0.2)
                         try:
-                            # This is the core log rotation detection logic
                             if os.stat(LOG_FILE_PATH).st_ino != current_inode: 
                                 print(f"Log rotation detected. Re-opening file...")
                                 break
@@ -145,39 +146,34 @@ async def websocket_handler(request):
     finally: app_state['websockets'].remove(ws)
     return ws
 
+# --- MODIFIED: performance_calculator now uses index tracking ---
 async def performance_calculator(app):
-    last_processed_ts = 0.0
     while True:
-        await asyncio.sleep(PERFORMANCE_INTERVAL_SECONDS);
-        if not app_state['live_events']: continue
+        await asyncio.sleep(PERFORMANCE_INTERVAL_SECONDS)
         now = time.time()
         
-        # --- THIS IS THE NEW SAFEGUARD ---
-        # If our tracker is ahead of the latest event, a rotation/prune likely happened. Reset it.
-        latest_event_ts = app_state['live_events'][-1]['ts_unix']
-        if last_processed_ts > latest_event_ts:
-            print(f"Stale timestamp detected in performance_calculator ({last_processed_ts} > {latest_event_ts}). Resetting.")
-            last_processed_ts = 0.0
-        # --- END OF SAFEGUARD ---
+        current_event_count = len(app_state['live_events'])
+        start_index = app_state['last_perf_event_index']
+        
+        # Slice the new events that have arrived since the last run
+        new_events_to_process = [app_state['live_events'][i] for i in range(start_index, current_event_count)]
+        
+        # Update the index for the next run
+        app_state['last_perf_event_index'] = current_event_count
 
         ingress_bytes, egress_bytes, ingress_pieces, egress_pieces = 0, 0, 0, 0
+        
+        # Calculate concurrency based on the full event list
         concurrency = sum(1 for event in reversed(app_state['live_events']) if event['ts_unix'] > now - 1)
 
-        if last_processed_ts == 0.0 and app_state['live_events']: 
-            last_processed_ts = app_state['live_events'][-1]['ts_unix']
-
-        newest_ts_in_batch = last_processed_ts
-        for event in reversed(app_state['live_events']):
-            if event['ts_unix'] <= last_processed_ts: break
+        # Process only the new events for bandwidth calculation
+        for event in new_events_to_process:
             if 'GET' in event['action']:
-                egress_bytes += event['size']; egress_pieces += 1
+                egress_bytes += event['size']
+                egress_pieces += 1
             else:
-                ingress_bytes += event['size']; ingress_pieces += 1
-            if event['ts_unix'] > newest_ts_in_batch: newest_ts_in_batch = event['ts_unix']
-        
-        # Only update the timestamp if new events were actually processed
-        if newest_ts_in_batch > last_processed_ts:
-            last_processed_ts = newest_ts_in_batch
+                ingress_bytes += event['size']
+                ingress_pieces += 1
         
         payload = { 
             "type": "performance_update", "timestamp": datetime.datetime.utcnow().isoformat(),
@@ -189,10 +185,21 @@ async def performance_calculator(app):
         }
         for ws in set(app_state['websockets']): await ws.send_json(payload)
 
+# --- MODIFIED: prune_live_events_task now updates the index ---
 async def prune_live_events_task(app):
     while True:
-        await asyncio.sleep(60); cutoff_unix = time.time() - (STATS_WINDOW_MINUTES * 60)
-        while app_state['live_events'] and app_state['live_events'][0]['ts_unix'] < cutoff_unix: app_state['live_events'].popleft()
+        await asyncio.sleep(60)
+        cutoff_unix = time.time() - (STATS_WINDOW_MINUTES * 60)
+        
+        events_to_prune_count = 0
+        while app_state['live_events'] and app_state['live_events'][0]['ts_unix'] < cutoff_unix:
+            app_state['live_events'].popleft()
+            events_to_prune_count += 1
+        
+        if events_to_prune_count > 0:
+            # Adjust the performance calculator's index to keep it in sync
+            app_state['last_perf_event_index'] = max(0, app_state['last_perf_event_index'] - events_to_prune_count)
+
 async def periodic_stats_updater(app):
     while True:
         await asyncio.sleep(STATS_INTERVAL_SECONDS); await broadcast_full_stats(app)
