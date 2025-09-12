@@ -60,9 +60,15 @@
                 <tbody id="history-body"></tbody>
             </table>
         </div>
-        <div id="bandwidth-card" class="card"><h3>Live Bandwidth (Mbps)</h3><canvas id="bandwidthChart"></canvas></div>
+        <div id="bandwidth-card" class="card">
+            <div class="chart-header">
+                <h3 id="bandwidth-title">Live Bandwidth (Mbps)</h3>
+                <div id="bandwidth-toggles" style="font-size: 0.8em; cursor: pointer;">
+                    <a href="#" class="toggle-link" data-view="rate">Rate (Mbps)</a> | <a href="#" class="toggle-link" data-view="volume">Volume (MB)</a> | <a href="#" class="toggle-link" data-view="pieces">Pieces</a>
+                </div>
+            </div>
+            <canvas id="bandwidthChart"></canvas></div>
 
-        <!-- MODIFIED: Add toggle link -->
         <div id="satellite-card" class="card">
             <div class="chart-header">
                 <h3 id="satellite-title">Traffic by Satellite</h3>
@@ -85,11 +91,17 @@
         function addAnimatedMarker(lat, lon, color) { const icon = L.divIcon({ className: 'map-marker-container', html: `<div class="map-marker" style="width: 12px; height: 12px; background-color: ${color};"></div>` }); const marker = L.marker([lat, lon], { icon: icon }).addTo(map); setTimeout(() => map.removeLayer(marker), 1500); }
         const PIE_CHART_COLORS = ['#36A2EB', '#FF6384', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40', '#E7E9ED', '#8DDF3C', '#F17171', '#3B5998'];
 
-        // --- NEW: State variables for the toggle ---
         let satelliteViewIsBySize = false;
-        let lastSatelliteData = []; // Store the last received data
+        let lastSatelliteData = [];
 
-        // --- NEW: Helper to format bytes ---
+        // --- NEW: State variables and data store for bandwidth chart ---
+        let bandwidthChartView = 'rate'; // 'rate', 'volume', or 'pieces'
+        const bandwidthData = {
+            rate: [[], []],      // [ingress, egress]
+            volume: [[], []],    // [ingress, egress]
+            pieces: [[], []]     // [ingress, egress]
+        };
+
         function formatBytes(bytes, decimals = 2) {
             if (bytes === 0) return '0 Bytes';
             const k = 1024; const dm = decimals < 0 ? 0 : decimals;
@@ -160,15 +172,34 @@
         function updateStatTitles(firstIso, lastIso) { const formatTime = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); let timeWindowStr = "(Last 60 Mins)"; if (firstIso && lastIso) { timeWindowStr = `(${formatTime(new Date(firstIso))} - ${formatTime(new Date(lastIso))})`; } document.getElementById('stats-title').textContent = `Overall Success Rates ${timeWindowStr}`; document.getElementById('satellite-title').textContent = `Traffic by Satellite ${timeWindowStr}`; document.getElementById('dl-pie-title').textContent = `Download Sizes ${timeWindowStr}`; document.getElementById('ul-pie-title').textContent = `Upload Sizes ${timeWindowStr}`; }
         function updateHistoricalTable(history) { const tbody = document.getElementById('history-body'); tbody.innerHTML = ''; if (!history || history.length === 0) { tbody.innerHTML = '<tr><td colspan="3" style="text-align: center;">Not enough historical data yet.</td></tr>'; return; } for (const hour of history) { const totalDl = hour.dl_success + hour.dl_fail; const dlRate = totalDl > 0 ? (hour.dl_success / totalDl * 100) : 100; const totalUl = hour.ul_success + hour.ul_fail; const ulRate = totalUl > 0 ? (hour.ul_success / totalUl * 100) : 100; const row = tbody.insertRow(); row.innerHTML = `<td>${new Date(hour.hour_timestamp).toLocaleTimeString([], { hour: 'numeric' })}</td><td class="history-rate ${dlRate > 99 ? 'history-rate-good' : 'history-rate-bad'}">${dlRate.toFixed(1)}%</td><td class="history-rate ${ulRate > 99 ? 'history-rate-good' : 'history-rate-bad'}">${ulRate.toFixed(1)}%</td>`; } }
 
-        // --- NEW: Event listener for the satellite toggle ---
         document.getElementById('toggle-satellite-view').addEventListener('click', function(e) {
             e.preventDefault();
-            satelliteViewIsBySize = !satelliteViewIsBySize; // Flip the state
+            satelliteViewIsBySize = !satelliteViewIsBySize;
             this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size';
-            updateSatelliteChart(lastSatelliteData); // Re-render the chart with the new data view
+            updateSatelliteChart(lastSatelliteData);
         });
 
-        const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { console.log("WebSocket established."); this.overlay.style.display = 'none'; this.reconnectDelay = 1000; }; ws.onmessage = (event) => { const data = JSON.parse(event.data); switch(data.type) { case 'log_entry': if (data.location) { const isDownload = data.action.toLowerCase().includes('get'); addAnimatedMarker(data.location.lat, data.location.lon, isDownload ? DOWNLOAD_COLOR : UPLOAD_COLOR); } if (data.status !== 'success') addError(data.timestamp, data.error_reason); break; case 'bandwidth': const now = new Date(data.timestamp); bandwidthChart.data.datasets[0].data.push({ x: now, y: data.ingress_mbps }); bandwidthChart.data.datasets[1].data.push({ x: now, y: data.egress_mbps }); if(bandwidthChart.data.datasets[0].data.length > 120) { bandwidthChart.data.datasets.forEach(d => d.data.shift()); } bandwidthChart.update(); break; case 'stats_update': updateAllVisuals(data); break; } }; ws.onclose = (event) => { console.log(`WebSocket closed. Reconnecting...`); this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); }; ws.onerror = (err) => { console.error("WebSocket error:", err); ws.close(); }; } };
+        // --- NEW: Event listener for bandwidth toggles ---
+        document.getElementById('bandwidth-toggles').addEventListener('click', function(e) {
+            e.preventDefault();
+            if (e.target.classList.contains('toggle-link')) {
+                bandwidthChartView = e.target.getAttribute('data-view');
+                updateBandwidthChart();
+            }
+        });
+
+        // --- NEW: Function to update the bandwidth chart display ---
+        function updateBandwidthChart() {
+            const viewTitles = { rate: 'Live Bandwidth (Mbps)', volume: 'Data Volume per Interval (MB)', pieces: 'Pieces per Interval' };
+            const yAxisTitles = { rate: 'Mbps', volume: 'MB', pieces: 'Count' };
+            document.getElementById('bandwidth-title').textContent = viewTitles[bandwidthChartView];
+            bandwidthChart.data.datasets[0].data = bandwidthData[bandwidthChartView][0];
+            bandwidthChart.data.datasets[1].data = bandwidthData[bandwidthChartView][1];
+            bandwidthChart.options.scales.y.title.text = yAxisTitles[bandwidthChartView];
+            bandwidthChart.update('none'); // Use 'none' for no animation on update
+        }
+
+        const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { console.log("WebSocket established."); this.overlay.style.display = 'none'; this.reconnectDelay = 1000; }; ws.onmessage = (event) => { const data = JSON.parse(event.data); switch(data.type) { case 'log_entry': if (data.location) { const isDownload = data.action.toLowerCase().includes('get'); addAnimatedMarker(data.location.lat, data.location.lon, isDownload ? DOWNLOAD_COLOR : UPLOAD_COLOR); } if (data.status !== 'success') addError(data.timestamp, data.error_reason); break; case 'bandwidth': const now = new Date(data.timestamp); bandwidthData.rate[0].push({ x: now, y: data.ingress_mbps }); bandwidthData.rate[1].push({ x: now, y: data.egress_mbps }); bandwidthData.volume[0].push({ x: now, y: data.ingress_bytes / 1e6 }); bandwidthData.volume[1].push({ x: now, y: data.egress_bytes / 1e6 }); bandwidthData.pieces[0].push({ x: now, y: data.ingress_pieces }); bandwidthData.pieces[1].push({ x: now, y: data.egress_pieces }); for (const key in bandwidthData) { if(bandwidthData[key][0].length > 120) { bandwidthData[key][0].shift(); bandwidthData[key][1].shift(); } } updateBandwidthChart(); break; case 'stats_update': updateAllVisuals(data); break; } }; ws.onclose = (event) => { console.log(`WebSocket closed. Reconnecting...`); this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); }; ws.onerror = (err) => { console.error("WebSocket error:", err); ws.close(); }; } };
         connectionManager.connect();
     </script>
 </body>

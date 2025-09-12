@@ -1,4 +1,3 @@
-root@storagenode-one:~/websies # cat websies.py
 # /// script
 # dependencies = [
 #   "aiohttp",
@@ -152,16 +151,20 @@ async def bandwidth_calculator(app):
     while True:
         await asyncio.sleep(BANDWIDTH_INTERVAL_SECONDS);
         if not app_state['live_events']: continue
-        ingress_bytes, egress_bytes = 0, 0
+        ingress_bytes, egress_bytes, ingress_pieces, egress_pieces = 0, 0, 0, 0
         if last_processed_ts == 0.0: last_processed_ts = app_state['live_events'][-1]['ts_unix']
         newest_ts_in_batch = last_processed_ts
         for event in reversed(app_state['live_events']):
             if event['ts_unix'] <= last_processed_ts: break
-            if 'GET' in event['action']: egress_bytes += event['size']
-            else: ingress_bytes += event['size']
+            if 'GET' in event['action']:
+                egress_bytes += event['size']
+                egress_pieces += 1
+            else:
+                ingress_bytes += event['size']
+                ingress_pieces += 1
             if event['ts_unix'] > newest_ts_in_batch: newest_ts_in_batch = event['ts_unix']
         last_processed_ts = newest_ts_in_batch
-        payload = { "type": "bandwidth", "timestamp": datetime.datetime.utcnow().isoformat(), "ingress_mbps": round((ingress_bytes * 8) / (BANDWIDTH_INTERVAL_SECONDS * 1e6), 2), "egress_mbps": round((egress_bytes * 8) / (BANDWIDTH_INTERVAL_SECONDS * 1e6), 2) }
+        payload = { "type": "bandwidth", "timestamp": datetime.datetime.utcnow().isoformat(), "ingress_mbps": round((ingress_bytes * 8) / (BANDWIDTH_INTERVAL_SECONDS * 1e6), 2), "egress_mbps": round((egress_bytes * 8) / (BANDWIDTH_INTERVAL_SECONDS * 1e6), 2), "ingress_bytes": ingress_bytes, "egress_bytes": egress_bytes, "ingress_pieces": ingress_pieces, "egress_pieces": egress_pieces }
         for ws in set(app_state['websockets']): await ws.send_json(payload)
 async def prune_live_events_task(app):
     while True:
@@ -254,4 +257,3 @@ if __name__ == "__main__":
     app.router.add_get('/ws', websocket_handler)
     print(f"Server starting on http://{SERVER_HOST}:{SERVER_PORT}")
     web.run_app(app, host=SERVER_HOST, port=SERVER_PORT)
-root@storagenode-one:~/websies #
