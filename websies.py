@@ -1,3 +1,4 @@
+root@storagenode-one:~/websies # cat websies.py
 # /// script
 # dependencies = [
 #   "aiohttp",
@@ -20,7 +21,7 @@ import os
 import time
 
 # --- Configuration ---
-LOG_FILE_PATH = '/var/log/storj.log'
+LOG_FILE_PATH = '/var/log/storagenode.log'
 GEOIP_DATABASE_PATH = 'GeoLite2-City.mmdb'
 DATABASE_FILE = 'storj_stats.db'
 SERVER_HOST = "0.0.0.0"
@@ -53,7 +54,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- CORRECTED Helper function for better piece size bucketing ---
+# --- THE CORRECTED Helper function for better piece size bucketing ---
 def get_size_bucket(size_in_bytes):
     if size_in_bytes < 1024:
         return "< 1 KB"
@@ -71,7 +72,7 @@ def get_size_bucket(size_in_bytes):
     else:
         return "> 1 MB"
 
-# --- Log Tailing Task (MODIFIED to not write to DB directly) ---
+# --- Log Tailing Task ---
 async def log_tailer_task(app):
     print(f"Starting log monitoring for: {LOG_FILE_PATH}"); geoip_reader = geoip2.database.Reader(GEOIP_DATABASE_PATH)
     geoip_cache = app_state['geoip_cache']
@@ -106,10 +107,8 @@ async def log_tailer_task(app):
                             geoip_cache[remote_ip] = location
                         event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size,
                                  "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason}
-                        
                         app_state['live_events'].append(event)
                         await app_state['db_write_queue'].put(event)
-
                         broadcast_payload = {"type": "log_entry", "action": action, "status": status, "location": location,
                                              "error_reason": error_reason, "timestamp": timestamp_obj.isoformat()}
                         for ws in set(app_state['websockets']): await ws.send_json(broadcast_payload)
@@ -198,9 +197,14 @@ async def broadcast_full_stats(app, target_ws=None):
             if is_dl: dl_fail += 1
             else: ul_fail += 1
         sat_id = event['satellite_id'];
-        if sat_id not in satellites: satellites[sat_id] = {'uploads': 0, 'downloads': 0}
-        if is_dl: satellites[sat_id]['downloads'] += 1
-        else: satellites[sat_id]['uploads'] += 1
+        if sat_id not in satellites:
+            satellites[sat_id] = {'uploads': 0, 'downloads': 0, 'total_upload_size': 0, 'total_download_size': 0}
+        if is_dl:
+            satellites[sat_id]['downloads'] += 1
+            satellites[sat_id]['total_download_size'] += event['size']
+        else:
+            satellites[sat_id]['uploads'] += 1
+            satellites[sat_id]['total_upload_size'] += event['size']
         size_bucket = get_size_bucket(event['size'])
         if is_dl: dl_sizes[size_bucket] = dl_sizes.get(size_bucket, 0) + 1
         else: ul_sizes[size_bucket] = ul_sizes.get(size_bucket, 0) + 1
@@ -250,3 +254,4 @@ if __name__ == "__main__":
     app.router.add_get('/ws', websocket_handler)
     print(f"Server starting on http://{SERVER_HOST}:{SERVER_PORT}")
     web.run_app(app, host=SERVER_HOST, port=SERVER_PORT)
+root@storagenode-one:~/websies #
