@@ -77,8 +77,13 @@ async def log_tailer_task(app):
                     if not line:
                         await asyncio.sleep(0.2)
                         try:
-                            if os.stat(LOG_FILE_PATH).st_ino != current_inode: print(f"Log rotation detected. Re-opening file..."); break
-                        except FileNotFoundError: print(f"Log file not found. Waiting for it to reappear..."); break
+                            # This is the core log rotation detection logic
+                            if os.stat(LOG_FILE_PATH).st_ino != current_inode: 
+                                print(f"Log rotation detected. Re-opening file...")
+                                break
+                        except FileNotFoundError: 
+                            print(f"Log file not found. Waiting for it to reappear...")
+                            break
                         continue
                     try:
                         timestamp_str = line.split("INFO")[0].strip() if "INFO" in line else line.split("ERROR")[0].strip()
@@ -147,12 +152,20 @@ async def performance_calculator(app):
         if not app_state['live_events']: continue
         now = time.time()
         
+        # --- THIS IS THE NEW SAFEGUARD ---
+        # If our tracker is ahead of the latest event, a rotation/prune likely happened. Reset it.
+        latest_event_ts = app_state['live_events'][-1]['ts_unix']
+        if last_processed_ts > latest_event_ts:
+            print(f"Stale timestamp detected in performance_calculator ({last_processed_ts} > {latest_event_ts}). Resetting.")
+            last_processed_ts = 0.0
+        # --- END OF SAFEGUARD ---
+
         ingress_bytes, egress_bytes, ingress_pieces, egress_pieces = 0, 0, 0, 0
-        
-        # Concurrency: count events in the last second
         concurrency = sum(1 for event in reversed(app_state['live_events']) if event['ts_unix'] > now - 1)
 
-        if last_processed_ts == 0.0: last_processed_ts = app_state['live_events'][-1]['ts_unix']
+        if last_processed_ts == 0.0 and app_state['live_events']: 
+            last_processed_ts = app_state['live_events'][-1]['ts_unix']
+
         newest_ts_in_batch = last_processed_ts
         for event in reversed(app_state['live_events']):
             if event['ts_unix'] <= last_processed_ts: break
@@ -161,17 +174,17 @@ async def performance_calculator(app):
             else:
                 ingress_bytes += event['size']; ingress_pieces += 1
             if event['ts_unix'] > newest_ts_in_batch: newest_ts_in_batch = event['ts_unix']
-        last_processed_ts = newest_ts_in_batch
+        
+        # Only update the timestamp if new events were actually processed
+        if newest_ts_in_batch > last_processed_ts:
+            last_processed_ts = newest_ts_in_batch
         
         payload = { 
-            "type": "performance_update", 
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "type": "performance_update", "timestamp": datetime.datetime.utcnow().isoformat(),
             "ingress_mbps": round((ingress_bytes * 8) / (PERFORMANCE_INTERVAL_SECONDS * 1e6), 2), 
             "egress_mbps": round((egress_bytes * 8) / (PERFORMANCE_INTERVAL_SECONDS * 1e6), 2),
-            "ingress_bytes": ingress_bytes, 
-            "egress_bytes": egress_bytes, 
-            "ingress_pieces": ingress_pieces, 
-            "egress_pieces": egress_pieces,
+            "ingress_bytes": ingress_bytes, "egress_bytes": egress_bytes, 
+            "ingress_pieces": ingress_pieces, "egress_pieces": egress_pieces,
             "concurrency": concurrency
         }
         for ws in set(app_state['websockets']): await ws.send_json(payload)
@@ -198,9 +211,7 @@ async def hourly_aggregator_task(app):
         loop = asyncio.get_running_loop(); await loop.run_in_executor(app['db_executor'], blocking_hourly_aggregation)
         await asyncio.sleep(60 * HOURLY_AGG_INTERVAL_MINUTES)
 async def broadcast_full_stats(app, target_ws=None):
-    # --- Overall Counters ---
     dl_success, dl_fail, ul_success, ul_fail, audit_success, audit_fail = 0, 0, 0, 0, 0, 0
-    # --- Detail Aggregators ---
     satellites = {}
     dl_sizes, ul_sizes = Counter(), Counter()
     countries_dl, countries_ul = Counter(), Counter()
@@ -212,11 +223,9 @@ async def broadcast_full_stats(app, target_ws=None):
     for event in app_state['live_events']:
         action, status, sat_id, size, country = event['action'], event['status'], event['satellite_id'], event['size'], event['location']['country']
         
-        # --- Satellite Stats Initialization ---
         if sat_id not in satellites:
             satellites[sat_id] = {'uploads': 0, 'downloads': 0, 'audits': 0, 'ul_success': 0, 'dl_success': 0, 'audit_success': 0, 'total_upload_size': 0, 'total_download_size': 0}
 
-        # --- Categorize and Count ---
         if action == 'GET_AUDIT':
             satellites[sat_id]['audits'] += 1
             if status == 'success': audit_success += 1; satellites[sat_id]['audit_success'] += 1
@@ -242,12 +251,9 @@ async def broadcast_full_stats(app, target_ws=None):
         current_hour_start_iso = datetime.datetime.now().astimezone().replace(minute=0, second=0, microsecond=0).isoformat()
         historical_stats = [dict(row) for row in conn.execute("SELECT * FROM hourly_stats WHERE hour_timestamp < ? ORDER BY hour_timestamp DESC LIMIT ?", (current_hour_start_iso, HISTORICAL_HOURS_TO_SHOW)).fetchall()]
     
-    # --- Prepare payload ---
     sat_list = [{'satellite_id': k, **v} for k, v in satellites.items()]
     payload = { 
-        "type": "stats_update", 
-        "first_event_iso": first_event_ts, 
-        "last_event_iso": last_event_ts, 
+        "type": "stats_update", "first_event_iso": first_event_ts, "last_event_iso": last_event_ts, 
         "overall": {"dl_success": dl_success, "dl_fail": dl_fail, "ul_success": ul_success, "ul_fail": ul_fail, "audit_success": audit_success, "audit_fail": audit_fail},
         "satellites": sorted(sat_list, key=lambda x: x['uploads'] + x['downloads'], reverse=True), 
         "download_sizes": [{'bucket': k, 'count': v} for k, v in dl_sizes.most_common(10)],
@@ -259,7 +265,6 @@ async def broadcast_full_stats(app, target_ws=None):
         "top_countries_ul": [{'country': k, 'size': v} for k,v in countries_ul.most_common(5)],
     }
     
-    # --- Broadcast ---
     target_ws_list = [target_ws] if target_ws else set(app_state['websockets'])
     for ws in target_ws_list: await ws.send_json(payload)
 
@@ -280,7 +285,7 @@ async def start_background_tasks(app):
     app['prune_task'] = asyncio.create_task(prune_live_events_task(app))
     app['stats_task'] = asyncio.create_task(periodic_stats_updater(app))
     app['db_cleanup_task'] = asyncio.create_task(cleanup_db_task(app))
-    app['performance_task'] = asyncio.create_task(performance_calculator(app)) # Renamed
+    app['performance_task'] = asyncio.create_task(performance_calculator(app))
     app['hourly_agg_task'] = asyncio.create_task(hourly_aggregator_task(app))
     app['db_writer_task'] = asyncio.create_task(database_writer_task(app))
 async def cleanup_background_tasks(app):
