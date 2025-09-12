@@ -14,7 +14,7 @@ import sqlite3
 import aiohttp
 from aiohttp import web
 import geoip2.database
-from collections import deque
+from collections import deque, Counter
 import concurrent.futures
 import os
 import time
@@ -27,7 +27,7 @@ SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8765
 STATS_WINDOW_MINUTES = 60
 STATS_INTERVAL_SECONDS = 5
-BANDWIDTH_INTERVAL_SECONDS = 2
+PERFORMANCE_INTERVAL_SECONDS = 2 # Renamed from BANDWIDTH_INTERVAL_SECONDS
 HOURLY_AGG_INTERVAL_MINUTES = 10
 HISTORICAL_HOURS_TO_SHOW = 6
 DB_WRITE_BATCH_INTERVAL_SECONDS = 10
@@ -47,29 +47,22 @@ app_state = {
 def init_db():
     conn = sqlite3.connect(DATABASE_FILE, timeout=10)
     cursor = conn.cursor()
-    cursor.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, timestamp DATETIME, action TEXT, status TEXT, size INTEGER, satellite_id TEXT, remote_ip TEXT, latitude REAL, longitude REAL, error_reason TEXT)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, timestamp DATETIME, action TEXT, status TEXT, size INTEGER, piece_id TEXT, satellite_id TEXT, remote_ip TEXT, country TEXT, latitude REAL, longitude REAL, error_reason TEXT)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);')
-    cursor.execute('CREATE TABLE IF NOT EXISTS hourly_stats (hour_timestamp TEXT PRIMARY KEY, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS hourly_stats (hour_timestamp TEXT PRIMARY KEY, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0, audit_success INTEGER DEFAULT 0, audit_fail INTEGER DEFAULT 0)')
     conn.commit()
     conn.close()
 
-# --- THE CORRECTED Helper function for better piece size bucketing ---
+# --- Helper function for better piece size bucketing ---
 def get_size_bucket(size_in_bytes):
-    if size_in_bytes < 1024:
-        return "< 1 KB"
+    if size_in_bytes < 1024: return "< 1 KB"
     kb = size_in_bytes / 1024
-    if kb < 4:
-        return "1-4 KB"
-    elif kb < 16:
-        return "4-16 KB"
-    elif kb < 64:
-        return "16-64 KB"
-    elif kb < 256:
-        return "64-256 KB"
-    elif kb < 1024:
-        return "256 KB - 1 MB"
-    else:
-        return "> 1 MB"
+    if kb < 4: return "1-4 KB"
+    elif kb < 16: return "4-16 KB"
+    elif kb < 64: return "16-64 KB"
+    elif kb < 256: return "64-256 KB"
+    elif kb < 1024: return "256 KB - 1 MB"
+    else: return "> 1 MB"
 
 # --- Log Tailing Task ---
 async def log_tailer_task(app):
@@ -92,19 +85,19 @@ async def log_tailer_task(app):
                         timestamp_obj = datetime.datetime.fromisoformat(timestamp_str); json_match = re.search(r'\{.*\}', line)
                         if not json_match: continue
                         log_data = json.loads(json_match.group(0)); status, error_reason = "success", None
-                        if "download canceled" in line: status, error_reason = "canceled", log_data.get("reason")
-                        elif "failed" in line or "ERROR" in line: status, error_reason = "failed", log_data.get("error")
-                        action, size, sat_id, remote_addr = log_data.get("Action"), log_data.get("Size"), log_data.get("Satellite ID"), log_data.get("Remote Address")
-                        if not all([action, size, sat_id, remote_addr]): continue
+                        if "download canceled" in line: status, error_reason = "canceled", log_data.get("reason", "context canceled")
+                        elif "failed" in line or "ERROR" in line: status, error_reason = "failed", log_data.get("error", "unknown error")
+                        action, size, piece_id, sat_id, remote_addr = log_data.get("Action"), log_data.get("Size"), log_data.get("Piece ID"), log_data.get("Satellite ID"), log_data.get("Remote Address")
+                        if not all([action, size, piece_id, sat_id, remote_addr]): continue
                         remote_ip = remote_addr.split(':')[0]; location = geoip_cache.get(remote_ip)
                         if location is None:
                             try:
                                 geo_response = geoip_reader.city(remote_ip)
-                                location = {"lat": geo_response.location.latitude, "lon": geo_response.location.longitude}
-                            except geoip2.errors.AddressNotFoundError: location = {"lat": None, "lon": None}
+                                location = {"lat": geo_response.location.latitude, "lon": geo_response.location.longitude, "country": geo_response.country.name}
+                            except geoip2.errors.AddressNotFoundError: location = {"lat": None, "lon": None, "country": "Unknown"}
                             if len(geoip_cache) > MAX_GEOIP_CACHE_SIZE: geoip_cache.pop(next(iter(geoip_cache)))
                             geoip_cache[remote_ip] = location
-                        event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size,
+                        event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size, "piece_id": piece_id,
                                  "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason}
                         app_state['live_events'].append(event)
                         await app_state['db_write_queue'].put(event)
@@ -120,8 +113,8 @@ def blocking_db_batch_write(db_path, events):
     if not events: return
     with sqlite3.connect(db_path, timeout=10) as conn:
         cursor = conn.cursor()
-        data_to_insert = [(e['timestamp'].isoformat(), e['action'], e['status'], e['size'], e['satellite_id'], e['remote_ip'], e['location']['lat'], e['location']['lon'], e['error_reason']) for e in events]
-        cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
+        data_to_insert = [(e['timestamp'].isoformat(), e['action'], e['status'], e['size'], e['piece_id'], e['satellite_id'], e['remote_ip'], e['location']['country'], e['location']['lat'], e['location']['lon'], e['error_reason']) for e in events]
+        cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
         conn.commit()
     print(f"[{datetime.datetime.now()}] Wrote {len(events)} events to database.")
 
@@ -146,26 +139,43 @@ async def websocket_handler(request):
         async for msg in ws: pass
     finally: app_state['websockets'].remove(ws)
     return ws
-async def bandwidth_calculator(app):
+
+async def performance_calculator(app):
     last_processed_ts = 0.0
     while True:
-        await asyncio.sleep(BANDWIDTH_INTERVAL_SECONDS);
+        await asyncio.sleep(PERFORMANCE_INTERVAL_SECONDS);
         if not app_state['live_events']: continue
+        now = time.time()
+        
         ingress_bytes, egress_bytes, ingress_pieces, egress_pieces = 0, 0, 0, 0
+        
+        # Concurrency: count events in the last second
+        concurrency = sum(1 for event in reversed(app_state['live_events']) if event['ts_unix'] > now - 1)
+
         if last_processed_ts == 0.0: last_processed_ts = app_state['live_events'][-1]['ts_unix']
         newest_ts_in_batch = last_processed_ts
         for event in reversed(app_state['live_events']):
             if event['ts_unix'] <= last_processed_ts: break
             if 'GET' in event['action']:
-                egress_bytes += event['size']
-                egress_pieces += 1
+                egress_bytes += event['size']; egress_pieces += 1
             else:
-                ingress_bytes += event['size']
-                ingress_pieces += 1
+                ingress_bytes += event['size']; ingress_pieces += 1
             if event['ts_unix'] > newest_ts_in_batch: newest_ts_in_batch = event['ts_unix']
         last_processed_ts = newest_ts_in_batch
-        payload = { "type": "bandwidth", "timestamp": datetime.datetime.utcnow().isoformat(), "ingress_mbps": round((ingress_bytes * 8) / (BANDWIDTH_INTERVAL_SECONDS * 1e6), 2), "egress_mbps": round((egress_bytes * 8) / (BANDWIDTH_INTERVAL_SECONDS * 1e6), 2), "ingress_bytes": ingress_bytes, "egress_bytes": egress_bytes, "ingress_pieces": ingress_pieces, "egress_pieces": egress_pieces }
+        
+        payload = { 
+            "type": "performance_update", 
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "ingress_mbps": round((ingress_bytes * 8) / (PERFORMANCE_INTERVAL_SECONDS * 1e6), 2), 
+            "egress_mbps": round((egress_bytes * 8) / (PERFORMANCE_INTERVAL_SECONDS * 1e6), 2),
+            "ingress_bytes": ingress_bytes, 
+            "egress_bytes": egress_bytes, 
+            "ingress_pieces": ingress_pieces, 
+            "egress_pieces": egress_pieces,
+            "concurrency": concurrency
+        }
         for ws in set(app_state['websockets']): await ws.send_json(payload)
+
 async def prune_live_events_task(app):
     while True:
         await asyncio.sleep(60); cutoff_unix = time.time() - (STATS_WINDOW_MINUTES * 60)
@@ -178,52 +188,81 @@ def blocking_hourly_aggregation():
     hour_start_iso = hour_start.isoformat(); next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
-        stats = conn.execute("SELECT SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' THEN 1 ELSE 0 END) as dl_s, SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' THEN 1 ELSE 0 END) as dl_f, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s, SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f FROM events WHERE timestamp >= ? AND timestamp < ?", (hour_start_iso, next_hour_start_iso)).fetchone()
+        stats = conn.execute("SELECT SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_s, SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_f, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s, SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f, SUM(CASE WHEN action = 'GET_AUDIT' AND status = 'success' THEN 1 ELSE 0 END) as audit_s, SUM(CASE WHEN action = 'GET_AUDIT' AND status != 'success' THEN 1 ELSE 0 END) as audit_f FROM events WHERE timestamp >= ? AND timestamp < ?", (hour_start_iso, next_hour_start_iso)).fetchone()
         if stats and stats['dl_s'] is not None:
-            conn.execute("INSERT INTO hourly_stats VALUES (?, ?, ?, ?, ?) ON CONFLICT(hour_timestamp) DO UPDATE SET dl_success=excluded.dl_success, dl_fail=excluded.dl_fail, ul_success=excluded.ul_success, ul_fail=excluded.ul_fail",
-                         (hour_start_iso, stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f']))
+            conn.execute("INSERT INTO hourly_stats VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(hour_timestamp) DO UPDATE SET dl_success=excluded.dl_success, dl_fail=excluded.dl_fail, ul_success=excluded.ul_success, ul_fail=excluded.ul_fail, audit_success=excluded.audit_success, audit_fail=excluded.audit_fail",
+                         (hour_start_iso, stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f'], stats['audit_s'], stats['audit_f']))
             conn.commit()
 async def hourly_aggregator_task(app):
     while True:
         loop = asyncio.get_running_loop(); await loop.run_in_executor(app['db_executor'], blocking_hourly_aggregation)
         await asyncio.sleep(60 * HOURLY_AGG_INTERVAL_MINUTES)
 async def broadcast_full_stats(app, target_ws=None):
-    dl_success, dl_fail, ul_success, ul_fail = 0, 0, 0, 0; satellites, dl_sizes, ul_sizes = {}, {}, {}
+    # --- Overall Counters ---
+    dl_success, dl_fail, ul_success, ul_fail, audit_success, audit_fail = 0, 0, 0, 0, 0, 0
+    # --- Detail Aggregators ---
+    satellites = {}
+    dl_sizes, ul_sizes = Counter(), Counter()
+    countries_dl, countries_ul = Counter(), Counter()
+    hot_pieces = Counter()
+    error_reasons = Counter()
     first_event_ts, last_event_ts = None, None
     if app_state['live_events']: first_event_ts, last_event_ts = app_state['live_events'][0]['timestamp'].isoformat(), app_state['live_events'][-1]['timestamp'].isoformat()
+    
     for event in app_state['live_events']:
-        is_dl = 'GET' in event['action']
-        if event['status'] == 'success':
-            if is_dl: dl_success += 1
-            else: ul_success += 1
-        else:
-            if is_dl: dl_fail += 1
-            else: ul_fail += 1
-        sat_id = event['satellite_id'];
+        action, status, sat_id, size, country = event['action'], event['status'], event['satellite_id'], event['size'], event['location']['country']
+        
+        # --- Satellite Stats Initialization ---
         if sat_id not in satellites:
-            satellites[sat_id] = {'uploads': 0, 'downloads': 0, 'total_upload_size': 0, 'total_download_size': 0}
-        if is_dl:
+            satellites[sat_id] = {'uploads': 0, 'downloads': 0, 'audits': 0, 'ul_success': 0, 'dl_success': 0, 'audit_success': 0, 'total_upload_size': 0, 'total_download_size': 0}
+
+        # --- Categorize and Count ---
+        if action == 'GET_AUDIT':
+            satellites[sat_id]['audits'] += 1
+            if status == 'success': audit_success += 1; satellites[sat_id]['audit_success'] += 1
+            else: audit_fail += 1; error_reasons[event['error_reason']] += 1
+        elif 'GET' in action:
             satellites[sat_id]['downloads'] += 1
-            satellites[sat_id]['total_download_size'] += event['size']
-        else:
+            satellites[sat_id]['total_download_size'] += size
+            countries_dl[country] += size
+            dl_sizes[get_size_bucket(size)] += 1
+            hot_pieces[event['piece_id']] += 1
+            if status == 'success': dl_success += 1; satellites[sat_id]['dl_success'] += 1
+            else: dl_fail += 1; error_reasons[event['error_reason']] += 1
+        else: # PUT
             satellites[sat_id]['uploads'] += 1
-            satellites[sat_id]['total_upload_size'] += event['size']
-        size_bucket = get_size_bucket(event['size'])
-        if is_dl: dl_sizes[size_bucket] = dl_sizes.get(size_bucket, 0) + 1
-        else: ul_sizes[size_bucket] = ul_sizes.get(size_bucket, 0) + 1
+            satellites[sat_id]['total_upload_size'] += size
+            countries_ul[country] += size
+            ul_sizes[get_size_bucket(size)] += 1
+            if status == 'success': ul_success += 1; satellites[sat_id]['ul_success'] += 1
+            else: ul_fail += 1; error_reasons[event['error_reason']] += 1
+
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
         current_hour_start_iso = datetime.datetime.now().astimezone().replace(minute=0, second=0, microsecond=0).isoformat()
         historical_stats = [dict(row) for row in conn.execute("SELECT * FROM hourly_stats WHERE hour_timestamp < ? ORDER BY hour_timestamp DESC LIMIT ?", (current_hour_start_iso, HISTORICAL_HOURS_TO_SHOW)).fetchall()]
+    
+    # --- Prepare payload ---
     sat_list = [{'satellite_id': k, **v} for k, v in satellites.items()]
-    dl_sizes_list = [{'bucket': k, 'count': v} for k, v in dl_sizes.items()]
-    ul_sizes_list = [{'bucket': k, 'count': v} for k, v in ul_sizes.items()]
-    payload = { "type": "stats_update", "first_event_iso": first_event_ts, "last_event_iso": last_event_ts, "overall": {"dl_success": dl_success, "dl_fail": dl_fail, "ul_success": ul_success, "ul_fail": ul_fail},
-                "satellites": sorted(sat_list, key=lambda x: x['uploads'] + x['downloads'], reverse=True), "download_sizes": sorted(dl_sizes_list, key=lambda x: x['count'], reverse=True)[:10],
-                "upload_sizes": sorted(ul_sizes_list, key=lambda x: x['count'], reverse=True)[:10], "historical_stats": historical_stats }
-    if target_ws: await target_ws.send_json(payload)
-    else:
-        for ws in set(app_state['websockets']): await ws.send_json(payload)
+    payload = { 
+        "type": "stats_update", 
+        "first_event_iso": first_event_ts, 
+        "last_event_iso": last_event_ts, 
+        "overall": {"dl_success": dl_success, "dl_fail": dl_fail, "ul_success": ul_success, "ul_fail": ul_fail, "audit_success": audit_success, "audit_fail": audit_fail},
+        "satellites": sorted(sat_list, key=lambda x: x['uploads'] + x['downloads'], reverse=True), 
+        "download_sizes": [{'bucket': k, 'count': v} for k, v in dl_sizes.most_common(10)],
+        "upload_sizes": [{'bucket': k, 'count': v} for k, v in ul_sizes.most_common(10)],
+        "historical_stats": historical_stats,
+        "error_categories": [{'reason': k, 'count': v} for k,v in error_reasons.most_common(5)],
+        "top_pieces": [{'id': k, 'count': v} for k,v in hot_pieces.most_common(5)],
+        "top_countries_dl": [{'country': k, 'size': v} for k,v in countries_dl.most_common(5)],
+        "top_countries_ul": [{'country': k, 'size': v} for k,v in countries_ul.most_common(5)],
+    }
+    
+    # --- Broadcast ---
+    target_ws_list = [target_ws] if target_ws else set(app_state['websockets'])
+    for ws in target_ws_list: await ws.send_json(payload)
+
 def blocking_db_cleanup():
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         cutoff_time = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=DB_MAX_DATA_AGE_HOURS)).isoformat()
@@ -241,11 +280,11 @@ async def start_background_tasks(app):
     app['prune_task'] = asyncio.create_task(prune_live_events_task(app))
     app['stats_task'] = asyncio.create_task(periodic_stats_updater(app))
     app['db_cleanup_task'] = asyncio.create_task(cleanup_db_task(app))
-    app['bandwidth_task'] = asyncio.create_task(bandwidth_calculator(app))
+    app['performance_task'] = asyncio.create_task(performance_calculator(app)) # Renamed
     app['hourly_agg_task'] = asyncio.create_task(hourly_aggregator_task(app))
     app['db_writer_task'] = asyncio.create_task(database_writer_task(app))
 async def cleanup_background_tasks(app):
-    app['log_tailer_task'].cancel(); app['stats_task'].cancel(); app['db_cleanup_task'].cancel(); app['prune_task'].cancel(); app['bandwidth_task'].cancel(); app['hourly_agg_task'].cancel(); app['db_writer_task'].cancel()
+    app['log_tailer_task'].cancel(); app['stats_task'].cancel(); app['db_cleanup_task'].cancel(); app['prune_task'].cancel(); app['performance_task'].cancel(); app['hourly_agg_task'].cancel(); app['db_writer_task'].cancel()
     app['db_executor'].shutdown()
 
 if __name__ == "__main__":
