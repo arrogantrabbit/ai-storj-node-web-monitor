@@ -9,9 +9,12 @@
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color 0.3s, color 0.3s; }
         .container { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; max-width: 1800px; margin: auto; }
         .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s; }
-        .header-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 0; }
+        .header-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 0; flex-wrap: wrap; }
         h1 { margin: 0; font-size: 1.8em; color: #1c1e21; }
-        #node-selector { font-size: 1em; padding: 8px; border-radius: 6px; border: 1px solid #ddd; background-color: #fff; }
+        #node-selector { font-size: 1em; padding: 8px; border-radius: 6px; }
+        #node-selector .node-link { margin: 0 8px; text-decoration: none; color: #007bff; cursor: pointer; }
+        #node-selector .node-link.active { font-weight: bold; text-decoration: underline; }
+
         h3 { border-bottom: 1px solid #ddd; padding-bottom: 8px; margin-bottom: 15px; }
         .card-title { margin-top: 0; }
         .card-content { flex-grow: 1; }
@@ -58,9 +61,8 @@
             .stat-label { color: #888; }
             .info-table th, .info-table td { border-bottom-color: #333; }
             .info-table th { color: #aaa; }
-            .toggle-link { color: #4dabf7; }
+            .toggle-link, #node-selector .node-link { color: #4dabf7; }
             #map { background-color: #333; }
-            #node-selector { background-color: #2c2c2c; color: #e0e0e0; border-color: #444; }
             .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(95%) contrast(90%); }
         }
     </style>
@@ -72,9 +74,9 @@
     <div class="container">
         <div class="card header-card">
             <h1>Storagenode Pro Monitor</h1>
-            <select id="node-selector" title="Select a node to view or show an aggregate of all nodes">
-                <option>Loading...</option>
-            </select>
+            <div id="node-selector" title="Select a node to view or show an aggregate of all nodes">
+                <span>Loading...</span>
+            </div>
         </div>
 
 
@@ -391,7 +393,6 @@
             const nodeNames = availableNodes.filter(n => n !== 'Aggregate');
             if (nodeNames.length === 0) return;
 
-            // Find all unique timestamps across all nodes and all metrics
             const allTimestamps = new Set();
             nodeNames.forEach(node => {
                 Object.values(performanceData[node]).forEach(seriesPair => {
@@ -457,19 +458,27 @@
             }
         });
 
-        document.getElementById('node-selector').addEventListener('change', function(e) {
-            currentNodeView = e.target.value;
-            if(ws && ws.readyState === WebSocket.OPEN) {
-                Object.values(Chart.instances).forEach(chart => {
-                    chart.data.datasets.forEach(dataset => dataset.data = []);
-                    chart.update('none');
-                });
-                ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView }));
-            }
-            // We need to call this to hide/show the aggregation toggle
-            updatePerformanceChart();
-        });
+        document.getElementById('node-selector').addEventListener('click', function(e) {
+            e.preventDefault();
+            if (e.target.classList.contains('node-link')) {
+                const newView = e.target.getAttribute('data-view');
+                if (newView === currentNodeView) return;
 
+                currentNodeView = newView;
+
+                document.querySelectorAll('#node-selector .node-link').forEach(el => el.classList.remove('active'));
+                e.target.classList.add('active');
+
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    Object.values(Chart.instances).forEach(chart => {
+                        chart.data.datasets.forEach(dataset => dataset.data = []);
+                        chart.update('none');
+                    });
+                    ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView }));
+                }
+                updatePerformanceChart();
+            }
+        });
 
         // --- WebSocket Connection ---
         let ws;
@@ -490,13 +499,18 @@
                             const selector = document.getElementById('node-selector');
                             selector.innerHTML = '';
                             data.nodes.forEach(name => {
-                                const option = document.createElement('option');
-                                option.value = name;
-                                option.textContent = name;
-                                selector.appendChild(option);
+                                const link = document.createElement('a');
+                                link.href = '#';
+                                link.className = 'node-link';
+                                link.textContent = name;
+                                link.setAttribute('data-view', name);
+                                if (name === currentNodeView) {
+                                    link.classList.add('active');
+                                }
+                                selector.appendChild(link);
                             });
                             initializePerformanceData(data.nodes.filter(n => n !== 'Aggregate'));
-                            updatePerformanceChart(); // Initial call to set toggle visibility
+                            updatePerformanceChart();
                             break;
                         case 'log_entry':
                             if (data.location && data.location.lat) {
@@ -538,7 +552,6 @@
                                 }
                             });
 
-                            // Live aggregate calculation
                             Object.keys(aggregatedPerformanceData).forEach(metric => {
                                 const isConcurrency = metric === 'concurrency';
                                 const numSeries = isConcurrency ? 1 : 2;
@@ -560,7 +573,6 @@
                                 }
                             });
 
-                            // Pruning
                             Object.values(performanceData).forEach(nodePerf => {
                                 for (const key in nodePerf) {
                                     while (nodePerf[key][0].length > MAX_PERF_POINTS) nodePerf[key][0].shift();
