@@ -13,7 +13,7 @@
         h3 { border-bottom: 1px solid #ddd; padding-bottom: 8px; margin-bottom: 15px; }
         .card-title { margin-top: 0; }
         .card-content { flex-grow: 1; }
-        
+
         #map-card { grid-column: 1 / 8; grid-row: 2 / 4; }
         #map { height: 620px; border-radius: 8px; background-color: #aad3df; }
         #stats-card { grid-column: 8 / 13; grid-row: 2 / 3; }
@@ -27,15 +27,15 @@
         .stat-value { font-size: 2em; font-weight: bold; }
         .stat-label { font-size: 0.9em; color: #606770; }
         .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        
+
         .info-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
         .info-table th, .info-table td { text-align: left; padding: 6px; border-bottom: 1px solid #eee; }
         .info-table th { color: #606770; }
-        .info-table tr td:last-child { text-align: right; font-weight: bold; }
+        .info-table td.numeric { text-align: right; }
         .piece-id { font-family: monospace; font-size: 0.9em; }
 
         .pie-chart-container { width: 48%; }
-        
+
         .chart-header { display: flex; justify-content: space-between; align-items: center; }
         .chart-header h3 { border-bottom: none; margin-bottom: 15px; }
         .toggle-link { font-size: 0.8em; cursor: pointer; text-decoration: none; color: #007bff; margin: 0 4px; }
@@ -66,24 +66,26 @@
     </div>
     <div class="container">
         <h1>Storagenode Pro Monitor</h1>
-        
+
         <div id="map-card" class="card"><h3 class="card-title">Live Traffic Heatmap</h3><div id="map"></div></div>
-        
+
         <div id="stats-card" class="card">
-            <h3 id="stats-title" class="card-title">Overall Success Rates</h3>
+            <h3 id="stats-title" class="card-title">Overall Success Rates & Speed</h3>
             <div class="stats-grid card-content">
                 <div class="stat"><div id="dl-rate" class="stat-value">...%</div><div class="stat-label">Download Success</div><small>(<span id="dl-success">0</span> / <span id="dl-total">0</span>)</small></div>
                 <div class="stat"><div id="ul-rate" class="stat-value">...%</div><div class="stat-label">Upload Success</div><small>(<span id="ul-success">0</span> / <span id="ul-total">0</span>)</small></div>
+                <div class="stat"><div id="dl-speed" class="stat-value">... Mbps</div><div class="stat-label">Download Speed</div></div>
+                <div class="stat"><div id="ul-speed" class="stat-value">... Mbps</div><div class="stat-label">Upload Speed</div></div>
             </div>
         </div>
-        
+
         <div id="health-card" class="card">
              <h3 class="card-title">Node Health & History</h3>
              <div class="stats-grid">
                 <div class="stat"><div id="audit-rate" class="stat-value">...%</div><div class="stat-label">Audit Success</div><small>(<span id="audit-success">0</span> / <span id="audit-total">0</span>)</small></div>
              </div>
              <table class="info-table" style="margin-top: 15px;">
-                <thead><tr><th>Time</th><th style="text-align: right;">DL %</th><th style="text-align: right;">UL %</th><th style="text-align: right;">Audit %</th></tr></thead>
+                <thead><tr><th>Time</th><th style="text-align: right;">DL %</th><th style="text-align: right;">UL %</th><th style="text-align: right;">Audit %</th><th style="text-align: right;">DL Speed</th><th style="text-align: right;">UL Speed</th></tr></thead>
                 <tbody id="history-body"></tbody>
             </table>
         </div>
@@ -167,18 +169,18 @@
         }
 
         const SATELLITE_NAMES = { '121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1', '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1', '12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs': 'eu1', '1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE': 'saltlake' };
-        
+
         // --- Chart Initialization ---
-        const performanceChart = new Chart(document.getElementById('performanceChart').getContext('2d'), { 
-            type: 'line', 
-            data: { datasets: [{ label: 'Ingress (Upload)', data: [], borderColor: UPLOAD_COLOR, tension: 0.2 }, { label: 'Egress (Download)', data: [], borderColor: DOWNLOAD_COLOR, tension: 0.2 }] }, 
-            options: { scales: { x: { type: 'time', time: { unit: 'minute' } }, y: { beginAtZero: true, title: { display: true, text: 'Mbps'} } } } 
+        const performanceChart = new Chart(document.getElementById('performanceChart').getContext('2d'), {
+            type: 'line',
+            data: { datasets: [{ label: 'Ingress (Upload)', data: [], borderColor: UPLOAD_COLOR, tension: 0.2 }, { label: 'Egress (Download)', data: [], borderColor: DOWNLOAD_COLOR, tension: 0.2 }] },
+            options: { scales: { x: { type: 'time', time: { unit: 'minute' } }, y: { beginAtZero: true, title: { display: true, text: 'Mbps'} } } }
         });
         const satelliteChart = new Chart(document.getElementById('satelliteChart').getContext('2d'), {
             type: 'bar',
             data: { labels: [], datasets: [{ label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Downloads/Audits', data: [], backgroundColor: DOWNLOAD_COLOR }] },
-            options: { 
-                indexAxis: 'y', responsive: true, maintainAspectRatio: false, 
+            options: {
+                indexAxis: 'y', responsive: true, maintainAspectRatio: false,
                 scales: { x: { stacked: true }, y: { stacked: true } },
                 plugins: {
                     tooltip: {
@@ -186,7 +188,7 @@
                             footer: function(tooltipItems) {
                                 const context = tooltipItems[0];
                                 if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return '';
-                                
+
                                 const satData = lastSatelliteData[context.dataIndex];
                                 const lines = [];
 
@@ -233,23 +235,23 @@
             const dlRate = totalDownloads > 0 ? (stats.dl_success / totalDownloads * 100).toFixed(2) : '100.00';
             const ulRate = totalUploads > 0 ? (stats.ul_success / totalUploads * 100).toFixed(2) : '100.00';
             const auditRate = totalAudits > 0 ? (stats.audit_success / totalAudits * 100).toFixed(2) : '100.00';
-            
+
             document.getElementById('dl-rate').textContent = `${dlRate}%`;
             document.getElementById('dl-rate').className = `stat-value ${getRateClass(parseFloat(dlRate))}`;
             document.getElementById('dl-success').textContent = stats.dl_success;
             document.getElementById('dl-total').textContent = totalDownloads;
-            
+
             document.getElementById('ul-rate').textContent = `${ulRate}%`;
             document.getElementById('ul-rate').className = `stat-value ${getRateClass(parseFloat(ulRate))}`;
             document.getElementById('ul-success').textContent = stats.ul_success;
             document.getElementById('ul-total').textContent = totalUploads;
-            
+
             document.getElementById('audit-rate').textContent = `${auditRate}%`;
             document.getElementById('audit-rate').className = `stat-value ${getRateClass(parseFloat(auditRate))}`;
             document.getElementById('audit-success').textContent = stats.audit_success;
             document.getElementById('audit-total').textContent = totalAudits;
         }
-        
+
         function updateSatelliteChart(satStats) {
             lastSatelliteData = satStats;
             satelliteChart.data.labels = satStats.map(s => SATELLITE_NAMES[s.satellite_id] || s.satellite_id.substring(0, 12));
@@ -268,7 +270,7 @@
             }
             satelliteChart.update();
         }
-        
+
         function updatePieChart(chart, sizeData) {
             chart.data.labels = sizeData.map(d => d.bucket);
             chart.data.datasets[0].data = sizeData.map(d => d.count);
@@ -279,35 +281,40 @@
             const formatTime = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             let timeWindowStr = "(Last 60 Mins)";
             if (firstIso && lastIso) { timeWindowStr = `(${formatTime(new Date(firstIso))} - ${formatTime(new Date(lastIso))})`; }
-            document.getElementById('stats-title').textContent = `Overall Success Rates ${timeWindowStr}`;
+            document.getElementById('stats-title').textContent = `Overall Success Rates & Speed ${timeWindowStr}`;
             document.getElementById('satellite-title').textContent = `Traffic by Satellite ${timeWindowStr}`;
         }
-        
+
         function updateHistoricalTable(history) {
             const tbody = document.getElementById('history-body');
             tbody.innerHTML = '';
             if (!history || history.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center;">No historical data yet.</td></tr>'; return;
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No historical data yet.</td></tr>'; return;
             }
             for (const hour of history) {
                 const totalDl = hour.dl_success + hour.dl_fail, dlRate = totalDl > 0 ? (hour.dl_success / totalDl * 100) : 100;
                 const totalUl = hour.ul_success + hour.ul_fail, ulRate = totalUl > 0 ? (hour.ul_success / totalUl * 100) : 100;
                 const totalAudit = hour.audit_success + hour.audit_fail, auditRate = totalAudit > 0 ? (hour.audit_success / totalAudit * 100) : 100;
+                const dlSpeed = hour.dl_mbps !== undefined ? hour.dl_mbps.toFixed(2) : '...';
+                const ulSpeed = hour.ul_mbps !== undefined ? hour.ul_mbps.toFixed(2) : '...';
+
                 const row = tbody.insertRow();
                 row.innerHTML = `<td>${new Date(hour.hour_timestamp).toLocaleTimeString([], { hour: 'numeric' })}</td>
-                    <td class="${getRateClass(dlRate)}">${dlRate.toFixed(2)}%</td>
-                    <td class="${getRateClass(ulRate)}">${ulRate.toFixed(2)}%</td>
-                    <td class="${getRateClass(auditRate)}">${auditRate.toFixed(2)}%</td>`;
+                    <td class="numeric ${getRateClass(dlRate)}">${dlRate.toFixed(2)}%</td>
+                    <td class="numeric ${getRateClass(ulRate)}">${ulRate.toFixed(2)}%</td>
+                    <td class="numeric ${getRateClass(auditRate)}">${auditRate.toFixed(2)}%</td>
+                    <td class="numeric">${dlSpeed} Mbps</td>
+                    <td class="numeric">${ulSpeed} Mbps</td>`;
             }
         }
-        
+
         function updateAnalysisTables(data) {
             const errorBody = document.getElementById('error-body'); errorBody.innerHTML = '';
             data.error_categories.forEach(e => errorBody.innerHTML += `<tr><td>${e.reason}</td><td>${e.count}</td></tr>`);
-            
+
             const piecesBody = document.getElementById('pieces-body'); piecesBody.innerHTML = '';
             data.top_pieces.forEach(p => piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,20)}...</td><td>${p.count}</td></tr>`);
-            
+
             const countriesDlBody = document.getElementById('countries-dl-body'); countriesDlBody.innerHTML = '';
             data.top_countries_dl.forEach(c => countriesDlBody.innerHTML += `<tr><td>${c.country}</td><td>${formatBytes(c.size)}</td></tr>`);
 
@@ -319,17 +326,17 @@
             const viewTitles = { rate: 'Live Performance (Mbps)', volume: 'Data Volume (MB)', pieces: 'Pieces', concurrency: 'Active Operations' };
             const yAxisTitles = { rate: 'Mbps', volume: 'MB', pieces: 'Count', concurrency: 'Concurrent Ops' };
             document.getElementById('performance-title').textContent = viewTitles[performanceChartView];
-            
+
             performanceChart.data.datasets[0].data = performanceData[performanceChartView][0];
             performanceChart.options.scales.y.title.text = yAxisTitles[performanceChartView];
-            
+
             const isConcurrency = performanceChartView === 'concurrency';
             performanceChart.data.datasets[1].hidden = isConcurrency;
             performanceChart.data.datasets[0].label = isConcurrency ? 'Operations' : 'Ingress (Upload)';
             if (!isConcurrency) {
                 performanceChart.data.datasets[1].data = performanceData[performanceChartView][1];
             }
-            
+
             performanceChart.update('none');
         }
 
@@ -358,9 +365,9 @@
             connect: function() {
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
-                
+
                 ws.onopen = () => { console.log("WebSocket established."); this.overlay.style.display = 'none'; this.reconnectDelay = 1000; };
-                
+
                 ws.onmessage = (event) => {
                     const data = JSON.parse(event.data);
                     switch(data.type) {
@@ -380,7 +387,14 @@
                             performanceData.pieces[0].push({ x: now, y: data.ingress_pieces });
                             performanceData.pieces[1].push({ x: now, y: data.egress_pieces });
                             performanceData.concurrency[0].push({ x: now, y: data.concurrency });
-                            
+
+                            if (data.avg_egress_mbps !== undefined) {
+                                document.getElementById('dl-speed').textContent = `${data.avg_egress_mbps.toFixed(2)} Mbps`;
+                            }
+                            if (data.avg_ingress_mbps !== undefined) {
+                                document.getElementById('ul-speed').textContent = `${data.avg_ingress_mbps.toFixed(2)} Mbps`;
+                            }
+
                             for (const key in performanceData) {
                                 if(performanceData[key][0].length > 150) {
                                     performanceData[key][0].shift();
@@ -394,19 +408,19 @@
                             break;
                     }
                 };
-                
+
                 ws.onclose = (event) => {
                     console.log(`WebSocket closed. Reconnecting...`);
                     this.overlay.style.display = 'flex';
                     setTimeout(() => this.connect(), this.reconnectDelay);
                     this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2);
                 };
-                
+
                 ws.onerror = (err) => { console.error("WebSocket error:", err); ws.close(); };
             }
         };
         connectionManager.connect();
-        
+
         // --- Dark Mode Chart Handler ---
         function updateChartColors(isDarkMode) {
             const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
