@@ -9,7 +9,9 @@
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color 0.3s, color 0.3s; }
         .container { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; max-width: 1800px; margin: auto; }
         .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s; }
-        h1 { grid-column: 1 / -1; text-align: center; color: #1c1e21; }
+        .header-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 0; }
+        h1 { margin: 0; font-size: 1.8em; color: #1c1e21; }
+        #node-selector { font-size: 1em; padding: 8px; border-radius: 6px; border: 1px solid #ddd; background-color: #fff; }
         h3 { border-bottom: 1px solid #ddd; padding-bottom: 8px; margin-bottom: 15px; }
         .card-title { margin-top: 0; }
         .card-content { flex-grow: 1; }
@@ -40,6 +42,8 @@
         .chart-header h3 { border-bottom: none; margin-bottom: 15px; }
         .toggle-link { font-size: 0.8em; cursor: pointer; text-decoration: none; color: #007bff; margin: 0 4px; }
         .toggle-link.active { font-weight: bold; text-decoration: underline; }
+        #aggregation-toggles { text-align: right; margin-top: 4px; font-size: 0.9em; }
+
 
         .rate-good { color: #22c55e; }
         .rate-ok { color: #f59e0b; }
@@ -56,6 +60,7 @@
             .info-table th { color: #aaa; }
             .toggle-link { color: #4dabf7; }
             #map { background-color: #333; }
+            #node-selector { background-color: #2c2c2c; color: #e0e0e0; border-color: #444; }
             .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(95%) contrast(90%); }
         }
     </style>
@@ -65,7 +70,13 @@
         <div><p>Connection Lost</p><p style="font-size: 0.6em;">Attempting to reconnect...</p></div>
     </div>
     <div class="container">
-        <h1>Storagenode Pro Monitor</h1>
+        <div class="card header-card">
+            <h1>Storagenode Pro Monitor</h1>
+            <select id="node-selector" title="Select a node to view or show an aggregate of all nodes">
+                <option>Loading...</option>
+            </select>
+        </div>
+
 
         <div id="map-card" class="card"><h3 class="card-title">Live Traffic Heatmap</h3><div id="map"></div></div>
 
@@ -74,8 +85,8 @@
             <div class="stats-grid card-content">
                 <div class="stat"><div id="dl-rate" class="stat-value">...%</div><div class="stat-label">Download Success</div><small>(<span id="dl-success">0</span> / <span id="dl-total">0</span>)</small></div>
                 <div class="stat"><div id="ul-rate" class="stat-value">...%</div><div class="stat-label">Upload Success</div><small>(<span id="ul-success">0</span> / <span id="ul-total">0</span>)</small></div>
-                <div class="stat"><div id="dl-speed" class="stat-value">... Mbps</div><div class="stat-label">Download Speed</div></div>
-                <div class="stat"><div id="ul-speed" class="stat-value">... Mbps</div><div class="stat-label">Upload Speed</div></div>
+                <div class="stat"><div id="dl-speed" class="stat-value">... Mbps</div><div class="stat-label" id="dl-speed-label">Download Speed</div></div>
+                <div class="stat"><div id="ul-speed" class="stat-value">... Mbps</div><div class="stat-label" id="ul-speed-label">Upload Speed</div></div>
             </div>
         </div>
 
@@ -93,8 +104,15 @@
         <div id="performance-card" class="card">
             <div class="chart-header">
                 <h3 id="performance-title" class="card-title">Live Performance</h3>
-                <div id="performance-toggles">
-                    <a href="#" class="toggle-link active" data-view="rate">Rate (Mbps)</a> | <a href="#" class="toggle-link" data-view="volume">Volume (MB)</a> | <a href="#" class="toggle-link" data-view="pieces">Pieces</a> | <a href="#" class="toggle-link" data-view="concurrency">Concurrency</a>
+                <div>
+                     <div id="performance-toggles">
+                        <a href="#" class="toggle-link active" data-view="rate">Rate (Mbps)</a> | <a href="#" class="toggle-link" data-view="volume">Volume (MB)</a> | <a href="#" class="toggle-link" data-view="pieces">Pieces</a> | <a href="#" class="toggle-link" data-view="concurrency">Concurrency</a>
+                    </div>
+                    <div id="aggregation-toggles">
+                        <small>Aggregate:</small>
+                        <a href="#" class="toggle-link active" data-agg="sum">Sum</a> |
+                        <a href="#" class="toggle-link" data-agg="avg">Average</a>
+                   </div>
                 </div>
             </div>
             <div class="card-content"><canvas id="performanceChart"></canvas></div>
@@ -150,9 +168,15 @@
         // --- Constants & State ---
         const DOWNLOAD_COLOR = '#0ea5e9'; const UPLOAD_COLOR = '#22c55e';
         const PIE_CHART_COLORS = ['#36A2EB', '#FF6384', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40', '#E7E9ED'];
+        const PERFORMANCE_INTERVAL_MS = 2000;
+        const MAX_PERF_POINTS = 150;
         let satelliteViewIsBySize = false; let lastSatelliteData = [];
         let performanceChartView = 'rate';
-        const performanceData = { rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[], []] };
+        let performanceAggregationMode = 'sum';
+        let performanceData = {}; // Structured as { nodeName: { rate: [[],[]], ... }, ... }
+        let aggregatedPerformanceData = {};
+        let currentNodeView = 'Aggregate';
+        let availableNodes = [];
 
         // --- Helper Functions ---
         function formatBytes(bytes, decimals = 2) {
@@ -188,25 +212,14 @@
                             footer: function(tooltipItems) {
                                 const context = tooltipItems[0];
                                 if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return '';
-
                                 const satData = lastSatelliteData[context.dataIndex];
                                 const lines = [];
-
                                 const totalDl = satData.downloads;
-                                if (totalDl > 0) {
-                                    const rate = (satData.dl_success / totalDl * 100).toFixed(2);
-                                    lines.push(`DL Success: ${rate}% (${satData.dl_success}/${totalDl})`);
-                                }
+                                if (totalDl > 0) { lines.push(`DL Success: ${(satData.dl_success / totalDl * 100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); }
                                 const totalUl = satData.uploads;
-                                if (totalUl > 0) {
-                                    const rate = (satData.ul_success / totalUl * 100).toFixed(2);
-                                    lines.push(`UL Success: ${rate}% (${satData.ul_success}/${totalUl})`);
-                                }
+                                if (totalUl > 0) { lines.push(`UL Success: ${(satData.ul_success / totalUl * 100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); }
                                 const totalAudit = satData.audits;
-                                if (totalAudit > 0) {
-                                    const rate = (satData.audit_success / totalAudit * 100).toFixed(2);
-                                    lines.push(`Audit Success: ${rate}% (${satData.audit_success}/${totalAudit})`);
-                                }
+                                if (totalAudit > 0) { lines.push(`Audit Success: ${(satData.audit_success / totalAudit * 100).toFixed(2)}% (${satData.audit_success}/${totalAudit})`); }
                                 return lines;
                             }
                         }
@@ -246,6 +259,9 @@
             document.getElementById('ul-success').textContent = stats.ul_success;
             document.getElementById('ul-total').textContent = totalUploads;
 
+            document.getElementById('dl-speed').textContent = `${(stats.avg_egress_mbps || 0).toFixed(2)} Mbps`;
+            document.getElementById('ul-speed').textContent = `${(stats.avg_ingress_mbps || 0).toFixed(2)} Mbps`;
+
             document.getElementById('audit-rate').textContent = `${auditRate}%`;
             document.getElementById('audit-rate').className = `stat-value ${getRateClass(parseFloat(auditRate))}`;
             document.getElementById('audit-success').textContent = stats.audit_success;
@@ -281,8 +297,12 @@
             const formatTime = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             let timeWindowStr = "(Last 60 Mins)";
             if (firstIso && lastIso) { timeWindowStr = `(${formatTime(new Date(firstIso))} - ${formatTime(new Date(lastIso))})`; }
-            document.getElementById('stats-title').textContent = `Overall Success Rates & Speed ${timeWindowStr}`;
-            document.getElementById('satellite-title').textContent = `Traffic by Satellite ${timeWindowStr}`;
+
+            const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`;
+            document.getElementById('stats-title').textContent = `Overall Success Rates & Speed${viewName} ${timeWindowStr}`;
+            document.getElementById('satellite-title').textContent = `Traffic by Satellite${viewName} ${timeWindowStr}`;
+            document.getElementById('dl-speed-label').textContent = currentNodeView === 'Aggregate' ? 'Total Download Speed' : 'Download Speed';
+            document.getElementById('ul-speed-label').textContent = currentNodeView === 'Aggregate' ? 'Total Upload Speed' : 'Upload Speed';
         }
 
         function updateHistoricalTable(history) {
@@ -323,22 +343,91 @@
         }
 
         function updatePerformanceChart() {
+            const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`;
             const viewTitles = { rate: 'Live Performance (Mbps)', volume: 'Data Volume (MB)', pieces: 'Pieces', concurrency: 'Active Operations' };
             const yAxisTitles = { rate: 'Mbps', volume: 'MB', pieces: 'Count', concurrency: 'Concurrent Ops' };
-            document.getElementById('performance-title').textContent = viewTitles[performanceChartView];
+            document.getElementById('performance-title').textContent = viewTitles[performanceChartView] + viewName;
 
-            performanceChart.data.datasets[0].data = performanceData[performanceChartView][0];
-            performanceChart.options.scales.y.title.text = yAxisTitles[performanceChartView];
+            document.getElementById('aggregation-toggles').style.display = (currentNodeView === 'Aggregate') ? 'block' : 'none';
+
+            const dataToDisplay = (currentNodeView === 'Aggregate') ? aggregatedPerformanceData : performanceData[currentNodeView];
+            if (!dataToDisplay) return;
+
+            let yAxisTitle = yAxisTitles[performanceChartView];
+            if(currentNodeView === 'Aggregate' && performanceAggregationMode === 'avg') {
+                yAxisTitle = yAxisTitle.replace('Mbps', 'Avg. Mbps').replace('MB', 'Avg. MB');
+            } else if (currentNodeView === 'Aggregate' && performanceAggregationMode === 'sum') {
+                 yAxisTitle = yAxisTitle.replace('Mbps', 'Total Mbps').replace('MB', 'Total MB');
+            }
+            performanceChart.options.scales.y.title.text = yAxisTitle;
+
 
             const isConcurrency = performanceChartView === 'concurrency';
             performanceChart.data.datasets[1].hidden = isConcurrency;
             performanceChart.data.datasets[0].label = isConcurrency ? 'Operations' : 'Ingress (Upload)';
+
+            performanceChart.data.datasets[0].data = dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][0] : [];
+
             if (!isConcurrency) {
-                performanceChart.data.datasets[1].data = performanceData[performanceChartView][1];
+                performanceChart.data.datasets[1].data = dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][1] : [];
+            } else {
+                performanceChart.data.datasets[1].data = [];
             }
 
             performanceChart.update('none');
         }
+
+        function initializePerformanceData(nodes) {
+            const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[], []] });
+            nodes.forEach(node => {
+                performanceData[node] = dataTemplate();
+            });
+            aggregatedPerformanceData = dataTemplate();
+        }
+
+        function recalculateAggregateData() {
+            const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[], []] });
+            const newAggData = dataTemplate();
+            const nodeNames = availableNodes.filter(n => n !== 'Aggregate');
+            if (nodeNames.length === 0) return;
+
+            // Find all unique timestamps across all nodes and all metrics
+            const allTimestamps = new Set();
+            nodeNames.forEach(node => {
+                Object.values(performanceData[node]).forEach(seriesPair => {
+                    seriesPair[0].forEach(point => allTimestamps.add(point.x.getTime()));
+                });
+            });
+
+            const sortedTimestamps = Array.from(allTimestamps).sort();
+
+            sortedTimestamps.forEach(ts => {
+                const timestamp = new Date(ts);
+                Object.keys(newAggData).forEach(metric => {
+                    const isConcurrency = metric === 'concurrency';
+                    const numSeries = isConcurrency ? 1 : 2;
+                    for (let i = 0; i < numSeries; i++) {
+                        let sum = 0;
+                        let count = 0;
+                        nodeNames.forEach(node => {
+                            const point = performanceData[node][metric][i].find(p => p.x.getTime() === ts);
+                            if (point) {
+                                sum += point.y;
+                                count++;
+                            }
+                        });
+
+                        if (count > 0) {
+                            const value = performanceAggregationMode === 'avg' ? sum / count : sum;
+                            newAggData[metric][i].push({ x: timestamp, y: value });
+                        }
+                    }
+                });
+            });
+            aggregatedPerformanceData = newAggData;
+            updatePerformanceChart();
+        }
+
 
         // --- Event Listeners ---
         document.getElementById('toggle-satellite-view').addEventListener('click', function(e) {
@@ -358,19 +447,57 @@
             }
         });
 
+        document.getElementById('aggregation-toggles').addEventListener('click', function(e) {
+            e.preventDefault();
+            if (e.target.tagName === 'A') {
+                performanceAggregationMode = e.target.getAttribute('data-agg');
+                document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active'));
+                e.target.classList.add('active');
+                recalculateAggregateData();
+            }
+        });
+
+        document.getElementById('node-selector').addEventListener('change', function(e) {
+            currentNodeView = e.target.value;
+            if(ws && ws.readyState === WebSocket.OPEN) {
+                Object.values(Chart.instances).forEach(chart => {
+                    chart.data.datasets.forEach(dataset => dataset.data = []);
+                    chart.update('none');
+                });
+                ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView }));
+            }
+            // We need to call this to hide/show the aggregation toggle
+            updatePerformanceChart();
+        });
+
+
         // --- WebSocket Connection ---
+        let ws;
         const connectionManager = {
             overlay: document.getElementById('connection-overlay'),
             reconnectDelay: 1000, maxReconnectDelay: 30000,
             connect: function() {
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+                ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
 
                 ws.onopen = () => { console.log("WebSocket established."); this.overlay.style.display = 'none'; this.reconnectDelay = 1000; };
 
                 ws.onmessage = (event) => {
                     const data = JSON.parse(event.data);
                     switch(data.type) {
+                        case 'init':
+                            availableNodes = data.nodes;
+                            const selector = document.getElementById('node-selector');
+                            selector.innerHTML = '';
+                            data.nodes.forEach(name => {
+                                const option = document.createElement('option');
+                                option.value = name;
+                                option.textContent = name;
+                                selector.appendChild(option);
+                            });
+                            initializePerformanceData(data.nodes.filter(n => n !== 'Aggregate'));
+                            updatePerformanceChart(); // Initial call to set toggle visibility
+                            break;
                         case 'log_entry':
                             if (data.location && data.location.lat) {
                                 heatPoints.push([data.location.lat, data.location.lon, 0.5]);
@@ -379,28 +506,72 @@
                             }
                             break;
                         case 'performance_update':
-                            const now = new Date(data.timestamp);
-                            performanceData.rate[0].push({ x: now, y: data.ingress_mbps });
-                            performanceData.rate[1].push({ x: now, y: data.egress_mbps });
-                            performanceData.volume[0].push({ x: now, y: data.ingress_bytes / 1e6 });
-                            performanceData.volume[1].push({ x: now, y: data.egress_bytes / 1e6 });
-                            performanceData.pieces[0].push({ x: now, y: data.ingress_pieces });
-                            performanceData.pieces[1].push({ x: now, y: data.egress_pieces });
-                            performanceData.concurrency[0].push({ x: now, y: data.concurrency });
+                            const { node_name, timestamp, ...metrics } = data;
+                            const binnedTimestamp = Math.floor(new Date(timestamp).getTime() / PERFORMANCE_INTERVAL_MS) * PERFORMANCE_INTERVAL_MS;
+                            const binnedNow = new Date(binnedTimestamp);
 
-                            if (data.avg_egress_mbps !== undefined) {
-                                document.getElementById('dl-speed').textContent = `${data.avg_egress_mbps.toFixed(2)} Mbps`;
-                            }
-                            if (data.avg_ingress_mbps !== undefined) {
-                                document.getElementById('ul-speed').textContent = `${data.avg_ingress_mbps.toFixed(2)} Mbps`;
-                            }
+                            const nodePerf = performanceData[node_name];
+                            if (!nodePerf) break;
 
-                            for (const key in performanceData) {
-                                if(performanceData[key][0].length > 150) {
-                                    performanceData[key][0].shift();
-                                    if(performanceData[key][1].length) performanceData[key][1].shift();
+                            const nodeNames = availableNodes.filter(n => n !== 'Aggregate');
+
+                            function updateOrPushPoint(series, point) {
+                                const lastPoint = series.length > 0 ? series[series.length - 1] : null;
+                                if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) {
+                                    lastPoint.y = point.y;
+                                } else {
+                                    series.push(point);
                                 }
                             }
+
+                            const metricMap = {
+                                rate: [metrics.ingress_mbps, metrics.egress_mbps],
+                                volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6],
+                                pieces: [metrics.ingress_pieces, metrics.egress_pieces],
+                                concurrency: [metrics.concurrency]
+                            };
+
+                            Object.keys(metricMap).forEach(metric => {
+                                const values = metricMap[metric];
+                                for(let i=0; i<values.length; i++) {
+                                    updateOrPushPoint(nodePerf[metric][i], { x: binnedNow, y: values[i]});
+                                }
+                            });
+
+                            // Live aggregate calculation
+                            Object.keys(aggregatedPerformanceData).forEach(metric => {
+                                const isConcurrency = metric === 'concurrency';
+                                const numSeries = isConcurrency ? 1 : 2;
+                                for (let i = 0; i < numSeries; i++) {
+                                    let sum = 0;
+                                    let count = 0;
+                                    nodeNames.forEach(node => {
+                                        const series = performanceData[node][metric][i];
+                                        const lastPoint = series.length > 0 ? series[series.length-1] : null;
+                                        if(lastPoint && lastPoint.x.getTime() === binnedTimestamp) {
+                                            sum += lastPoint.y;
+                                            count++;
+                                        }
+                                    });
+                                    if(count > 0) {
+                                        const value = performanceAggregationMode === 'avg' ? sum / count : sum;
+                                        updateOrPushPoint(aggregatedPerformanceData[metric][i], { x: binnedNow, y: value });
+                                    }
+                                }
+                            });
+
+                            // Pruning
+                            Object.values(performanceData).forEach(nodePerf => {
+                                for (const key in nodePerf) {
+                                    while (nodePerf[key][0].length > MAX_PERF_POINTS) nodePerf[key][0].shift();
+                                    if(nodePerf[key][1]) while (nodePerf[key][1].length > MAX_PERF_POINTS) nodePerf[key][1].shift();
+                                }
+                            });
+                            for (const key in aggregatedPerformanceData) {
+                                while (aggregatedPerformanceData[key][0].length > MAX_PERF_POINTS) aggregatedPerformanceData[key][0].shift();
+                                if(aggregatedPerformanceData[key][1]) while (aggregatedPerformanceData[key][1].length > MAX_PERF_POINTS) aggregatedPerformanceData[key][1].shift();
+                            }
+
                             updatePerformanceChart();
                             break;
                         case 'stats_update':
@@ -429,10 +600,8 @@
             Chart.defaults.color = textColor;
             Chart.defaults.borderColor = gridColor;
 
-            // Update all existing chart instances
             for (const id in Chart.instances) {
                 const chart = Chart.instances[id];
-                // Update tooltip colors
                 if(chart.options.plugins.tooltip) {
                     chart.options.plugins.tooltip.titleColor = textColor;
                     chart.options.plugins.tooltip.bodyColor = textColor;
@@ -443,8 +612,8 @@
         }
 
         const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-        updateChartColors(darkModeMediaQuery.matches); // Initial check
-        darkModeMediaQuery.addEventListener('change', e => updateChartColors(e.matches)); // Listen for changes
+        updateChartColors(darkModeMediaQuery.matches);
+        darkModeMediaQuery.addEventListener('change', e => updateChartColors(e.matches));
     </script>
 </body>
 </html>
