@@ -363,19 +363,34 @@
             }
             performanceChart.options.scales.y.title.text = yAxisTitle;
 
-
             const isConcurrency = performanceChartView === 'concurrency';
-            performanceChart.data.datasets[1].hidden = isConcurrency;
-            performanceChart.data.datasets[0].label = isConcurrency ? 'Operations' : 'Ingress (Upload)';
+            let datasetsToShow = [];
 
-            performanceChart.data.datasets[0].data = dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][0] : [];
-
-            if (!isConcurrency) {
-                performanceChart.data.datasets[1].data = dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][1] : [];
+            if (isConcurrency) {
+                // For Concurrency view, create a single dataset.
+                datasetsToShow.push({
+                    label: 'Operations',
+                    data: dataToDisplay.concurrency ? dataToDisplay.concurrency[0] : [],
+                    borderColor: UPLOAD_COLOR,
+                    tension: 0.2
+                });
             } else {
-                performanceChart.data.datasets[1].data = [];
+                // For all other views, create two datasets.
+                datasetsToShow.push({
+                    label: 'Ingress (Upload)',
+                    data: dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][0] : [],
+                    borderColor: UPLOAD_COLOR,
+                    tension: 0.2
+                });
+                datasetsToShow.push({
+                    label: 'Egress (Download)',
+                    data: dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][1] : [],
+                    borderColor: DOWNLOAD_COLOR,
+                    tension: 0.2
+                });
             }
 
+            performanceChart.data.datasets = datasetsToShow;
             performanceChart.update('none');
         }
 
