@@ -80,15 +80,35 @@ def init_db():
         columns = [col[1] for col in cursor.fetchall()]
         if 'node_name' not in columns:
             log.info("Upgrading 'hourly_stats' table. Recreating with new composite primary key.")
-            # The easiest way to change a primary key is to rename, create, and copy data
+            # Check what columns exist in the old table
+            cursor.execute("PRAGMA table_info(hourly_stats);")
+            old_columns = [col[1] for col in cursor.fetchall()]
+            
+            # Build the SELECT clause based on available columns
+            select_columns = ['hour_timestamp', "'default' as node_name", 'dl_success', 'dl_fail', 'ul_success', 'ul_fail', 'audit_success', 'audit_fail']
+            if 'total_download_size' in old_columns:
+                select_columns.append('total_download_size')
+            else:
+                select_columns.append('0 as total_download_size')
+            if 'total_upload_size' in old_columns:
+                select_columns.append('total_upload_size')
+            else:
+                select_columns.append('0 as total_upload_size')
+            
+            # Rename old table, create new one, and migrate data
             cursor.execute("ALTER TABLE hourly_stats RENAME TO hourly_stats_old;")
             cursor.execute('CREATE TABLE hourly_stats (hour_timestamp TEXT, node_name TEXT, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0, audit_success INTEGER DEFAULT 0, audit_fail INTEGER DEFAULT 0, total_download_size INTEGER DEFAULT 0, total_upload_size INTEGER DEFAULT 0, PRIMARY KEY (hour_timestamp, node_name))')
-            cursor.execute("INSERT INTO hourly_stats (hour_timestamp, node_name, dl_success, dl_fail, ul_success, ul_fail, audit_success, audit_fail, total_download_size, total_upload_size) SELECT hour_timestamp, 'default', dl_success, dl_fail, ul_success, ul_fail, audit_success, audit_fail, total_download_size, total_upload_size FROM hourly_stats_old;")
+            
+            # Migrate data with proper column handling
+            select_query = f"SELECT {', '.join(select_columns)} FROM hourly_stats_old"
+            cursor.execute(f"INSERT INTO hourly_stats (hour_timestamp, node_name, dl_success, dl_fail, ul_success, ul_fail, audit_success, audit_fail, total_download_size, total_upload_size) {select_query}")
             cursor.execute("DROP TABLE hourly_stats_old;")
-        if 'total_download_size' not in columns:
-             cursor.execute("ALTER TABLE hourly_stats ADD COLUMN total_download_size INTEGER DEFAULT 0;")
-        if 'total_upload_size' not in columns:
-             cursor.execute("ALTER TABLE hourly_stats ADD COLUMN total_upload_size INTEGER DEFAULT 0;")
+        else:
+            # If node_name exists, just check for size columns
+            if 'total_download_size' not in columns:
+                cursor.execute("ALTER TABLE hourly_stats ADD COLUMN total_download_size INTEGER DEFAULT 0;")
+            if 'total_upload_size' not in columns:
+                cursor.execute("ALTER TABLE hourly_stats ADD COLUMN total_upload_size INTEGER DEFAULT 0;")
 
     cursor.execute('CREATE TABLE IF NOT EXISTS hourly_stats (hour_timestamp TEXT, node_name TEXT, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0, audit_success INTEGER DEFAULT 0, audit_fail INTEGER DEFAULT 0, total_download_size INTEGER DEFAULT 0, total_upload_size INTEGER DEFAULT 0, PRIMARY KEY (hour_timestamp, node_name))')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);')
