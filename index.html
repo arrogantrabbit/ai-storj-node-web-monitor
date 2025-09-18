@@ -165,6 +165,7 @@
             constructor(map) {
                 this.map = map;
                 this.dataPoints = [];
+                this.persistentHeatData = {}; // Grid-based accumulation
                 this.canvas = null;
                 this.ctx = null;
                 this.viewMode = 'size'; // 'size' or 'pieces'
@@ -172,26 +173,26 @@
                 this.animationFrame = null;
                 this.particleSystem = [];
                 this.lastRenderTime = Date.now();
+                this.gridSize = 0.5; // Degrees for heatmap grid
                 
-                // Color palettes for different data types
+                // Color palettes for different data types - more subtle
                 this.palettes = {
                     download: {
-                        size: ['rgba(0, 50, 100, 0)', 'rgba(0, 100, 200, 0.3)', 'rgba(0, 150, 255, 0.5)',
-                               'rgba(0, 200, 255, 0.7)', 'rgba(0, 255, 255, 0.9)', 'rgba(255, 255, 255, 1)'],
-                        pieces: ['rgba(0, 30, 60, 0)', 'rgba(0, 60, 120, 0.3)', 'rgba(0, 90, 180, 0.5)',
-                                'rgba(0, 120, 240, 0.7)', 'rgba(100, 200, 255, 0.9)', 'rgba(200, 240, 255, 1)']
+                        colors: ['#0066CC', '#0099FF', '#00CCFF', '#66E0FF', '#CCFFFF'],
+                        label: 'Downloads (Blue)'
                     },
                     upload: {
-                        size: ['rgba(50, 100, 0, 0)', 'rgba(100, 200, 0, 0.3)', 'rgba(150, 255, 0, 0.5)',
-                               'rgba(200, 255, 50, 0.7)', 'rgba(255, 255, 100, 0.9)', 'rgba(255, 255, 200, 1)'],
-                        pieces: ['rgba(30, 60, 0, 0)', 'rgba(60, 120, 0, 0.3)', 'rgba(90, 180, 0, 0.5)',
-                                'rgba(120, 240, 0, 0.7)', 'rgba(200, 255, 100, 0.9)', 'rgba(240, 255, 200, 1)']
+                        colors: ['#006600', '#00AA00', '#00FF00', '#66FF66', '#CCFFCC'],
+                        label: 'Uploads (Green)'
                     },
                     audit: {
-                        size: ['rgba(100, 0, 100, 0)', 'rgba(150, 50, 150, 0.3)', 'rgba(200, 100, 200, 0.5)',
-                               'rgba(255, 150, 255, 0.7)', 'rgba(255, 200, 255, 0.9)', 'rgba(255, 240, 255, 1)'],
-                        pieces: ['rgba(60, 0, 60, 0)', 'rgba(90, 30, 90, 0.3)', 'rgba(120, 60, 120, 0.5)',
-                                'rgba(180, 90, 180, 0.7)', 'rgba(240, 150, 240, 0.9)', 'rgba(255, 220, 255, 1)']
+                        colors: ['#660066', '#9900CC', '#CC00FF', '#E066FF', '#FFCCFF'],
+                        label: 'Audits (Purple)'
+                    },
+                    heat: {
+                        colors: ['rgba(0,0,0,0)', 'rgba(0,0,255,0.2)', 'rgba(0,255,255,0.4)',
+                                'rgba(0,255,0,0.6)', 'rgba(255,255,0,0.8)', 'rgba(255,0,0,1)'],
+                        label: 'Activity Intensity'
                     }
                 };
                 
@@ -238,12 +239,32 @@
                 
                 this.dataPoints.push(point);
                 
+                // Add to persistent heatmap grid
+                const gridKey = `${Math.floor(lat / this.gridSize) * this.gridSize}_${Math.floor(lon / this.gridSize) * this.gridSize}`;
+                if (!this.persistentHeatData[gridKey]) {
+                    this.persistentHeatData[gridKey] = {
+                        lat: Math.floor(lat / this.gridSize) * this.gridSize,
+                        lon: Math.floor(lon / this.gridSize) * this.gridSize,
+                        value: 0,
+                        timestamp: now
+                    };
+                }
+                this.persistentHeatData[gridKey].value += this.viewMode === 'size' ? size : 1;
+                this.persistentHeatData[gridKey].timestamp = now;
+                
                 // Add particle effect for new data
                 this.addParticle(lat, lon, point.type);
                 
                 // Keep data points limited
                 const cutoffTime = now - this.maxDataAge * 2; // Keep 2x age for smooth decay
                 this.dataPoints = this.dataPoints.filter(p => p.timestamp > cutoffTime);
+                
+                // Clean old persistent data
+                for (let key in this.persistentHeatData) {
+                    if (now - this.persistentHeatData[key].timestamp > this.maxDataAge * 4) {
+                        delete this.persistentHeatData[key];
+                    }
+                }
                 
                 this.canvasLayer.needRedraw();
             }
@@ -273,8 +294,56 @@
                 // Clear canvas
                 ctx.clearRect(0, 0, info.canvas.width, info.canvas.height);
                 
-                // Calculate zoom-based parameters
-                const baseRadius = this.getRadiusForZoom(zoom);
+                // First, render persistent heatmap layer
+                this.renderPersistentHeatmap(ctx, info, bounds, zoom, now);
+                
+                // Then render live points on top
+                this.renderLivePoints(ctx, info, bounds, zoom, now);
+                
+                // Finally render particles
+                this.renderParticles(ctx, info);
+                
+                ctx.globalAlpha = 1;
+            }
+            
+            renderPersistentHeatmap(ctx, info, bounds, zoom, now) {
+                // Create heat accumulation layer
+                const heatmapRadius = this.getRadiusForZoom(zoom) * 0.7; // Smaller radius for heat layer
+                
+                for (let key in this.persistentHeatData) {
+                    const heat = this.persistentHeatData[key];
+                    if (!bounds.contains([heat.lat, heat.lon])) continue;
+                    
+                    const point = info.layer._map.latLngToContainerPoint([heat.lat, heat.lon]);
+                    const age = now - heat.timestamp;
+                    const ageFactor = Math.max(0.1, 1 - (age / (this.maxDataAge * 4)));
+                    
+                    // Normalize value
+                    const maxValue = this.viewMode === 'size' ? 50000000 : 500;
+                    const intensity = Math.min(1, Math.log(heat.value + 1) / Math.log(maxValue + 1));
+                    
+                    // Create gradient
+                    const gradient = ctx.createRadialGradient(
+                        point.x, point.y, 0,
+                        point.x, point.y, heatmapRadius
+                    );
+                    
+                    const heatColors = this.palettes.heat.colors;
+                    const colorIndex = Math.floor(intensity * (heatColors.length - 1));
+                    const color = heatColors[Math.min(colorIndex, heatColors.length - 1)];
+                    
+                    gradient.addColorStop(0, color.replace(/[\d.]+\)$/, `${intensity * ageFactor * 0.8})`));
+                    gradient.addColorStop(0.5, color.replace(/[\d.]+\)$/, `${intensity * ageFactor * 0.4})`));
+                    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                    
+                    ctx.globalAlpha = 0.5;
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(point.x - heatmapRadius, point.y - heatmapRadius, heatmapRadius * 2, heatmapRadius * 2);
+                }
+            }
+            
+            renderLivePoints(ctx, info, bounds, zoom, now) {
+                const baseRadius = this.getRadiusForZoom(zoom) * 0.5; // Smaller circles
                 const clusterThreshold = this.getClusterThreshold(zoom);
                 
                 // Process and cluster data points
@@ -289,41 +358,33 @@
                     const ageFactor = Math.max(0, 1 - (age / this.maxDataAge));
                     
                     // Pulsing effect for recent data
-                    const pulse = cluster.hasNew ? 1 + Math.sin(now * 0.005) * 0.2 : 1;
+                    const pulse = cluster.hasNew ? 1 + Math.sin(now * 0.005) * 0.1 : 1;
                     
                     // Calculate intensity based on view mode
                     const value = this.viewMode === 'size' ? cluster.totalSize : cluster.count;
-                    const maxValue = this.viewMode === 'size' ? 10000000 : 100; // Normalize values
-                    const intensity = Math.min(1, value / maxValue) * ageFactor;
+                    const maxValue = this.viewMode === 'size' ? 5000000 : 50; // Normalize values
+                    const intensity = Math.min(1, value / maxValue);
                     
                     // Calculate radius with zoom and value scaling
-                    const radius = baseRadius * (0.5 + intensity * 2) * pulse;
+                    const radius = baseRadius * (0.5 + intensity * 1.5) * pulse;
                     
-                    // Create radial gradient
-                    const gradient = ctx.createRadialGradient(
-                        point.x, point.y, 0,
-                        point.x, point.y, radius
-                    );
+                    // Draw circle marker based on type
+                    const typeColors = {
+                        download: this.palettes.download.colors[2],
+                        upload: this.palettes.upload.colors[2],
+                        audit: this.palettes.audit.colors[2]
+                    };
                     
-                    // Select palette based on dominant type
-                    const palette = this.palettes[cluster.dominantType][this.viewMode];
-                    const colors = this.interpolateColors(palette, intensity, ageFactor);
+                    ctx.globalAlpha = ageFactor * 0.7;
+                    ctx.fillStyle = typeColors[cluster.dominantType];
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+                    ctx.lineWidth = 2;
                     
-                    gradient.addColorStop(0, colors[0]);
-                    gradient.addColorStop(0.4, colors[1]);
-                    gradient.addColorStop(0.7, colors[2]);
-                    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-                    
-                    // Draw the heat point
-                    ctx.globalAlpha = 0.8 * ageFactor;
-                    ctx.fillStyle = gradient;
-                    ctx.fillRect(point.x - radius, point.y - radius, radius * 2, radius * 2);
+                    ctx.beginPath();
+                    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
                 });
-                
-                // Render particles
-                this.renderParticles(ctx, info);
-                
-                ctx.globalAlpha = 1;
             }
             
             renderParticles(ctx, info) {
@@ -422,14 +483,14 @@
             }
             
             getRadiusForZoom(zoom) {
-                // Adaptive radius based on zoom level
-                if (zoom <= 2) return 40;
-                if (zoom <= 4) return 30;
-                if (zoom <= 6) return 25;
-                if (zoom <= 8) return 20;
-                if (zoom <= 10) return 15;
-                if (zoom <= 12) return 12;
-                return 10;
+                // Smaller, more reasonable radii
+                if (zoom <= 2) return 25;
+                if (zoom <= 4) return 20;
+                if (zoom <= 6) return 18;
+                if (zoom <= 8) return 15;
+                if (zoom <= 10) return 12;
+                if (zoom <= 12) return 10;
+                return 8;
             }
             
             getClusterThreshold(zoom) {
@@ -443,23 +504,10 @@
                 return 5;
             }
             
-            interpolateColors(palette, intensity, ageFactor) {
-                // Create smooth color transitions
-                const colors = [];
-                for (let i = 0; i < 3; i++) {
-                    const idx = Math.min(palette.length - 1, Math.floor(intensity * (palette.length - 1)));
-                    const color = palette[idx];
-                    // Parse rgba and adjust based on age
-                    const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/);
-                    if (match) {
-                        const [_, r, g, b, a] = match;
-                        const adjustedAlpha = parseFloat(a) * ageFactor * (0.3 + i * 0.35);
-                        colors.push(`rgba(${r}, ${g}, ${b}, ${adjustedAlpha})`);
-                    } else {
-                        colors.push(color);
-                    }
-                }
-                return colors;
+            interpolateColors(colorArray, intensity, ageFactor) {
+                // Use hex colors from palette
+                const idx = Math.min(colorArray.length - 1, Math.floor(intensity * (colorArray.length - 1)));
+                return colorArray[idx];
             }
             
             setViewMode(mode) {
@@ -607,26 +655,97 @@
         // Initialize the advanced heatmap
         const heatmap = new AdvancedHeatmap(map);
         
-        // Add heatmap controls
+        // Add heatmap controls with dark mode support
         const HeatmapControl = L.Control.extend({
             options: {
                 position: 'topright'
             },
             
             onAdd: function(map) {
-                const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-                container.style.backgroundColor = 'white';
-                container.style.padding = '5px';
-                container.style.borderRadius = '4px';
+                const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control heatmap-control');
+                
+                const isDarkMode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
                 
                 container.innerHTML = `
-                    <div style="font-size: 12px; font-weight: bold; margin-bottom: 5px;">Heatmap View</div>
-                    <label style="display: block; cursor: pointer; margin: 2px 0;">
-                        <input type="radio" name="heatview" value="size" checked> Data Size
-                    </label>
-                    <label style="display: block; cursor: pointer; margin: 2px 0;">
-                        <input type="radio" name="heatview" value="pieces"> Piece Count
-                    </label>
+                    <style>
+                        .heatmap-control {
+                            background-color: ${isDarkMode ? '#1e1e1e' : 'white'};
+                            color: ${isDarkMode ? '#e0e0e0' : '#333'};
+                            padding: 10px;
+                            border-radius: 4px;
+                            border: 1px solid ${isDarkMode ? '#444' : '#ccc'};
+                        }
+                        .heatmap-control h4 {
+                            margin: 0 0 8px 0;
+                            font-size: 13px;
+                            font-weight: bold;
+                        }
+                        .heatmap-control label {
+                            display: block;
+                            cursor: pointer;
+                            margin: 4px 0;
+                            font-size: 12px;
+                        }
+                        .legend-section {
+                            margin-top: 12px;
+                            padding-top: 8px;
+                            border-top: 1px solid ${isDarkMode ? '#444' : '#ddd'};
+                        }
+                        .legend-item {
+                            display: flex;
+                            align-items: center;
+                            margin: 3px 0;
+                            font-size: 11px;
+                        }
+                        .legend-color {
+                            width: 16px;
+                            height: 16px;
+                            margin-right: 6px;
+                            border-radius: 50%;
+                            border: 1px solid ${isDarkMode ? '#666' : '#ccc'};
+                        }
+                        .legend-gradient {
+                            width: 100%;
+                            height: 10px;
+                            margin: 4px 0;
+                            border-radius: 2px;
+                            background: linear-gradient(to right,
+                                rgba(0,0,255,0.2), rgba(0,255,255,0.4),
+                                rgba(0,255,0,0.6), rgba(255,255,0,0.8), rgba(255,0,0,1));
+                        }
+                    </style>
+                    <div>
+                        <h4>Heatmap View</h4>
+                        <label>
+                            <input type="radio" name="heatview" value="size" checked> Data Size
+                        </label>
+                        <label>
+                            <input type="radio" name="heatview" value="pieces"> Piece Count
+                        </label>
+                    </div>
+                    <div class="legend-section">
+                        <h4>Legend</h4>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #0099FF;"></span>
+                            <span>Downloads</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #00FF00;"></span>
+                            <span>Uploads</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #CC00FF;"></span>
+                            <span>Audits</span>
+                        </div>
+                        <div style="margin-top: 8px;">
+                            <div style="font-size: 11px; margin-bottom: 2px;">Activity Heat:</div>
+                            <div class="legend-gradient"></div>
+                            <div style="font-size: 10px; display: flex; justify-content: space-between;">
+                                <span>Low</span>
+                                <span>High</span>
+                            </div>
+                        </div>
+                    </div>
                 `;
                 
                 // Handle view mode changes
@@ -634,6 +753,14 @@
                     if (e.target.name === 'heatview') {
                         heatmap.setViewMode(e.target.value);
                     }
+                });
+                
+                // Update styles on dark mode change
+                window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+                    const isDark = e.matches;
+                    container.style.backgroundColor = isDark ? '#1e1e1e' : 'white';
+                    container.style.color = isDark ? '#e0e0e0' : '#333';
+                    container.style.borderColor = isDark ? '#444' : '#ccc';
                 });
                 
                 // Prevent map interactions
