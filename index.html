@@ -307,8 +307,17 @@
             }
             
             renderPersistentHeatmap(ctx, info, bounds, zoom, now) {
+                // Only show persistent heatmap at higher zoom levels
+                if (zoom < 5) return;
+                
                 // Create heat accumulation layer
-                const heatmapRadius = this.getRadiusForZoom(zoom) * 0.7; // Smaller radius for heat layer
+                const heatmapRadius = this.getRadiusForZoom(zoom) * 2; // Larger radius for heat spread
+                
+                // Create temporary canvas for blending
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = info.canvas.width;
+                tempCanvas.height = info.canvas.height;
+                const tempCtx = tempCanvas.getContext('2d');
                 
                 for (let key in this.persistentHeatData) {
                     const heat = this.persistentHeatData[key];
@@ -319,72 +328,119 @@
                     const ageFactor = Math.max(0.1, 1 - (age / (this.maxDataAge * 4)));
                     
                     // Normalize value
-                    const maxValue = this.viewMode === 'size' ? 50000000 : 500;
-                    const intensity = Math.min(1, Math.log(heat.value + 1) / Math.log(maxValue + 1));
+                    const maxValue = this.viewMode === 'size' ? 10000000 : 100;
+                    const intensity = Math.min(1, Math.sqrt(heat.value / maxValue));
                     
                     // Create gradient
-                    const gradient = ctx.createRadialGradient(
+                    const gradient = tempCtx.createRadialGradient(
                         point.x, point.y, 0,
                         point.x, point.y, heatmapRadius
                     );
                     
-                    const heatColors = this.palettes.heat.colors;
-                    const colorIndex = Math.floor(intensity * (heatColors.length - 1));
-                    const color = heatColors[Math.min(colorIndex, heatColors.length - 1)];
-                    
-                    gradient.addColorStop(0, color.replace(/[\d.]+\)$/, `${intensity * ageFactor * 0.8})`));
-                    gradient.addColorStop(0.5, color.replace(/[\d.]+\)$/, `${intensity * ageFactor * 0.4})`));
+                    // Use heat colors
+                    gradient.addColorStop(0, `rgba(255, 255, 0, ${intensity * ageFactor * 0.6})`);
+                    gradient.addColorStop(0.3, `rgba(255, 200, 0, ${intensity * ageFactor * 0.4})`);
+                    gradient.addColorStop(0.6, `rgba(255, 100, 0, ${intensity * ageFactor * 0.2})`);
                     gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
                     
-                    ctx.globalAlpha = 0.5;
-                    ctx.fillStyle = gradient;
-                    ctx.fillRect(point.x - heatmapRadius, point.y - heatmapRadius, heatmapRadius * 2, heatmapRadius * 2);
+                    tempCtx.fillStyle = gradient;
+                    tempCtx.fillRect(point.x - heatmapRadius, point.y - heatmapRadius, heatmapRadius * 2, heatmapRadius * 2);
                 }
+                
+                // Blend temp canvas onto main canvas
+                ctx.globalAlpha = 0.7;
+                ctx.globalCompositeOperation = 'screen';
+                ctx.drawImage(tempCanvas, 0, 0);
+                ctx.globalCompositeOperation = 'source-over';
             }
             
             renderLivePoints(ctx, info, bounds, zoom, now) {
-                const baseRadius = this.getRadiusForZoom(zoom) * 0.5; // Smaller circles
                 const clusterThreshold = this.getClusterThreshold(zoom);
                 
                 // Process and cluster data points
                 const clusters = this.clusterPoints(this.dataPoints, clusterThreshold, bounds);
                 
-                // Create gradient for each cluster
-                clusters.forEach(cluster => {
-                    const point = info.layer._map.latLngToContainerPoint([cluster.lat, cluster.lon]);
-                    
-                    // Calculate age factor (1 = new, 0 = old)
-                    const age = now - cluster.avgTimestamp;
-                    const ageFactor = Math.max(0, 1 - (age / this.maxDataAge));
-                    
-                    // Pulsing effect for recent data
-                    const pulse = cluster.hasNew ? 1 + Math.sin(now * 0.005) * 0.1 : 1;
-                    
-                    // Calculate intensity based on view mode
-                    const value = this.viewMode === 'size' ? cluster.totalSize : cluster.count;
-                    const maxValue = this.viewMode === 'size' ? 5000000 : 50; // Normalize values
-                    const intensity = Math.min(1, value / maxValue);
-                    
-                    // Calculate radius with zoom and value scaling
-                    const radius = baseRadius * (0.5 + intensity * 1.5) * pulse;
-                    
-                    // Draw circle marker based on type
-                    const typeColors = {
-                        download: this.palettes.download.colors[2],
-                        upload: this.palettes.upload.colors[2],
-                        audit: this.palettes.audit.colors[2]
-                    };
-                    
-                    ctx.globalAlpha = ageFactor * 0.7;
-                    ctx.fillStyle = typeColors[cluster.dominantType];
-                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-                    ctx.lineWidth = 2;
-                    
-                    ctx.beginPath();
-                    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-                    ctx.fill();
-                    ctx.stroke();
-                });
+                // At low zoom levels, show aggregated heat only
+                if (zoom <= 4) {
+                    clusters.forEach(cluster => {
+                        const point = info.layer._map.latLngToContainerPoint([cluster.lat, cluster.lon]);
+                        
+                        // Calculate age factor
+                        const age = now - cluster.avgTimestamp;
+                        const ageFactor = Math.max(0, 1 - (age / this.maxDataAge));
+                        
+                        // Calculate intensity
+                        const value = this.viewMode === 'size' ? cluster.totalSize : cluster.count;
+                        const maxValue = this.viewMode === 'size' ? 50000000 : 500;
+                        const intensity = Math.min(1, Math.sqrt(value / maxValue));
+                        
+                        // Large heat gradient for aggregated view
+                        const radius = 50 + intensity * 50;
+                        const gradient = ctx.createRadialGradient(
+                            point.x, point.y, 0,
+                            point.x, point.y, radius
+                        );
+                        
+                        // Heat colors based on intensity
+                        if (intensity > 0.7) {
+                            gradient.addColorStop(0, `rgba(255, 0, 0, ${ageFactor * 0.5})`);
+                            gradient.addColorStop(0.5, `rgba(255, 255, 0, ${ageFactor * 0.3})`);
+                            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                        } else if (intensity > 0.4) {
+                            gradient.addColorStop(0, `rgba(255, 255, 0, ${ageFactor * 0.4})`);
+                            gradient.addColorStop(0.5, `rgba(0, 255, 0, ${ageFactor * 0.2})`);
+                            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                        } else {
+                            gradient.addColorStop(0, `rgba(0, 255, 255, ${ageFactor * 0.3})`);
+                            gradient.addColorStop(0.5, `rgba(0, 0, 255, ${ageFactor * 0.15})`);
+                            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                        }
+                        
+                        ctx.fillStyle = gradient;
+                        ctx.fillRect(point.x - radius, point.y - radius, radius * 2, radius * 2);
+                    });
+                } else {
+                    // At higher zoom levels, show individual points
+                    clusters.forEach(cluster => {
+                        const point = info.layer._map.latLngToContainerPoint([cluster.lat, cluster.lon]);
+                        
+                        // Calculate age factor
+                        const age = now - cluster.avgTimestamp;
+                        const ageFactor = Math.max(0, 1 - (age / this.maxDataAge));
+                        
+                        // Small circle for individual points
+                        const value = this.viewMode === 'size' ? cluster.totalSize : cluster.count;
+                        const maxValue = this.viewMode === 'size' ? 1000000 : 10;
+                        const intensity = Math.min(1, Math.sqrt(value / maxValue));
+                        
+                        const radius = 3 + intensity * 5; // Much smaller: 3-8px
+                        
+                        // Type-based colors
+                        const typeColors = {
+                            download: '#0099FF',
+                            upload: '#00FF00',
+                            audit: '#CC00FF'
+                        };
+                        
+                        ctx.globalAlpha = ageFactor * 0.8;
+                        ctx.fillStyle = typeColors[cluster.dominantType];
+                        
+                        // Simple filled circle, no stroke for cleaner look
+                        ctx.beginPath();
+                        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+                        ctx.fill();
+                        
+                        // Add subtle glow for new data
+                        if (cluster.hasNew) {
+                            ctx.globalAlpha = ageFactor * 0.3;
+                            ctx.strokeStyle = typeColors[cluster.dominantType];
+                            ctx.lineWidth = 2;
+                            ctx.beginPath();
+                            ctx.arc(point.x, point.y, radius + 3, 0, Math.PI * 2);
+                            ctx.stroke();
+                        }
+                    });
+                }
             }
             
             renderParticles(ctx, info) {
@@ -483,25 +539,25 @@
             }
             
             getRadiusForZoom(zoom) {
-                // Smaller, more reasonable radii
-                if (zoom <= 2) return 25;
-                if (zoom <= 4) return 20;
-                if (zoom <= 6) return 18;
-                if (zoom <= 8) return 15;
-                if (zoom <= 10) return 12;
-                if (zoom <= 12) return 10;
-                return 8;
+                // Much smaller radii for individual points
+                if (zoom <= 2) return 15;
+                if (zoom <= 4) return 12;
+                if (zoom <= 6) return 10;
+                if (zoom <= 8) return 8;
+                if (zoom <= 10) return 6;
+                if (zoom <= 12) return 5;
+                return 4;
             }
             
             getClusterThreshold(zoom) {
-                // Distance threshold for clustering (in km)
-                if (zoom <= 2) return 500;
-                if (zoom <= 4) return 200;
-                if (zoom <= 6) return 100;
-                if (zoom <= 8) return 50;
-                if (zoom <= 10) return 20;
-                if (zoom <= 12) return 10;
-                return 5;
+                // More aggressive clustering at low zoom levels
+                if (zoom <= 2) return 1000;
+                if (zoom <= 4) return 500;
+                if (zoom <= 6) return 200;
+                if (zoom <= 8) return 100;
+                if (zoom <= 10) return 50;
+                if (zoom <= 12) return 20;
+                return 10;
             }
             
             interpolateColors(colorArray, intensity, ageFactor) {
