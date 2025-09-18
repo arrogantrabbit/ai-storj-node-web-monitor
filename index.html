@@ -175,6 +175,13 @@
                 this.lastRenderTime = Date.now();
                 this.gridSize = 0.5; // Degrees for heatmap grid
                 
+                // Event queue for temporal smoothing
+                this.eventQueue = [];
+                this.lastProcessedTime = null;
+                this.playbackSpeed = 1.0; // Real-time playback
+                this.maxQueueDelay = 10000; // Max 10 seconds delay
+                this.processQueueInterval = null;
+                
                 // Color palettes for different data types - more subtle
                 this.palettes = {
                     download: {
@@ -227,36 +234,115 @@
                 this.map.on('moveend zoomend resize', () => this.canvasLayer.needRedraw());
             }
             
-            addDataPoint(lat, lon, size, type, action) {
-                const now = Date.now();
-                const point = {
+            // Queue event for temporal processing
+            queueEvent(lat, lon, size, type, action, eventTimestamp) {
+                const event = {
                     lat, lon, size,
                     type: action.includes('GET') ? (action === 'GET_AUDIT' ? 'audit' : 'download') : 'upload',
-                    timestamp: now,
-                    pieces: 1, // Each event is one piece
-                    isNew: true
+                    action,
+                    eventTimestamp: eventTimestamp ? new Date(eventTimestamp).getTime() : Date.now(),
+                    receivedTimestamp: Date.now()
+                };
+                
+                this.eventQueue.push(event);
+                
+                // Sort queue by event timestamp
+                this.eventQueue.sort((a, b) => a.eventTimestamp - b.eventTimestamp);
+                
+                // Start processing if not already running
+                if (!this.processQueueInterval) {
+                    this.startEventProcessor();
+                }
+            }
+            
+            startEventProcessor() {
+                const processRate = 50; // Process events every 50ms for smooth animation
+                
+                this.processQueueInterval = setInterval(() => {
+                    this.processEventQueue();
+                }, processRate);
+            }
+            
+            processEventQueue() {
+                if (this.eventQueue.length === 0) return;
+                
+                const now = Date.now();
+                
+                // Process events based on their relative timing
+                while (this.eventQueue.length > 0) {
+                    const event = this.eventQueue[0];
+                    
+                    // Calculate how long this event has been waiting
+                    const waitTime = now - event.receivedTimestamp;
+                    
+                    // Calculate the delay between event timestamp and when we received it
+                    const eventDelay = event.receivedTimestamp - event.eventTimestamp;
+                    
+                    // If the event is very old (received more than 10s ago), process immediately
+                    if (waitTime > this.maxQueueDelay) {
+                        this.eventQueue.shift();
+                        this.processEvent(event, true); // Skip animation
+                        continue;
+                    }
+                    
+                    // For recent events, maintain relative timing
+                    // If we have multiple events from the same burst, spread them out
+                    if (this.lastProcessedTime) {
+                        const timeSinceLastEvent = event.eventTimestamp - this.lastProcessedTime;
+                        const desiredDelay = Math.min(timeSinceLastEvent, 1000); // Max 1 second between events
+                        const actualTimeSinceLastProcess = now - this.lastRenderTime;
+                        
+                        // If not enough time has passed since last event, wait
+                        if (actualTimeSinceLastProcess < desiredDelay) {
+                            break; // Wait for next cycle
+                        }
+                    }
+                    
+                    // Process this event
+                    this.eventQueue.shift();
+                    this.processEvent(event, false);
+                    this.lastProcessedTime = event.eventTimestamp;
+                    this.lastRenderTime = now;
+                    
+                    // Only process one event per cycle for smooth animation
+                    break;
+                }
+            }
+            
+            processEvent(event, skipAnimation) {
+                const now = Date.now();
+                const point = {
+                    lat: event.lat,
+                    lon: event.lon,
+                    size: event.size,
+                    type: event.type,
+                    timestamp: now, // Use current time for display purposes
+                    pieces: 1,
+                    isNew: !skipAnimation
                 };
                 
                 this.dataPoints.push(point);
                 
                 // Add to persistent heatmap grid
-                const gridKey = `${Math.floor(lat / this.gridSize) * this.gridSize}_${Math.floor(lon / this.gridSize) * this.gridSize}`;
+                const gridKey = `${Math.floor(event.lat / this.gridSize) * this.gridSize}_${Math.floor(event.lon / this.gridSize) * this.gridSize}`;
                 if (!this.persistentHeatData[gridKey]) {
                     this.persistentHeatData[gridKey] = {
-                        lat: Math.floor(lat / this.gridSize) * this.gridSize,
-                        lon: Math.floor(lon / this.gridSize) * this.gridSize,
+                        lat: Math.floor(event.lat / this.gridSize) * this.gridSize,
+                        lon: Math.floor(event.lon / this.gridSize) * this.gridSize,
                         value: 0,
                         timestamp: now
                     };
                 }
-                this.persistentHeatData[gridKey].value += this.viewMode === 'size' ? size : 1;
+                this.persistentHeatData[gridKey].value += this.viewMode === 'size' ? event.size : 1;
                 this.persistentHeatData[gridKey].timestamp = now;
                 
-                // Add particle effect for new data
-                this.addParticle(lat, lon, point.type);
+                // Add particle effect for new data (if not skipping animation)
+                if (!skipAnimation) {
+                    this.addParticle(event.lat, event.lon, event.type);
+                }
                 
                 // Keep data points limited
-                const cutoffTime = now - this.maxDataAge * 2; // Keep 2x age for smooth decay
+                const cutoffTime = now - this.maxDataAge * 2;
                 this.dataPoints = this.dataPoints.filter(p => p.timestamp > cutoffTime);
                 
                 // Clean old persistent data
@@ -267,6 +353,11 @@
                 }
                 
                 this.canvasLayer.needRedraw();
+            }
+            
+            // Backward compatibility wrapper
+            addDataPoint(lat, lon, size, type, action, timestamp) {
+                this.queueEvent(lat, lon, size, type, action, timestamp);
             }
             
             addParticle(lat, lon, type) {
@@ -595,6 +686,9 @@
             destroy() {
                 if (this.animationFrame) {
                     cancelAnimationFrame(this.animationFrame);
+                }
+                if (this.processQueueInterval) {
+                    clearInterval(this.processQueueInterval);
                 }
                 if (this.canvasLayer) {
                     this.map.removeLayer(this.canvasLayer);
@@ -1194,12 +1288,14 @@
                                 // Add data point with proper size normalization
                                 // Size is typically in bytes, normalize it for visualization
                                 const size = data.size || 1000; // Default 1KB if no size
+                                // Pass the event timestamp for temporal smoothing
                                 heatmap.addDataPoint(
                                     data.location.lat,
                                     data.location.lon,
                                     size,
                                     data.action || 'unknown',
-                                    data.action || 'unknown'
+                                    data.action || 'unknown',
+                                    data.timestamp // Pass actual event timestamp
                                 );
                             }
                             break;
