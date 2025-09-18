@@ -187,7 +187,7 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                 event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason, "node_name": node_name}
 
                 node_state['live_events'].append(event)
-                broadcast_payload = {"type": "log_entry", "action": action, "status": status, "location": location, "error_reason": error_reason, "timestamp": timestamp_obj.isoformat(), "node_name": node_name}
+                broadcast_payload = {"type": "log_entry", "action": action, "status": status, "size": size, "location": location, "error_reason": error_reason, "timestamp": timestamp_obj.isoformat(), "node_name": node_name}
                 await robust_broadcast(app_state['websockets'], broadcast_payload)
 
                 if app_state['db_write_queue'].full():
