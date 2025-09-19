@@ -281,7 +281,7 @@ async def performance_calculator(app, node_name: str):
         ingress_mbps = (ingress_bytes * 8) / (PERFORMANCE_INTERVAL_SECONDS * 1e6)
         egress_mbps = (egress_bytes * 8) / (PERFORMANCE_INTERVAL_SECONDS * 1e6)
 
-        payload = { "type": "performance_update", "node_name": node_name, "timestamp": datetime.datetime.utcnow().isoformat(), "ingress_mbps": round(ingress_mbps, 2), "egress_mbps": round(egress_mbps, 2), "ingress_bytes": ingress_bytes, "egress_bytes": egress_bytes, "ingress_pieces": ingress_pieces, "egress_pieces": egress_pieces, "concurrency": concurrency }
+        payload = { "type": "performance_update", "node_name": node_name, "timestamp": datetime.datetime.now(datetime.UTC).isoformat(), "ingress_mbps": round(ingress_mbps, 2), "egress_mbps": round(egress_mbps, 2), "ingress_bytes": ingress_bytes, "egress_bytes": egress_bytes, "ingress_pieces": ingress_pieces, "egress_pieces": egress_pieces, "concurrency": concurrency }
 
         await robust_broadcast(app_state['websockets'], payload)
 
