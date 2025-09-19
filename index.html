@@ -26,7 +26,7 @@
         #performance-card { grid-column: 1 / 7; grid-row: 4 / 5; }
         #satellite-card { grid-column: 7 / 13; grid-row: 4 / 5; }
         #analysis-card { grid-column: 1 / 7; grid-row: 5 / 6; }
-        #pie-charts-card { grid-column: 7 / 13; grid-row: 5 / 6; display: flex; justify-content: space-around; }
+        #size-charts-card { grid-column: 7 / 13; grid-row: 5 / 6; }
 
         .stat { text-align: center; }
         .stat-value { font-size: 2em; font-weight: bold; }
@@ -39,7 +39,6 @@
         .info-table td.numeric { text-align: right; }
         .piece-id { font-family: monospace; font-size: 0.9em; }
 
-        .pie-chart-container { width: 48%; }
 
         .chart-header { display: flex; justify-content: space-between; align-items: center; }
         .chart-header h3 { border-bottom: none; margin-bottom: 15px; }
@@ -150,9 +149,14 @@
             </div>
         </div>
 
-        <div id="pie-charts-card" class="card">
-            <div class="pie-chart-container"><h3 id="dl-pie-title">Download Sizes</h3><canvas id="downloadPieChart"></canvas></div>
-            <div class="pie-chart-container"><h3 id="ul-pie-title">Upload Sizes</h3><canvas id="uploadPieChart"></canvas></div>
+        <div id="size-charts-card" class="card">
+            <div class="chart-header">
+                <h3 class="card-title">Data Transfer Size Distribution</h3>
+                <div>
+                    <a href="#" id="toggle-size-view" class="toggle-link">Show Counts</a>
+                </div>
+            </div>
+            <div class="card-content"><canvas id="sizeBarChart"></canvas></div>
         </div>
     </div>
 
@@ -985,15 +989,57 @@
                 }
             }
         });
-        const downloadPieChart = new Chart(document.getElementById('downloadPieChart').getContext('2d'), { type: 'pie', data: { labels: [], datasets: [{ data: [], backgroundColor: PIE_CHART_COLORS }] }});
-        const uploadPieChart = new Chart(document.getElementById('uploadPieChart').getContext('2d'), { type: 'pie', data: { labels: [], datasets: [{ data: [], backgroundColor: PIE_CHART_COLORS }] }});
+        // Initialize size bar chart
+        const sizeBarChart = new Chart(document.getElementById('sizeBarChart').getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
+                    { label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }
+                ]
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        title: { display: true, text: 'Count' },
+                        stacked: true
+                    },
+                    y: {
+                        title: { display: true, text: 'Size Bucket' },
+                        stacked: true
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'top'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            footer: function(tooltipItems) {
+                                const item = tooltipItems[0];
+                                if (item.datasetIndex === 0) {
+                                    return `${item.parsed.x} downloads in this size range`;
+                                } else {
+                                    return `${item.parsed.x} uploads in this size range`;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        
+        let sizeViewIsPercentage = false;
 
         // --- UI Update Functions ---
         function updateAllVisuals(data) {
             updateOverallStats(data.overall);
             updateSatelliteChart(data.satellites);
-            updatePieChart(downloadPieChart, data.download_sizes);
-            updatePieChart(uploadPieChart, data.upload_sizes);
+            updateSizeBarChart(data.download_sizes, data.upload_sizes);
             updateTitles(data.first_event_iso, data.last_event_iso);
             updateHistoricalTable(data.historical_stats);
             updateAnalysisTables(data);
@@ -1045,10 +1091,55 @@
             satelliteChart.update();
         }
 
-        function updatePieChart(chart, sizeData) {
-            chart.data.labels = sizeData.map(d => d.bucket);
-            chart.data.datasets[0].data = sizeData.map(d => d.count);
-            chart.update();
+        function updateSizeBarChart(downloadSizes, uploadSizes) {
+            // Store the data for later use with the toggle
+            lastDownloadSizes = downloadSizes;
+            lastUploadSizes = uploadSizes;
+            
+            // Create a unified set of size buckets in the correct order
+            const allBuckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"];
+            
+            // Initialize download and upload data with zeros
+            const downloadData = new Array(allBuckets.length).fill(0);
+            const uploadData = new Array(allBuckets.length).fill(0);
+            
+            // Map the actual data
+            downloadSizes.forEach(item => {
+                const index = allBuckets.indexOf(item.bucket);
+                if (index !== -1) {
+                    downloadData[index] = item.count;
+                }
+            });
+            
+            uploadSizes.forEach(item => {
+                const index = allBuckets.indexOf(item.bucket);
+                if (index !== -1) {
+                    uploadData[index] = item.count;
+                }
+            });
+            
+            // Calculate percentages if needed
+            if (sizeViewIsPercentage) {
+                const totalDownloads = downloadData.reduce((sum, val) => sum + val, 0);
+                const totalUploads = uploadData.reduce((sum, val) => sum + val, 0);
+                
+                if (totalDownloads > 0) {
+                    downloadData.forEach((val, i) => downloadData[i] = (val / totalDownloads * 100).toFixed(1));
+                }
+                
+                if (totalUploads > 0) {
+                    uploadData.forEach((val, i) => uploadData[i] = (val / totalUploads * 100).toFixed(1));
+                }
+                
+                sizeBarChart.options.scales.x.title.text = 'Percentage (%)';
+            } else {
+                sizeBarChart.options.scales.x.title.text = 'Count';
+            }
+            
+            sizeBarChart.data.labels = allBuckets;
+            sizeBarChart.data.datasets[0].data = downloadData;
+            sizeBarChart.data.datasets[1].data = uploadData;
+            sizeBarChart.update();
         }
 
         function updateTitles(firstIso, lastIso) {
@@ -1207,6 +1298,19 @@
             satelliteViewIsBySize = !satelliteViewIsBySize;
             this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size';
             updateSatelliteChart(lastSatelliteData);
+        });
+        
+        // Store the last received data for toggling between views
+        let lastDownloadSizes = [];
+        let lastUploadSizes = [];
+        
+        document.getElementById('toggle-size-view').addEventListener('click', function(e) {
+            e.preventDefault();
+            sizeViewIsPercentage = !sizeViewIsPercentage;
+            this.textContent = sizeViewIsPercentage ? 'Show Counts' : 'Show Percentages';
+            
+            // Use the stored data to update the chart without fetching new data
+            updateSizeBarChart(lastDownloadSizes, lastUploadSizes);
         });
 
         document.getElementById('performance-toggles').addEventListener('click', function(e) {
