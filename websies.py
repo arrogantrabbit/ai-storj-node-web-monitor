@@ -361,7 +361,8 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
 
     dl_s, dl_f, ul_s, ul_f, a_s, a_f = 0, 0, 0, 0, 0, 0
     total_dl_size, total_ul_size = 0, 0
-    sats, cdl, cul, hp, errs = {}, Counter(), Counter(), Counter(), Counter()
+    sats, cdl, cul, errs = {}, Counter(), Counter(), Counter()
+    hp = {}  # Changed from Counter to dict to store both count and size
     
     # Track successful and failed transfers separately by size bucket
     dls_success = Counter()
@@ -378,7 +379,12 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
             else: a_f += 1; errs[error_reason] += 1
         elif 'GET' in action:
             size_bucket = get_size_bucket(size)
-            sats[sat_id]['downloads'] += 1; hp[piece_id] += 1
+            sats[sat_id]['downloads'] += 1
+            # Track both count and size for each piece
+            if piece_id not in hp:
+                hp[piece_id] = {'count': 0, 'size': 0}
+            hp[piece_id]['count'] += 1
+            hp[piece_id]['size'] += size
             if country: cdl[country] += size
             if status == 'success':
                 dl_s += 1
@@ -468,7 +474,8 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
         "transfer_sizes": transfer_sizes,  # New combined structure
         "historical_stats": hist_stats,
         "error_categories": [{'reason': k, 'count': v} for k,v in errs.most_common(5)],
-        "top_pieces": [{'id': k, 'count': v} for k,v in hp.most_common(5)],
+        "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']}
+                      for k, v in sorted(hp.items(), key=lambda x: x[1]['count'], reverse=True)[:5]],
         "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(5) if k],
         "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(5) if k]
     }

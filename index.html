@@ -136,7 +136,10 @@
                 </div>
                 <div>
                     <h5>Top 5 Hot Pieces</h5>
-                    <table class="info-table"><tbody id="pieces-body"></tbody></table>
+                    <table class="info-table">
+                        <thead><tr><th>Piece ID</th><th>Count</th><th>Size</th></tr></thead>
+                        <tbody id="pieces-body"></tbody>
+                    </table>
                 </div>
                  <div>
                     <h5>Top 5 Countries (Egress)</h5>
@@ -153,7 +156,7 @@
             <div class="chart-header">
                 <h3 class="card-title">Data Transfer Size Distribution</h3>
                 <div>
-                    <a href="#" id="toggle-size-view" class="toggle-link">Show Counts</a>
+                    <a href="#" id="toggle-size-view" class="toggle-link">Show Percentages</a>
                 </div>
             </div>
             <div class="card-content"><canvas id="sizeBarChart"></canvas></div>
@@ -1183,7 +1186,7 @@
             data.error_categories.forEach(e => errorBody.innerHTML += `<tr><td>${e.reason}</td><td>${e.count}</td></tr>`);
 
             const piecesBody = document.getElementById('pieces-body'); piecesBody.innerHTML = '';
-            data.top_pieces.forEach(p => piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,20)}...</td><td>${p.count}</td></tr>`);
+            data.top_pieces.forEach(p => piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,20)}...</td><td>${p.count}</td><td>${formatBytes(p.size)}</td></tr>`);
 
             const countriesDlBody = document.getElementById('countries-dl-body'); countriesDlBody.innerHTML = '';
             data.top_countries_dl.forEach(c => countriesDlBody.innerHTML += `<tr><td>${c.country}</td><td>${formatBytes(c.size)}</td></tr>`);
