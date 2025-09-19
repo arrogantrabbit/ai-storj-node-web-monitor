@@ -989,27 +989,28 @@
                 }
             }
         });
-        // Initialize size bar chart
+        // Initialize size bar chart - vertical orientation with actual error data
         const sizeBarChart = new Chart(document.getElementById('sizeBarChart').getContext('2d'), {
             type: 'bar',
             data: {
                 labels: [],
                 datasets: [
-                    { label: 'Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
-                    { label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }
+                    { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
+                    { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
+                    { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' },
+                    { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
                 ]
             },
             options: {
-                indexAxis: 'y',
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
                     x: {
-                        title: { display: true, text: 'Count' },
+                        title: { display: true, text: 'Size Bucket' },
                         stacked: true
                     },
                     y: {
-                        title: { display: true, text: 'Size Bucket' },
+                        title: { display: true, text: 'Count' },
                         stacked: true
                     }
                 },
@@ -1021,11 +1022,8 @@
                         callbacks: {
                             footer: function(tooltipItems) {
                                 const item = tooltipItems[0];
-                                if (item.datasetIndex === 0) {
-                                    return `${item.parsed.x} downloads in this size range`;
-                                } else {
-                                    return `${item.parsed.x} uploads in this size range`;
-                                }
+                                const datasetLabels = ['successful downloads', 'successful uploads', 'failed downloads', 'failed uploads'];
+                                return `${item.parsed.y} ${datasetLabels[item.datasetIndex]} in this size range`;
                             }
                         }
                     }
@@ -1039,7 +1037,7 @@
         function updateAllVisuals(data) {
             updateOverallStats(data.overall);
             updateSatelliteChart(data.satellites);
-            updateSizeBarChart(data.download_sizes, data.upload_sizes);
+            updateSizeBarChart(data.transfer_sizes);
             updateTitles(data.first_event_iso, data.last_event_iso);
             updateHistoricalTable(data.historical_stats);
             updateAnalysisTables(data);
@@ -1091,54 +1089,57 @@
             satelliteChart.update();
         }
 
-        function updateSizeBarChart(downloadSizes, uploadSizes) {
-            // Store the data for later use with the toggle
-            lastDownloadSizes = downloadSizes;
-            lastUploadSizes = uploadSizes;
-            
-            // Create a unified set of size buckets in the correct order
-            const allBuckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"];
-            
-            // Initialize download and upload data with zeros
-            const downloadData = new Array(allBuckets.length).fill(0);
-            const uploadData = new Array(allBuckets.length).fill(0);
-            
-            // Map the actual data
-            downloadSizes.forEach(item => {
-                const index = allBuckets.indexOf(item.bucket);
-                if (index !== -1) {
-                    downloadData[index] = item.count;
-                }
-            });
-            
-            uploadSizes.forEach(item => {
-                const index = allBuckets.indexOf(item.bucket);
-                if (index !== -1) {
-                    uploadData[index] = item.count;
-                }
-            });
+        function updateSizeBarChart(transferSizes) {
+                    // Store the data for later use with the toggle
+                    lastTransferSizes = transferSizes;
+                    
+                    // Create a unified set of size buckets in the correct order
+                    const allBuckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"];
+                    
+                    // Initialize data arrays with zeros
+                    const successfulDownloadData = new Array(allBuckets.length).fill(0);
+                    const successfulUploadData = new Array(allBuckets.length).fill(0);
+                    const failedDownloadData = new Array(allBuckets.length).fill(0);
+                    const failedUploadData = new Array(allBuckets.length).fill(0);
+                    
+                    // Map the actual data from the backend's transfer_sizes structure
+                    transferSizes.forEach(item => {
+                        const index = allBuckets.indexOf(item.bucket);
+                        if (index !== -1) {
+                            successfulDownloadData[index] = item.downloads_success;
+                            successfulUploadData[index] = item.uploads_success;
+                            failedDownloadData[index] = item.downloads_failed;
+                            failedUploadData[index] = item.uploads_failed;
+                        }
+                    });
             
             // Calculate percentages if needed
             if (sizeViewIsPercentage) {
-                const totalDownloads = downloadData.reduce((sum, val) => sum + val, 0);
-                const totalUploads = uploadData.reduce((sum, val) => sum + val, 0);
+                const totalDownloadsSuccess = successfulDownloadData.reduce((sum, val) => sum + val, 0);
+                const totalUploadsSuccess = successfulUploadData.reduce((sum, val) => sum + val, 0);
+                const totalDownloadsFailed = failedDownloadData.reduce((sum, val) => sum + val, 0);
+                const totalUploadsFailed = failedUploadData.reduce((sum, val) => sum + val, 0);
+                const totalAll = totalDownloadsSuccess + totalUploadsSuccess + totalDownloadsFailed + totalUploadsFailed;
                 
-                if (totalDownloads > 0) {
-                    downloadData.forEach((val, i) => downloadData[i] = (val / totalDownloads * 100).toFixed(1));
+                if (totalAll > 0) {
+                    for (let i = 0; i < allBuckets.length; i++) {
+                        successfulDownloadData[i] = (successfulDownloadData[i] / totalAll * 100).toFixed(1);
+                        successfulUploadData[i] = (successfulUploadData[i] / totalAll * 100).toFixed(1);
+                        failedDownloadData[i] = (failedDownloadData[i] / totalAll * 100).toFixed(1);
+                        failedUploadData[i] = (failedUploadData[i] / totalAll * 100).toFixed(1);
+                    }
                 }
                 
-                if (totalUploads > 0) {
-                    uploadData.forEach((val, i) => uploadData[i] = (val / totalUploads * 100).toFixed(1));
-                }
-                
-                sizeBarChart.options.scales.x.title.text = 'Percentage (%)';
+                sizeBarChart.options.scales.y.title.text = 'Percentage (%)';
             } else {
-                sizeBarChart.options.scales.x.title.text = 'Count';
+                sizeBarChart.options.scales.y.title.text = 'Count';
             }
             
             sizeBarChart.data.labels = allBuckets;
-            sizeBarChart.data.datasets[0].data = downloadData;
-            sizeBarChart.data.datasets[1].data = uploadData;
+            sizeBarChart.data.datasets[0].data = successfulDownloadData;
+            sizeBarChart.data.datasets[1].data = successfulUploadData;
+            sizeBarChart.data.datasets[2].data = failedDownloadData;
+            sizeBarChart.data.datasets[3].data = failedUploadData;
             sizeBarChart.update();
         }
 
@@ -1304,13 +1305,16 @@
         let lastDownloadSizes = [];
         let lastUploadSizes = [];
         
+        // Variable to store the last received transfer sizes data
+        let lastTransferSizes = [];
+        
         document.getElementById('toggle-size-view').addEventListener('click', function(e) {
             e.preventDefault();
             sizeViewIsPercentage = !sizeViewIsPercentage;
             this.textContent = sizeViewIsPercentage ? 'Show Counts' : 'Show Percentages';
             
-            // Use the stored data to update the chart without fetching new data
-            updateSizeBarChart(lastDownloadSizes, lastUploadSizes);
+            // Update the chart with the stored data
+            updateSizeBarChart(lastTransferSizes);
         });
 
         document.getElementById('performance-toggles').addEventListener('click', function(e) {
