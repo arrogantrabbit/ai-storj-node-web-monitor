@@ -361,7 +361,14 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
 
     dl_s, dl_f, ul_s, ul_f, a_s, a_f = 0, 0, 0, 0, 0, 0
     total_dl_size, total_ul_size = 0, 0
-    sats, dls, uls, cdl, cul, hp, errs = {}, Counter(), Counter(), Counter(), Counter(), Counter(), Counter()
+    sats, cdl, cul, errs = {}, Counter(), Counter(), Counter()
+    hp = {}  # Changed from Counter to dict to store both count and size
+    
+    # Track successful and failed transfers separately by size bucket
+    dls_success = Counter()
+    dls_failed = Counter()
+    uls_success = Counter()
+    uls_failed = Counter()
 
     for e in events_copy:
         action, status, sat_id, size, country, piece_id, error_reason = e['action'], e['status'], e['satellite_id'], e['size'], e['location']['country'], e['piece_id'], e['error_reason']
@@ -371,15 +378,38 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
             if status == 'success': a_s += 1; sats[sat_id]['audit_success'] += 1
             else: a_f += 1; errs[error_reason] += 1
         elif 'GET' in action:
-            sats[sat_id]['downloads'] += 1; hp[piece_id] += 1; dls[get_size_bucket(size)] += 1
+            size_bucket = get_size_bucket(size)
+            sats[sat_id]['downloads'] += 1
+            # Track both count and size for each piece
+            if piece_id not in hp:
+                hp[piece_id] = {'count': 0, 'size': 0}
+            hp[piece_id]['count'] += 1
+            hp[piece_id]['size'] += size
             if country: cdl[country] += size
-            if status == 'success': dl_s += 1; sats[sat_id]['dl_success'] += 1; sats[sat_id]['total_download_size'] += size; total_dl_size += size
-            else: dl_f += 1; errs[error_reason] += 1
+            if status == 'success':
+                dl_s += 1
+                sats[sat_id]['dl_success'] += 1
+                sats[sat_id]['total_download_size'] += size
+                total_dl_size += size
+                dls_success[size_bucket] += 1  # Track successful download by size bucket
+            else:
+                dl_f += 1
+                errs[error_reason] += 1
+                dls_failed[size_bucket] += 1  # Track failed download by size bucket
         elif action == 'PUT':
-            sats[sat_id]['uploads'] += 1; uls[get_size_bucket(size)] += 1
+            size_bucket = get_size_bucket(size)
+            sats[sat_id]['uploads'] += 1
             if country: cul[country] += size
-            if status == 'success': ul_s += 1; sats[sat_id]['ul_success'] += 1; sats[sat_id]['total_upload_size'] += size; total_ul_size += size
-            else: ul_f += 1; errs[error_reason] += 1
+            if status == 'success':
+                ul_s += 1
+                sats[sat_id]['ul_success'] += 1
+                sats[sat_id]['total_upload_size'] += size
+                total_ul_size += size
+                uls_success[size_bucket] += 1  # Track successful upload by size bucket
+            else:
+                ul_f += 1
+                errs[error_reason] += 1
+                uls_failed[size_bucket] += 1  # Track failed upload by size bucket
 
     hist_stats = []
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
@@ -413,7 +443,42 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     avg_ingress_mbps = (live_ul_bytes * 8) / (60 * 1e6)
 
 
-    return { "type": "stats_update", "first_event_iso": first_event_iso, "last_event_iso": last_event_iso, "overall": {"dl_success": dl_s, "dl_fail": dl_f, "ul_success": ul_s, "ul_fail": ul_f, "audit_success": a_s, "audit_fail": a_f, "avg_egress_mbps": avg_egress_mbps, "avg_ingress_mbps": avg_ingress_mbps}, "satellites": sorted([{'satellite_id': k, **v} for k, v in sats.items()], key=lambda x: x['uploads'] + x['downloads'], reverse=True), "download_sizes": [{'bucket': k, 'count': v} for k, v in dls.most_common(10)], "upload_sizes": [{'bucket': k, 'count': v} for k, v in uls.most_common(10)], "historical_stats": hist_stats, "error_categories": [{'reason': k, 'count': v} for k,v in errs.most_common(5)], "top_pieces": [{'id': k, 'count': v} for k,v in hp.most_common(5)], "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(5) if k], "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(5) if k] }
+    # Create the transfer_sizes data structure with all buckets in order (not just top 10)
+    all_buckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]
+    transfer_sizes = []
+    
+    for bucket in all_buckets:
+        transfer_sizes.append({
+            'bucket': bucket,
+            'downloads_success': dls_success[bucket],
+            'downloads_failed': dls_failed[bucket],
+            'uploads_success': uls_success[bucket],
+            'uploads_failed': uls_failed[bucket]
+        })
+        
+    return {
+        "type": "stats_update",
+        "first_event_iso": first_event_iso,
+        "last_event_iso": last_event_iso,
+        "overall": {
+            "dl_success": dl_s,
+            "dl_fail": dl_f,
+            "ul_success": ul_s,
+            "ul_fail": ul_f,
+            "audit_success": a_s,
+            "audit_fail": a_f,
+            "avg_egress_mbps": avg_egress_mbps,
+            "avg_ingress_mbps": avg_ingress_mbps
+        },
+        "satellites": sorted([{'satellite_id': k, **v} for k, v in sats.items()], key=lambda x: x['uploads'] + x['downloads'], reverse=True),
+        "transfer_sizes": transfer_sizes,  # New combined structure
+        "historical_stats": hist_stats,
+        "error_categories": [{'reason': k, 'count': v} for k,v in errs.most_common(5)],
+        "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']}
+                      for k, v in sorted(hp.items(), key=lambda x: x[1]['count'], reverse=True)[:5]],
+        "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(5) if k],
+        "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(5) if k]
+    }
 
 async def send_stats_for_view(app, ws, view):
     loop = asyncio.get_running_loop()

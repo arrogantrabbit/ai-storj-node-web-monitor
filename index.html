@@ -26,7 +26,7 @@
         #performance-card { grid-column: 1 / 7; grid-row: 4 / 5; }
         #satellite-card { grid-column: 7 / 13; grid-row: 4 / 5; }
         #analysis-card { grid-column: 1 / 7; grid-row: 5 / 6; }
-        #pie-charts-card { grid-column: 7 / 13; grid-row: 5 / 6; display: flex; justify-content: space-around; }
+        #size-charts-card { grid-column: 7 / 13; grid-row: 5 / 6; }
 
         .stat { text-align: center; }
         .stat-value { font-size: 2em; font-weight: bold; }
@@ -39,7 +39,6 @@
         .info-table td.numeric { text-align: right; }
         .piece-id { font-family: monospace; font-size: 0.9em; }
 
-        .pie-chart-container { width: 48%; }
 
         .chart-header { display: flex; justify-content: space-between; align-items: center; }
         .chart-header h3 { border-bottom: none; margin-bottom: 15px; }
@@ -137,7 +136,10 @@
                 </div>
                 <div>
                     <h5>Top 5 Hot Pieces</h5>
-                    <table class="info-table"><tbody id="pieces-body"></tbody></table>
+                    <table class="info-table">
+                        <thead><tr><th>Piece ID</th><th>Count</th><th>Size</th></tr></thead>
+                        <tbody id="pieces-body"></tbody>
+                    </table>
                 </div>
                  <div>
                     <h5>Top 5 Countries (Egress)</h5>
@@ -150,9 +152,14 @@
             </div>
         </div>
 
-        <div id="pie-charts-card" class="card">
-            <div class="pie-chart-container"><h3 id="dl-pie-title">Download Sizes</h3><canvas id="downloadPieChart"></canvas></div>
-            <div class="pie-chart-container"><h3 id="ul-pie-title">Upload Sizes</h3><canvas id="uploadPieChart"></canvas></div>
+        <div id="size-charts-card" class="card">
+            <div class="chart-header">
+                <h3 class="card-title">Data Transfer Size Distribution</h3>
+                <div>
+                    <a href="#" id="toggle-size-view" class="toggle-link">Show Percentages</a>
+                </div>
+            </div>
+            <div class="card-content"><canvas id="sizeBarChart"></canvas></div>
         </div>
     </div>
 
@@ -985,15 +992,55 @@
                 }
             }
         });
-        const downloadPieChart = new Chart(document.getElementById('downloadPieChart').getContext('2d'), { type: 'pie', data: { labels: [], datasets: [{ data: [], backgroundColor: PIE_CHART_COLORS }] }});
-        const uploadPieChart = new Chart(document.getElementById('uploadPieChart').getContext('2d'), { type: 'pie', data: { labels: [], datasets: [{ data: [], backgroundColor: PIE_CHART_COLORS }] }});
+        // Initialize size bar chart - vertical orientation with actual error data
+        const sizeBarChart = new Chart(document.getElementById('sizeBarChart').getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
+                    { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
+                    { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' },
+                    { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        title: { display: true, text: 'Size Bucket' },
+                        stacked: true
+                    },
+                    y: {
+                        title: { display: true, text: 'Count' },
+                        stacked: true
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'top'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            footer: function(tooltipItems) {
+                                const item = tooltipItems[0];
+                                const datasetLabels = ['successful downloads', 'successful uploads', 'failed downloads', 'failed uploads'];
+                                return `${item.parsed.y} ${datasetLabels[item.datasetIndex]} in this size range`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        
+        let sizeViewIsPercentage = false;
 
         // --- UI Update Functions ---
         function updateAllVisuals(data) {
             updateOverallStats(data.overall);
             updateSatelliteChart(data.satellites);
-            updatePieChart(downloadPieChart, data.download_sizes);
-            updatePieChart(uploadPieChart, data.upload_sizes);
+            updateSizeBarChart(data.transfer_sizes);
             updateTitles(data.first_event_iso, data.last_event_iso);
             updateHistoricalTable(data.historical_stats);
             updateAnalysisTables(data);
@@ -1045,10 +1092,58 @@
             satelliteChart.update();
         }
 
-        function updatePieChart(chart, sizeData) {
-            chart.data.labels = sizeData.map(d => d.bucket);
-            chart.data.datasets[0].data = sizeData.map(d => d.count);
-            chart.update();
+        function updateSizeBarChart(transferSizes) {
+                    // Store the data for later use with the toggle
+                    lastTransferSizes = transferSizes;
+                    
+                    // Create a unified set of size buckets in the correct order
+                    const allBuckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"];
+                    
+                    // Initialize data arrays with zeros
+                    const successfulDownloadData = new Array(allBuckets.length).fill(0);
+                    const successfulUploadData = new Array(allBuckets.length).fill(0);
+                    const failedDownloadData = new Array(allBuckets.length).fill(0);
+                    const failedUploadData = new Array(allBuckets.length).fill(0);
+                    
+                    // Map the actual data from the backend's transfer_sizes structure
+                    transferSizes.forEach(item => {
+                        const index = allBuckets.indexOf(item.bucket);
+                        if (index !== -1) {
+                            successfulDownloadData[index] = item.downloads_success;
+                            successfulUploadData[index] = item.uploads_success;
+                            failedDownloadData[index] = item.downloads_failed;
+                            failedUploadData[index] = item.uploads_failed;
+                        }
+                    });
+            
+            // Calculate percentages if needed
+            if (sizeViewIsPercentage) {
+                const totalDownloadsSuccess = successfulDownloadData.reduce((sum, val) => sum + val, 0);
+                const totalUploadsSuccess = successfulUploadData.reduce((sum, val) => sum + val, 0);
+                const totalDownloadsFailed = failedDownloadData.reduce((sum, val) => sum + val, 0);
+                const totalUploadsFailed = failedUploadData.reduce((sum, val) => sum + val, 0);
+                const totalAll = totalDownloadsSuccess + totalUploadsSuccess + totalDownloadsFailed + totalUploadsFailed;
+                
+                if (totalAll > 0) {
+                    for (let i = 0; i < allBuckets.length; i++) {
+                        successfulDownloadData[i] = (successfulDownloadData[i] / totalAll * 100).toFixed(1);
+                        successfulUploadData[i] = (successfulUploadData[i] / totalAll * 100).toFixed(1);
+                        failedDownloadData[i] = (failedDownloadData[i] / totalAll * 100).toFixed(1);
+                        failedUploadData[i] = (failedUploadData[i] / totalAll * 100).toFixed(1);
+                    }
+                }
+                
+                sizeBarChart.options.scales.y.title.text = 'Percentage (%)';
+            } else {
+                sizeBarChart.options.scales.y.title.text = 'Count';
+            }
+            
+            sizeBarChart.data.labels = allBuckets;
+            sizeBarChart.data.datasets[0].data = successfulDownloadData;
+            sizeBarChart.data.datasets[1].data = successfulUploadData;
+            sizeBarChart.data.datasets[2].data = failedDownloadData;
+            sizeBarChart.data.datasets[3].data = failedUploadData;
+            sizeBarChart.update();
         }
 
         function updateTitles(firstIso, lastIso) {
@@ -1091,7 +1186,7 @@
             data.error_categories.forEach(e => errorBody.innerHTML += `<tr><td>${e.reason}</td><td>${e.count}</td></tr>`);
 
             const piecesBody = document.getElementById('pieces-body'); piecesBody.innerHTML = '';
-            data.top_pieces.forEach(p => piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,20)}...</td><td>${p.count}</td></tr>`);
+            data.top_pieces.forEach(p => piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,20)}...</td><td>${p.count}</td><td>${formatBytes(p.size)}</td></tr>`);
 
             const countriesDlBody = document.getElementById('countries-dl-body'); countriesDlBody.innerHTML = '';
             data.top_countries_dl.forEach(c => countriesDlBody.innerHTML += `<tr><td>${c.country}</td><td>${formatBytes(c.size)}</td></tr>`);
@@ -1207,6 +1302,22 @@
             satelliteViewIsBySize = !satelliteViewIsBySize;
             this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size';
             updateSatelliteChart(lastSatelliteData);
+        });
+        
+        // Store the last received data for toggling between views
+        let lastDownloadSizes = [];
+        let lastUploadSizes = [];
+        
+        // Variable to store the last received transfer sizes data
+        let lastTransferSizes = [];
+        
+        document.getElementById('toggle-size-view').addEventListener('click', function(e) {
+            e.preventDefault();
+            sizeViewIsPercentage = !sizeViewIsPercentage;
+            this.textContent = sizeViewIsPercentage ? 'Show Counts' : 'Show Percentages';
+            
+            // Update the chart with the stored data
+            updateSizeBarChart(lastTransferSizes);
         });
 
         document.getElementById('performance-toggles').addEventListener('click', function(e) {
