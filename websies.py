@@ -40,10 +40,11 @@ PERFORMANCE_INTERVAL_SECONDS = 2
 DB_WRITE_BATCH_INTERVAL_SECONDS = 10
 DB_QUEUE_MAX_SIZE = 30000
 EXPECTED_DB_COLUMNS = 13 # Increased for node_name
-
 HISTORICAL_HOURS_TO_SHOW = 6
 MAX_GEOIP_CACHE_SIZE = 5000
 HOURLY_AGG_INTERVAL_MINUTES = 10
+DB_EVENTS_RETENTION_DAYS = 2 # New: How many days of event data to keep
+DB_PRUNE_INTERVAL_HOURS = 6  # New: How often to run the pruner
 
 # Custom type for a node's state
 NodeState = Dict[str, Any]
@@ -101,7 +102,7 @@ def init_db():
             else: select_columns.append('0 as total_download_size')
             if 'total_upload_size' in old_columns: select_columns.append('total_upload_size')
             else: select_columns.append('0 as total_upload_size')
-
+            
             cursor.execute("ALTER TABLE hourly_stats RENAME TO hourly_stats_old;")
             cursor.execute('CREATE TABLE hourly_stats (hour_timestamp TEXT, node_name TEXT, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0, audit_success INTEGER DEFAULT 0, audit_fail INTEGER DEFAULT 0, total_download_size INTEGER DEFAULT 0, total_upload_size INTEGER DEFAULT 0, PRIMARY KEY (hour_timestamp, node_name))')
             select_query = f"SELECT {', '.join(select_columns)} FROM hourly_stats_old"
@@ -122,7 +123,7 @@ def init_db():
         log.info("Creating composite index for performance. This may take a very long time on large databases. Please wait...")
         cursor.execute('CREATE INDEX idx_events_node_name_timestamp ON events (node_name, timestamp);')
         log.info("Index creation complete.")
-
+    
     conn.commit()
     conn.close()
     log.info("Database schema is valid and ready.")
@@ -251,7 +252,7 @@ async def database_writer_task(app):
         while not app_state['db_write_queue'].empty():
             try: events_to_write.append(app_state['db_write_queue'].get_nowait())
             except asyncio.QueueEmpty: break
-
+        
         if events_to_write:
             log.info(f"[DB_WRITER] Preparing to write {len(events_to_write)} events. Queue size: {app_state['db_write_queue'].qsize()}")
             loop = asyncio.get_running_loop()
@@ -364,6 +365,38 @@ async def hourly_aggregator_task(app):
             log.error("Error in hourly aggregator task:", exc_info=True)
 
 
+def blocking_db_prune(db_path, retention_days):
+    log.info(f"[DB_PRUNER] Starting database pruning task. Retaining last {retention_days} days of events.")
+    cutoff_date = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=retention_days)
+    cutoff_iso = cutoff_date.isoformat()
+    
+    with sqlite3.connect(db_path, timeout=30) as conn:
+        cursor = conn.cursor()
+        
+        log.info(f"Finding events older than {cutoff_iso} to delete...")
+        cursor.execute("SELECT COUNT(*) FROM events WHERE timestamp < ?", (cutoff_iso,))
+        count = cursor.fetchone()[0]
+        
+        if count > 0:
+            log.warning(f"Deleting {count} old event(s) from the database. This might take a while...")
+            cursor.execute("DELETE FROM events WHERE timestamp < ?", (cutoff_iso,))
+            conn.commit()
+            log.info(f"Successfully pruned {count} old event(s) from the database.")
+        else:
+            log.info("No old events found to prune.")
+
+async def database_pruner_task(app):
+    log.info("Database pruner task started.")
+    while True:
+        try:
+            loop = asyncio.get_running_loop()
+            async with app_state['db_write_lock']:
+                await loop.run_in_executor(app['db_executor'], blocking_db_prune, DATABASE_FILE, DB_EVENTS_RETENTION_DAYS)
+        except Exception:
+            log.error("Error in database pruner task:", exc_info=True)
+        await asyncio.sleep(3600 * DB_PRUNE_INTERVAL_HOURS)
+
+
 def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     events_copy = []
     if view == 'Aggregate':
@@ -379,7 +412,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     total_dl_size, total_ul_size = 0, 0
     sats, cdl, cul, errs = {}, Counter(), Counter(), Counter()
     hp = {}  # Changed from Counter to dict to store both count and size
-
+    
     # Track successful and failed transfers separately by size bucket
     dls_success = Counter()
     dls_failed = Counter()
@@ -462,7 +495,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     # Create the transfer_sizes data structure with all buckets in order (not just top 10)
     all_buckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]
     transfer_sizes = []
-
+    
     for bucket in all_buckets:
         transfer_sizes.append({
             'bucket': bucket,
@@ -471,7 +504,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
             'uploads_success': uls_success[bucket],
             'uploads_failed': uls_failed[bucket]
         })
-
+        
     return {
         "type": "stats_update",
         "first_event_iso": first_event_iso,
@@ -579,7 +612,8 @@ async def start_background_tasks(app):
         asyncio.create_task(periodic_stats_updater(app)),
         asyncio.create_task(debug_logger_task(app)),
         asyncio.create_task(database_writer_task(app)),
-        asyncio.create_task(hourly_aggregator_task(app))
+        asyncio.create_task(hourly_aggregator_task(app)),
+        asyncio.create_task(database_pruner_task(app)) # New: Add the pruner task
     ])
 
 async def cleanup_background_tasks(app):
