@@ -40,6 +40,7 @@ PERFORMANCE_INTERVAL_SECONDS = 2
 DB_WRITE_BATCH_INTERVAL_SECONDS = 10
 DB_QUEUE_MAX_SIZE = 30000
 EXPECTED_DB_COLUMNS = 13 # Increased for node_name
+
 HISTORICAL_HOURS_TO_SHOW = 6
 MAX_GEOIP_CACHE_SIZE = 5000
 HOURLY_AGG_INTERVAL_MINUTES = 10
@@ -52,13 +53,26 @@ app_state: Dict[str, Any] = {
     'websockets': {},  # {ws: {"view": "Aggregate"}}
     'nodes': {},  # { "node_name": NodeState }
     'geoip_cache': {},
+    'db_write_lock': asyncio.Lock(),  # Lock to serialize DB write operations
     'db_write_queue': asyncio.Queue(maxsize=DB_QUEUE_MAX_SIZE),
 }
 
 
 def init_db():
+    log.info("Connecting to database and checking schema...")
     conn = sqlite3.connect(DATABASE_FILE, timeout=10)
     cursor = conn.cursor()
+
+    # Enable Write-Ahead Logging (WAL) mode for better concurrency. This is a persistent setting.
+    cursor.execute('PRAGMA journal_mode=WAL;')
+    cursor.execute('PRAGMA journal_mode;')
+    mode = cursor.fetchone()
+    if mode and mode[0].lower() == 'wal':
+        log.info("Database journal mode is set to WAL.")
+    else:
+        log.warning(f"Failed to set database journal mode to WAL. Current mode: {mode[0] if mode else 'unknown'}")
+
+    log.info("Performing one-time database schema validation and upgrades. This may take a long time on large databases...")
 
     # --- Schema migration for events table ---
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='events';")
@@ -66,10 +80,10 @@ def init_db():
         cursor.execute("PRAGMA table_info(events);")
         columns = [col[1] for col in cursor.fetchall()]
         if 'node_name' not in columns:
-            log.info("Upgrading 'events' table. Adding 'node_name' column.")
+            log.info("Upgrading 'events' table: Adding 'node_name' column. Please wait...")
             cursor.execute("ALTER TABLE events ADD COLUMN node_name TEXT;")
-            # Backfill with a default value if needed, though for new data it's fine
             cursor.execute("UPDATE events SET node_name = 'default' WHERE node_name IS NULL;")
+            log.info("'events' table upgrade complete.")
 
     cursor.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, timestamp DATETIME, action TEXT, status TEXT, size INTEGER, piece_id TEXT, satellite_id TEXT, remote_ip TEXT, country TEXT, latitude REAL, longitude REAL, error_reason TEXT, node_name TEXT)')
 
@@ -80,42 +94,38 @@ def init_db():
         columns = [col[1] for col in cursor.fetchall()]
         if 'node_name' not in columns:
             log.info("Upgrading 'hourly_stats' table. Recreating with new composite primary key.")
-            # Check what columns exist in the old table
             cursor.execute("PRAGMA table_info(hourly_stats);")
             old_columns = [col[1] for col in cursor.fetchall()]
-            
-            # Build the SELECT clause based on available columns
             select_columns = ['hour_timestamp', "'default' as node_name", 'dl_success', 'dl_fail', 'ul_success', 'ul_fail', 'audit_success', 'audit_fail']
-            if 'total_download_size' in old_columns:
-                select_columns.append('total_download_size')
-            else:
-                select_columns.append('0 as total_download_size')
-            if 'total_upload_size' in old_columns:
-                select_columns.append('total_upload_size')
-            else:
-                select_columns.append('0 as total_upload_size')
-            
-            # Rename old table, create new one, and migrate data
+            if 'total_download_size' in old_columns: select_columns.append('total_download_size')
+            else: select_columns.append('0 as total_download_size')
+            if 'total_upload_size' in old_columns: select_columns.append('total_upload_size')
+            else: select_columns.append('0 as total_upload_size')
+
             cursor.execute("ALTER TABLE hourly_stats RENAME TO hourly_stats_old;")
             cursor.execute('CREATE TABLE hourly_stats (hour_timestamp TEXT, node_name TEXT, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0, audit_success INTEGER DEFAULT 0, audit_fail INTEGER DEFAULT 0, total_download_size INTEGER DEFAULT 0, total_upload_size INTEGER DEFAULT 0, PRIMARY KEY (hour_timestamp, node_name))')
-            
-            # Migrate data with proper column handling
             select_query = f"SELECT {', '.join(select_columns)} FROM hourly_stats_old"
             cursor.execute(f"INSERT INTO hourly_stats (hour_timestamp, node_name, dl_success, dl_fail, ul_success, ul_fail, audit_success, audit_fail, total_download_size, total_upload_size) {select_query}")
             cursor.execute("DROP TABLE hourly_stats_old;")
+            log.info("'hourly_stats' table upgrade complete.")
         else:
-            # If node_name exists, just check for size columns
-            if 'total_download_size' not in columns:
-                cursor.execute("ALTER TABLE hourly_stats ADD COLUMN total_download_size INTEGER DEFAULT 0;")
-            if 'total_upload_size' not in columns:
-                cursor.execute("ALTER TABLE hourly_stats ADD COLUMN total_upload_size INTEGER DEFAULT 0;")
+            if 'total_download_size' not in columns: cursor.execute("ALTER TABLE hourly_stats ADD COLUMN total_download_size INTEGER DEFAULT 0;")
+            if 'total_upload_size' not in columns: cursor.execute("ALTER TABLE hourly_stats ADD COLUMN total_upload_size INTEGER DEFAULT 0;")
 
     cursor.execute('CREATE TABLE IF NOT EXISTS hourly_stats (hour_timestamp TEXT, node_name TEXT, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0, audit_success INTEGER DEFAULT 0, audit_fail INTEGER DEFAULT 0, total_download_size INTEGER DEFAULT 0, total_upload_size INTEGER DEFAULT 0, PRIMARY KEY (hour_timestamp, node_name))')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_node_name ON events (node_name);')
+
+    # Add a composite index to optimize the hourly aggregation query
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_events_node_name_timestamp'")
+    if not cursor.fetchone():
+        log.info("Creating composite index for performance. This may take a very long time on large databases. Please wait...")
+        cursor.execute('CREATE INDEX idx_events_node_name_timestamp ON events (node_name, timestamp);')
+        log.info("Index creation complete.")
+
     conn.commit()
     conn.close()
-    log.info("Database schema is valid.")
+    log.info("Database schema is valid and ready.")
 
 
 def get_size_bucket(size_in_bytes):
@@ -241,11 +251,15 @@ async def database_writer_task(app):
         while not app_state['db_write_queue'].empty():
             try: events_to_write.append(app_state['db_write_queue'].get_nowait())
             except asyncio.QueueEmpty: break
+
         if events_to_write:
-            log.info(f"[DB_WRITER] Writing {len(events_to_write)} events. Queue size: {app_state['db_write_queue'].qsize()}")
+            log.info(f"[DB_WRITER] Preparing to write {len(events_to_write)} events. Queue size: {app_state['db_write_queue'].qsize()}")
             loop = asyncio.get_running_loop()
-            try: await loop.run_in_executor(app['db_executor'], blocking_db_batch_write, DATABASE_FILE, events_to_write)
-            except Exception: log.error("Error during blocking database write execution:", exc_info=True)
+            async with app_state['db_write_lock']:
+                try:
+                    await loop.run_in_executor(app['db_executor'], blocking_db_batch_write, DATABASE_FILE, events_to_write)
+                except Exception:
+                    log.error("Error during blocking database write execution:", exc_info=True)
 
 async def debug_logger_task(app):
     log.info("Debug heartbeat task started.")
@@ -320,9 +334,9 @@ def blocking_hourly_aggregation(node_names: List[str]):
                     SUM(CASE WHEN action = 'GET_AUDIT' AND status != 'success' THEN 1 ELSE 0 END) as audit_f,
                     SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as total_dl_size,
                     SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as total_ul_size
-                FROM events WHERE timestamp >= ? AND timestamp < ? AND node_name = ?
+                FROM events WHERE node_name = ? AND timestamp >= ? AND timestamp < ?
             """
-            stats = conn.execute(query, (hour_start_iso, next_hour_start_iso, node_name)).fetchone()
+            stats = conn.execute(query, (node_name, hour_start_iso, next_hour_start_iso)).fetchone()
 
             if stats and stats['dl_s'] is not None:
                 conn.execute("""
@@ -340,13 +354,15 @@ def blocking_hourly_aggregation(node_names: List[str]):
 async def hourly_aggregator_task(app):
     log.info("Hourly aggregator task started.")
     while True:
+        await asyncio.sleep(60 * HOURLY_AGG_INTERVAL_MINUTES)
         try:
             loop = asyncio.get_running_loop()
             node_names = list(app['nodes'].keys())
-            await loop.run_in_executor(app['db_executor'], blocking_hourly_aggregation, node_names)
+            async with app_state['db_write_lock']:
+                await loop.run_in_executor(app['db_executor'], blocking_hourly_aggregation, node_names)
         except Exception:
             log.error("Error in hourly aggregator task:", exc_info=True)
-        await asyncio.sleep(60 * HOURLY_AGG_INTERVAL_MINUTES)
+
 
 def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     events_copy = []
@@ -363,7 +379,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     total_dl_size, total_ul_size = 0, 0
     sats, cdl, cul, errs = {}, Counter(), Counter(), Counter()
     hp = {}  # Changed from Counter to dict to store both count and size
-    
+
     # Track successful and failed transfers separately by size bucket
     dls_success = Counter()
     dls_failed = Counter()
@@ -446,7 +462,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     # Create the transfer_sizes data structure with all buckets in order (not just top 10)
     all_buckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]
     transfer_sizes = []
-    
+
     for bucket in all_buckets:
         transfer_sizes.append({
             'bucket': bucket,
@@ -455,7 +471,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
             'uploads_success': uls_success[bucket],
             'uploads_failed': uls_failed[bucket]
         })
-        
+
     return {
         "type": "stats_update",
         "first_event_iso": first_event_iso,
@@ -482,6 +498,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
 
 async def send_stats_for_view(app, ws, view):
     loop = asyncio.get_running_loop()
+    # This is a read-only operation, so no lock is needed.
     payload = await loop.run_in_executor(app['db_executor'], blocking_prepare_stats, view, app_state['nodes'])
     if payload:
         try:
