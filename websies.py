@@ -102,7 +102,7 @@ def init_db():
             else: select_columns.append('0 as total_download_size')
             if 'total_upload_size' in old_columns: select_columns.append('total_upload_size')
             else: select_columns.append('0 as total_upload_size')
-            
+
             cursor.execute("ALTER TABLE hourly_stats RENAME TO hourly_stats_old;")
             cursor.execute('CREATE TABLE hourly_stats (hour_timestamp TEXT, node_name TEXT, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0, audit_success INTEGER DEFAULT 0, audit_fail INTEGER DEFAULT 0, total_download_size INTEGER DEFAULT 0, total_upload_size INTEGER DEFAULT 0, PRIMARY KEY (hour_timestamp, node_name))')
             select_query = f"SELECT {', '.join(select_columns)} FROM hourly_stats_old"
@@ -123,7 +123,7 @@ def init_db():
         log.info("Creating composite index for performance. This may take a very long time on large databases. Please wait...")
         cursor.execute('CREATE INDEX idx_events_node_name_timestamp ON events (node_name, timestamp);')
         log.info("Index creation complete.")
-    
+
     conn.commit()
     conn.close()
     log.info("Database schema is valid and ready.")
@@ -252,7 +252,7 @@ async def database_writer_task(app):
         while not app_state['db_write_queue'].empty():
             try: events_to_write.append(app_state['db_write_queue'].get_nowait())
             except asyncio.QueueEmpty: break
-        
+
         if events_to_write:
             log.info(f"[DB_WRITER] Preparing to write {len(events_to_write)} events. Queue size: {app_state['db_write_queue'].qsize()}")
             loop = asyncio.get_running_loop()
@@ -369,14 +369,14 @@ def blocking_db_prune(db_path, retention_days):
     log.info(f"[DB_PRUNER] Starting database pruning task. Retaining last {retention_days} days of events.")
     cutoff_date = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=retention_days)
     cutoff_iso = cutoff_date.isoformat()
-    
+
     with sqlite3.connect(db_path, timeout=30) as conn:
         cursor = conn.cursor()
-        
+
         log.info(f"Finding events older than {cutoff_iso} to delete...")
         cursor.execute("SELECT COUNT(*) FROM events WHERE timestamp < ?", (cutoff_iso,))
         count = cursor.fetchone()[0]
-        
+
         if count > 0:
             log.warning(f"Deleting {count} old event(s) from the database. This might take a while...")
             cursor.execute("DELETE FROM events WHERE timestamp < ?", (cutoff_iso,))
@@ -410,14 +410,46 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
 
     dl_s, dl_f, ul_s, ul_f, a_s, a_f = 0, 0, 0, 0, 0, 0
     total_dl_size, total_ul_size = 0, 0
-    sats, cdl, cul, errs = {}, Counter(), Counter(), Counter()
+    sats, cdl, cul, error_agg = {}, Counter(), Counter(), {}
     hp = {}  # Changed from Counter to dict to store both count and size
-    
-    # Track successful and failed transfers separately by size bucket
-    dls_success = Counter()
-    dls_failed = Counter()
-    uls_success = Counter()
-    uls_failed = Counter()
+
+    dls_success, dls_failed = Counter(), Counter()
+    uls_success, uls_failed = Counter(), Counter()
+
+    TOKEN_REGEX = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b\d+\b')
+
+    def aggregate_error(reason):
+        if not reason: return
+
+        tokens = TOKEN_REGEX.findall(reason)
+        template = TOKEN_REGEX.sub('#', reason)
+
+        if template not in error_agg:
+            placeholders = []
+            for token in tokens:
+                if '.' in token or ':' in token:
+                    placeholders.append({'type': 'address', 'seen': {token}})
+                else:
+                    try:
+                        num = int(token)
+                        placeholders.append({'type': 'number', 'min': num, 'max': num})
+                    except ValueError:
+                        placeholders.append({'type': 'string', 'seen': {token}})
+            error_agg[template] = {'count': 1, 'placeholders': placeholders}
+        else:
+            agg_item = error_agg[template]
+            agg_item['count'] += 1
+            if len(tokens) == len(agg_item['placeholders']):
+                for i, token in enumerate(tokens):
+                    ph = agg_item['placeholders'][i]
+                    if ph['type'] == 'address':
+                        ph['seen'].add(token)
+                    elif ph['type'] == 'number':
+                        try:
+                            num = int(token)
+                            ph['min'] = min(ph['min'], num)
+                            ph['max'] = max(ph['max'], num)
+                        except ValueError: pass
 
     for e in events_copy:
         action, status, sat_id, size, country, piece_id, error_reason = e['action'], e['status'], e['satellite_id'], e['size'], e['location']['country'], e['piece_id'], e['error_reason']
@@ -425,46 +457,33 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
         if action == 'GET_AUDIT':
             sats[sat_id]['audits'] += 1
             if status == 'success': a_s += 1; sats[sat_id]['audit_success'] += 1
-            else: a_f += 1; errs[error_reason] += 1
+            else: a_f += 1; aggregate_error(error_reason)
         elif 'GET' in action:
             size_bucket = get_size_bucket(size)
             sats[sat_id]['downloads'] += 1
-            # Track both count and size for each piece
-            if piece_id not in hp:
-                hp[piece_id] = {'count': 0, 'size': 0}
+            if piece_id not in hp: hp[piece_id] = {'count': 0, 'size': 0}
             hp[piece_id]['count'] += 1
             hp[piece_id]['size'] += size
             if country: cdl[country] += size
             if status == 'success':
-                dl_s += 1
-                sats[sat_id]['dl_success'] += 1
-                sats[sat_id]['total_download_size'] += size
-                total_dl_size += size
-                dls_success[size_bucket] += 1  # Track successful download by size bucket
+                dl_s += 1; sats[sat_id]['dl_success'] += 1; sats[sat_id]['total_download_size'] += size
+                total_dl_size += size; dls_success[size_bucket] += 1
             else:
-                dl_f += 1
-                errs[error_reason] += 1
-                dls_failed[size_bucket] += 1  # Track failed download by size bucket
+                dl_f += 1; aggregate_error(error_reason); dls_failed[size_bucket] += 1
         elif action == 'PUT':
             size_bucket = get_size_bucket(size)
             sats[sat_id]['uploads'] += 1
             if country: cul[country] += size
             if status == 'success':
-                ul_s += 1
-                sats[sat_id]['ul_success'] += 1
-                sats[sat_id]['total_upload_size'] += size
-                total_ul_size += size
-                uls_success[size_bucket] += 1  # Track successful upload by size bucket
+                ul_s += 1; sats[sat_id]['ul_success'] += 1; sats[sat_id]['total_upload_size'] += size
+                total_ul_size += size; uls_success[size_bucket] += 1
             else:
-                ul_f += 1
-                errs[error_reason] += 1
-                uls_failed[size_bucket] += 1  # Track failed upload by size bucket
+                ul_f += 1; aggregate_error(error_reason); uls_failed[size_bucket] += 1
 
     hist_stats = []
     with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
         if view == 'Aggregate':
-             # For aggregate view, we need to aggregate the historical data too.
              raw_hist_stats = conn.execute("""
                 SELECT hour_timestamp,
                        SUM(dl_success) as dl_success, SUM(dl_fail) as dl_fail,
@@ -484,54 +503,49 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
             d_row['ul_mbps'] = ((d_row.get('total_upload_size', 0) or 0) * 8) / (3600 * 1000000)
             hist_stats.append(d_row)
 
-    # Calculate average speed over the last minute from live events
     one_min_ago = time.time() - 60
     live_dl_bytes = sum(e['size'] for e in events_copy if 'GET' in e['action'] and e['status'] == 'success' and e['ts_unix'] > one_min_ago)
     live_ul_bytes = sum(e['size'] for e in events_copy if 'PUT' in e['action'] and e['status'] == 'success' and e['ts_unix'] > one_min_ago)
     avg_egress_mbps = (live_dl_bytes * 8) / (60 * 1e6)
     avg_ingress_mbps = (live_ul_bytes * 8) / (60 * 1e6)
 
-
-    # Create the transfer_sizes data structure with all buckets in order (not just top 10)
     all_buckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]
-    transfer_sizes = []
-    
-    for bucket in all_buckets:
-        transfer_sizes.append({
-            'bucket': bucket,
-            'downloads_success': dls_success[bucket],
-            'downloads_failed': dls_failed[bucket],
-            'uploads_success': uls_success[bucket],
-            'uploads_failed': uls_failed[bucket]
-        })
-        
+    transfer_sizes = [{'bucket': b, 'downloads_success': dls_success[b], 'downloads_failed': dls_failed[b], 'uploads_success': uls_success[b], 'uploads_failed': uls_failed[b]} for b in all_buckets]
+
+    sorted_errors = sorted(error_agg.items(), key=lambda item: item[1]['count'], reverse=True)
+    final_errors = []
+    for template, data in sorted_errors[:5]:
+        final_msg = template
+        if 'placeholders' in data:
+            for ph_data in data['placeholders']:
+                if ph_data['type'] == 'number':
+                    min_val, max_val = ph_data['min'], ph_data['max']
+                    range_str = str(min_val) if min_val == max_val else f"({min_val}..{max_val})"
+                    final_msg = final_msg.replace('#', range_str, 1)
+                elif ph_data['type'] == 'address':
+                    count = len(ph_data['seen'])
+                    range_str = f"[{count} unique address{'es' if count > 1 else ''}]"
+                    final_msg = final_msg.replace('#', range_str, 1)
+        final_errors.append({'reason': final_msg, 'count': data['count']})
+
     return {
         "type": "stats_update",
-        "first_event_iso": first_event_iso,
-        "last_event_iso": last_event_iso,
+        "first_event_iso": first_event_iso, "last_event_iso": last_event_iso,
         "overall": {
-            "dl_success": dl_s,
-            "dl_fail": dl_f,
-            "ul_success": ul_s,
-            "ul_fail": ul_f,
-            "audit_success": a_s,
-            "audit_fail": a_f,
-            "avg_egress_mbps": avg_egress_mbps,
-            "avg_ingress_mbps": avg_ingress_mbps
+            "dl_success": dl_s, "dl_fail": dl_f, "ul_success": ul_s, "ul_fail": ul_f,
+            "audit_success": a_s, "audit_fail": a_f, "avg_egress_mbps": avg_egress_mbps, "avg_ingress_mbps": avg_ingress_mbps
         },
         "satellites": sorted([{'satellite_id': k, **v} for k, v in sats.items()], key=lambda x: x['uploads'] + x['downloads'], reverse=True),
-        "transfer_sizes": transfer_sizes,  # New combined structure
+        "transfer_sizes": transfer_sizes,
         "historical_stats": hist_stats,
-        "error_categories": [{'reason': k, 'count': v} for k,v in errs.most_common(5)],
-        "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']}
-                      for k, v in sorted(hp.items(), key=lambda x: x[1]['count'], reverse=True)[:5]],
+        "error_categories": final_errors,
+        "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in sorted(hp.items(), key=lambda x: x[1]['count'], reverse=True)[:5]],
         "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(5) if k],
         "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(5) if k]
     }
 
 async def send_stats_for_view(app, ws, view):
     loop = asyncio.get_running_loop()
-    # This is a read-only operation, so no lock is needed.
     payload = await loop.run_in_executor(app['db_executor'], blocking_prepare_stats, view, app_state['nodes'])
     if payload:
         try:
@@ -544,7 +558,6 @@ async def periodic_stats_updater(app):
     while True:
         await asyncio.sleep(STATS_INTERVAL_SECONDS)
         try:
-            # Create tasks for each websocket to send its specific view data
             tasks = [send_stats_for_view(app, ws, ws_state['view']) for ws, ws_state in app_state['websockets'].items()]
             if tasks:
                 await asyncio.gather(*tasks)
@@ -562,11 +575,8 @@ async def websocket_handler(request):
 
     log.info(f"WebSocket client connected. Total clients: {len(app_state['websockets'])}")
 
-    # Send init message with available nodes
     node_names = ["Aggregate"] + list(app['nodes'].keys())
     await ws.send_json({"type": "init", "nodes": node_names})
-
-    # Send initial stats for the default view
     await send_stats_for_view(app, ws, "Aggregate")
 
     try:
@@ -594,39 +604,29 @@ async def start_background_tasks(app):
     log.info("Starting background tasks...")
     app['db_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=5)
     app['log_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=len(app['nodes']) + 1)
-
     app['tasks'] = []
 
-    # Create tasks for each node
     for node_name, log_path in app['nodes'].items():
-        app_state['nodes'][node_name] = {
-            'live_events': deque(),
-            'last_perf_event_index': 0,
-        }
+        app_state['nodes'][node_name] = {'live_events': deque(), 'last_perf_event_index': 0}
         app['tasks'].append(asyncio.create_task(log_tailer_task(app, node_name, log_path)))
         app['tasks'].append(asyncio.create_task(performance_calculator(app, node_name)))
 
-    # Generic tasks
     app['tasks'].extend([
         asyncio.create_task(prune_live_events_task(app)),
         asyncio.create_task(periodic_stats_updater(app)),
         asyncio.create_task(debug_logger_task(app)),
         asyncio.create_task(database_writer_task(app)),
         asyncio.create_task(hourly_aggregator_task(app)),
-        asyncio.create_task(database_pruner_task(app)) # New: Add the pruner task
+        asyncio.create_task(database_pruner_task(app))
     ])
 
 async def cleanup_background_tasks(app):
     log.warning("Application cleanup started.")
-    for task in app.get('tasks', []):
-        task.cancel()
-    if 'tasks' in app:
-        await asyncio.gather(*app['tasks'], return_exceptions=True)
+    for task in app.get('tasks', []): task.cancel()
+    if 'tasks' in app: await asyncio.gather(*app['tasks'], return_exceptions=True)
     log.info("Background tasks cancelled.")
-
     for executor_name in ['db_executor', 'log_executor']:
-        if executor_name in app and app[executor_name]:
-            app[executor_name].shutdown(wait=True)
+        if executor_name in app and app[executor_name]: app[executor_name].shutdown(wait=True)
     log.info("Executors shut down.")
 
 
