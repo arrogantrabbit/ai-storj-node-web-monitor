@@ -40,6 +40,7 @@ PERFORMANCE_INTERVAL_SECONDS = 2
 DB_WRITE_BATCH_INTERVAL_SECONDS = 10
 DB_QUEUE_MAX_SIZE = 30000
 EXPECTED_DB_COLUMNS = 13 # Increased for node_name
+
 HISTORICAL_HOURS_TO_SHOW = 6
 MAX_GEOIP_CACHE_SIZE = 5000
 HOURLY_AGG_INTERVAL_MINUTES = 10
@@ -58,6 +59,22 @@ app_state: Dict[str, Any] = {
     'db_write_queue': asyncio.Queue(maxsize=DB_QUEUE_MAX_SIZE),
 }
 
+# --- New Helper Function for Parsing Size Strings ---
+def parse_size_to_bytes(size_str: str) -> int:
+    if not isinstance(size_str, str): return 0
+    size_str = size_str.strip()
+    units = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4}
+    try:
+        if size_str[-1].isalpha() and size_str[-3:] in units:
+            val_str, unit = size_str[:-4], size_str[-3:]
+        elif size_str[-1] == 'B':
+             val_str, unit = size_str[:-2], "B"
+        else: # Default to bytes if no unit
+            val_str, unit = size_str, "B"
+        return int(float(val_str) * units.get(unit, 1))
+    except (ValueError, IndexError):
+        return 0
+
 
 def init_db():
     log.info("Connecting to database and checking schema...")
@@ -74,6 +91,7 @@ def init_db():
         log.warning(f"Failed to set database journal mode to WAL. Current mode: {mode[0] if mode else 'unknown'}")
 
     log.info("Performing one-time database schema validation and upgrades. This may take a long time on large databases...")
+
 
     # --- Schema migration for events table ---
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='events';")
@@ -192,12 +210,47 @@ async def log_tailer_task(app, node_name: str, log_path: str):
         try:
             line = await loop.run_in_executor(app['log_executor'], next, log_generator)
             try:
-                timestamp_str = line.split("INFO")[0].strip() if "INFO" in line else line.split("ERROR")[0].strip()
+                # --- General Log Parsing ---
+                log_level_part = "INFO" if "INFO" in line else "ERROR" if "ERROR" in line else None
+                if not log_level_part: continue
+
+                parts = line.split(log_level_part)
+                timestamp_str = parts[0].strip()
                 timestamp_obj = datetime.datetime.fromisoformat(timestamp_str)
                 json_match = re.search(r'\{.*\}', line)
                 if not json_match: continue
                 log_data = json.loads(json_match.group(0))
 
+                # --- Hashstore Log Processing ---
+                if "hashstore" in line:
+                    hashstore_action = line.split(log_level_part)[1].split("hashstore")[1].strip().split('\t')[0]
+                    satellite = log_data.get("satellite")
+                    store = log_data.get("store")
+                    if not all([hashstore_action, satellite, store]): continue
+
+                    compaction_key = f"{satellite}:{store}"
+                    if hashstore_action == "beginning compaction":
+                        node_state['active_compactions'][compaction_key] = timestamp_obj
+                    elif hashstore_action == "finished compaction":
+                        start_time = node_state['active_compactions'].pop(compaction_key, None)
+                        if start_time:
+                            duration_seconds = (timestamp_obj - start_time).total_seconds()
+                            stats = log_data.get("stats", {})
+                            table_stats = stats.get("Table", {})
+
+                            node_state['hashstore_stats'][compaction_key] = {
+                                "satellite": satellite,
+                                "store": store,
+                                "last_run_iso": timestamp_obj.isoformat(),
+                                "duration": round(duration_seconds, 2),
+                                "data_reclaimed_bytes": parse_size_to_bytes(stats.get("DataReclaimed", "0 B")),
+                                "data_rewritten_bytes": parse_size_to_bytes(stats.get("DataRewritten", "0 B")),
+                                "table_load": table_stats.get("Load", 0) * 100,
+                                "trash_percent": stats.get("TrashPercent", 0) * 100,
+                            }
+                    continue
+
+                # --- Original Traffic Log Processing ---
                 status, error_reason = "success", None
                 if "download canceled" in line: status, error_reason = "canceled", log_data.get("reason", "context canceled")
                 elif "failed" in line or "ERROR" in line: status, error_reason = "failed", log_data.get("error", "unknown error")
@@ -399,13 +452,32 @@ async def database_pruner_task(app):
 
 def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     events_copy = []
+    hashstore_stats = []
     if view == 'Aggregate':
-        for node_state in all_nodes_state.values():
+        for node_name, node_state in all_nodes_state.items():
             events_copy.extend(list(node_state['live_events']))
+            for key, stats in node_state['hashstore_stats'].items():
+                stat_copy = stats.copy()
+                stat_copy['node_name'] = node_name
+                hashstore_stats.append(stat_copy)
     elif view in all_nodes_state:
         events_copy = list(all_nodes_state[view]['live_events'])
+        for key, stats in all_nodes_state[view]['hashstore_stats'].items():
+             hashstore_stats.append(stats)
 
-    if not events_copy: return None
+
+    if not events_copy:
+         # Still return hashstore stats even if there are no live transfer events
+        if hashstore_stats:
+            return {
+                "type": "stats_update",
+                "hashstore_stats": sorted(hashstore_stats, key=lambda x: x['last_run_iso'], reverse=True),
+                # Provide dummy data for other fields to prevent frontend errors
+                "first_event_iso": None, "last_event_iso": None, "overall": {}, "satellites": [], "transfer_sizes": [],
+                "historical_stats": [], "error_categories": [], "top_pieces": [], "top_countries_dl": [], "top_countries_ul": []
+            }
+        return None
+
     first_event_iso, last_event_iso = min(e['timestamp'] for e in events_copy).isoformat(), max(e['timestamp'] for e in events_copy).isoformat()
 
     dl_s, dl_f, ul_s, ul_f, a_s, a_f = 0, 0, 0, 0, 0, 0
@@ -541,7 +613,8 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
         "error_categories": final_errors,
         "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in sorted(hp.items(), key=lambda x: x[1]['count'], reverse=True)[:10]],
         "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(10) if k],
-        "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(10) if k]
+        "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(10) if k],
+        "hashstore_stats": sorted(hashstore_stats, key=lambda x: x['last_run_iso'], reverse=True),
     }
 
 async def send_stats_for_view(app, ws, view):
@@ -607,7 +680,12 @@ async def start_background_tasks(app):
     app['tasks'] = []
 
     for node_name, log_path in app['nodes'].items():
-        app_state['nodes'][node_name] = {'live_events': deque(), 'last_perf_event_index': 0}
+        app_state['nodes'][node_name] = {
+            'live_events': deque(),
+            'last_perf_event_index': 0,
+            'active_compactions': {},
+            'hashstore_stats': {}
+        }
         app['tasks'].append(asyncio.create_task(log_tailer_task(app, node_name, log_path)))
         app['tasks'].append(asyncio.create_task(performance_calculator(app, node_name)))
 
