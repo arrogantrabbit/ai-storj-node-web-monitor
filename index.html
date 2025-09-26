@@ -792,7 +792,7 @@
 
                 map.getPane(this.options.pane).appendChild(this._canvas);
 
-                map.on('moveend resize zoomend', this._reset, this);
+                map.on('move moveend resize zoomend', this._reset, this);
 
                 if (map.options.zoomAnimation && L.Browser.any3d) {
                     map.on('zoomanim', this._animateZoom, this);
