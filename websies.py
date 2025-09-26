@@ -514,7 +514,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
 
     sorted_errors = sorted(error_agg.items(), key=lambda item: item[1]['count'], reverse=True)
     final_errors = []
-    for template, data in sorted_errors[:5]:
+    for template, data in sorted_errors[:10]:
         final_msg = template
         if 'placeholders' in data:
             for ph_data in data['placeholders']:
@@ -539,9 +539,9 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
         "transfer_sizes": transfer_sizes,
         "historical_stats": hist_stats,
         "error_categories": final_errors,
-        "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in sorted(hp.items(), key=lambda x: x[1]['count'], reverse=True)[:5]],
-        "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(5) if k],
-        "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(5) if k]
+        "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in sorted(hp.items(), key=lambda x: x[1]['count'], reverse=True)[:10]],
+        "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(10) if k],
+        "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(10) if k]
     }
 
 async def send_stats_for_view(app, ws, view):
