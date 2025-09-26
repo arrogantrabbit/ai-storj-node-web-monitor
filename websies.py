@@ -95,7 +95,7 @@ def parse_duration_str_to_seconds(duration_str: str) -> Optional[float]:
 
 def init_db():
     log.info("Connecting to database and checking schema...")
-    conn = sqlite3.connect(DATABASE_FILE, timeout=10)
+    conn = sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0)
     cursor = conn.cursor()
 
     # Enable Write-Ahead Logging (WAL) mode for better concurrency. This is a persistent setting.
@@ -150,6 +150,7 @@ def init_db():
     cursor.execute('CREATE TABLE IF NOT EXISTS hourly_stats (hour_timestamp TEXT, node_name TEXT, dl_success INTEGER DEFAULT 0, dl_fail INTEGER DEFAULT 0, ul_success INTEGER DEFAULT 0, ul_fail INTEGER DEFAULT 0, audit_success INTEGER DEFAULT 0, audit_fail INTEGER DEFAULT 0, total_download_size INTEGER DEFAULT 0, total_upload_size INTEGER DEFAULT 0, PRIMARY KEY (hour_timestamp, node_name))')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_node_name ON events (node_name);')
+    cursor.execute('CREATE TABLE IF NOT EXISTS app_persistent_state (key TEXT PRIMARY KEY, value TEXT)')
 
     # Add a composite index to optimize the hourly aggregation query
     cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_events_node_name_timestamp'")
@@ -213,6 +214,21 @@ async def robust_broadcast(websockets_dict, payload):
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
+def blocking_save_state(db_path: str, key: str, value: Any):
+    """Saves a Python object as JSON into the state table."""
+    try:
+        json_value = json.dumps(value)
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO app_persistent_state (key, value) VALUES (?, ?)",
+                (key, json_value)
+            )
+            conn.commit()
+        log.info(f"Successfully persisted state for key '{key}'.")
+    except Exception:
+        log.error(f"Failed to persist state for key '{key}':", exc_info=True)
+
 
 async def log_tailer_task(app, node_name: str, log_path: str):
     loop = asyncio.get_running_loop()
@@ -232,7 +248,13 @@ async def log_tailer_task(app, node_name: str, log_path: str):
 
                 parts = line.split(log_level_part)
                 timestamp_str = parts[0].strip()
-                timestamp_obj = datetime.datetime.fromisoformat(timestamp_str)
+
+                # --- DEFINITIVE TIMEZONE FIX ---
+                # Assume the timestamp from the log is in the server's local timezone,
+                # then correctly CONVERT it to UTC for storage and comparison.
+                timestamp_obj = datetime.datetime.fromisoformat(timestamp_str).astimezone().astimezone(datetime.timezone.utc)
+                # --- END DEFINITIVE TIMEZONE FIX ---
+
                 json_match = re.search(r'\{.*\}', line)
                 if not json_match: continue
                 log_data = json.loads(json_match.group(0))
@@ -251,9 +273,6 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                         start_time = node_state['active_compactions'].pop(compaction_key, None)
                         if start_time:
                             duration_seconds = (timestamp_obj - start_time).total_seconds()
-
-                            # CORRECTED LOGIC: If timestamp difference is too coarse (< 1 minute),
-                            # use the more precise `duration` field from the log message.
                             if duration_seconds < 60:
                                 duration_str = log_data.get("duration")
                                 if duration_str:
@@ -263,7 +282,6 @@ async def log_tailer_task(app, node_name: str, log_path: str):
 
                             stats = log_data.get("stats", {})
                             table_stats = stats.get("Table", {})
-
                             node_state['hashstore_stats'][compaction_key] = {
                                 "satellite": satellite,
                                 "store": store,
@@ -274,6 +292,17 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                                 "table_load": table_stats.get("Load", 0) * 100,
                                 "trash_percent": stats.get("TrashPercent", 0) * 100,
                             }
+                            state_key = f"hashstore_stats_{node_name}"
+                            stats_to_save = node_state['hashstore_stats'].copy()
+                            asyncio.create_task(
+                                loop.run_in_executor(
+                                    app['db_executor'],
+                                    blocking_save_state,
+                                    DATABASE_FILE,
+                                    state_key,
+                                    stats_to_save
+                                )
+                            )
                     continue
 
                 # --- Original Traffic Log Processing ---
@@ -295,7 +324,6 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                     geoip_cache[remote_ip] = location
 
                 event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason, "node_name": node_name}
-
                 node_state['live_events'].append(event)
                 broadcast_payload = {"type": "log_entry", "action": action, "status": status, "size": size, "location": location, "error_reason": error_reason, "timestamp": timestamp_obj.isoformat(), "node_name": node_name}
                 await robust_broadcast(app_state['websockets'], broadcast_payload)
@@ -315,7 +343,7 @@ async def log_tailer_task(app, node_name: str, log_path: str):
 
 def blocking_db_batch_write(db_path, events):
     if not events: return
-    with sqlite3.connect(db_path, timeout=10) as conn:
+    with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
         cursor = conn.cursor()
         data_to_insert = [(e['timestamp'].isoformat(), e['action'], e['status'], e['size'], e['piece_id'], e['satellite_id'], e['remote_ip'], e['location']['country'], e['location']['lat'], e['location']['lon'], e['error_reason'], e['node_name']) for e in events]
         cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
@@ -365,7 +393,6 @@ async def performance_calculator(app, node_name: str):
 
         ingress_bytes, egress_bytes, ingress_pieces, egress_pieces = 0, 0, 0, 0
 
-        # Concurrency is calculated from events in the last second for this specific node
         concurrency = sum(1 for event in reversed(node_state['live_events']) if event['ts_unix'] > now - 1)
 
         for event in new_events_to_process:
@@ -401,7 +428,7 @@ def blocking_hourly_aggregation(node_names: List[str]):
     now = datetime.datetime.now().astimezone(); hour_start = now.replace(minute=0, second=0, microsecond=0)
     hour_start_iso = hour_start.isoformat(); next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
 
-    with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
+    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
         conn.row_factory = sqlite3.Row
         for node_name in node_names:
             query = """
@@ -449,7 +476,7 @@ def blocking_db_prune(db_path, retention_days):
     cutoff_date = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=retention_days)
     cutoff_iso = cutoff_date.isoformat()
 
-    with sqlite3.connect(db_path, timeout=30) as conn:
+    with sqlite3.connect(db_path, timeout=30, detect_types=0) as conn:
         cursor = conn.cursor()
 
         log.info(f"Finding events older than {cutoff_iso} to delete...")
@@ -493,12 +520,10 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
 
 
     if not events_copy:
-         # Still return hashstore stats even if there are no live transfer events
         if hashstore_stats:
             return {
                 "type": "stats_update",
                 "hashstore_stats": sorted(hashstore_stats, key=lambda x: x['last_run_iso'], reverse=True),
-                # Provide dummy data for other fields to prevent frontend errors
                 "first_event_iso": None, "last_event_iso": None, "overall": {}, "satellites": [], "transfer_sizes": [],
                 "historical_stats": [], "error_categories": [], "top_pieces": [], "top_countries_dl": [], "top_countries_ul": []
             }
@@ -509,7 +534,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     dl_s, dl_f, ul_s, ul_f, a_s, a_f = 0, 0, 0, 0, 0, 0
     total_dl_size, total_ul_size = 0, 0
     sats, cdl, cul, error_agg = {}, Counter(), Counter(), {}
-    hp = {}  # Changed from Counter to dict to store both count and size
+    hp = {}
 
     dls_success, dls_failed = Counter(), Counter()
     uls_success, uls_failed = Counter(), Counter()
@@ -518,10 +543,8 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
 
     def aggregate_error(reason):
         if not reason: return
-
         tokens = TOKEN_REGEX.findall(reason)
         template = TOKEN_REGEX.sub('#', reason)
-
         if template not in error_agg:
             placeholders = []
             for token in tokens:
@@ -579,7 +602,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
                 ul_f += 1; aggregate_error(error_reason); uls_failed[size_bucket] += 1
 
     hist_stats = []
-    with sqlite3.connect(DATABASE_FILE, timeout=10) as conn:
+    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
         conn.row_factory = sqlite3.Row
         if view == 'Aggregate':
              raw_hist_stats = conn.execute("""
@@ -699,19 +722,82 @@ async def websocket_handler(request):
     return ws
 
 
+def load_initial_state_from_db(nodes_config: Dict[str, str]):
+    """Connects to the DB to re-hydrate the in-memory state on startup."""
+    log.info("Attempting to load initial state from database...")
+    initial_state = {}
+    cutoff_datetime = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=STATS_WINDOW_MINUTES)
+
+    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        for node_name in nodes_config.keys():
+            node_state = {
+                'live_events': deque(),
+                'last_perf_event_index': 0,
+                'active_compactions': {},
+                'hashstore_stats': {}
+            }
+            log.info(f"Re-hydrating live events for node '{node_name}' since {cutoff_datetime.isoformat()}")
+            cursor.execute(
+                "SELECT * FROM events WHERE node_name = ? AND timestamp >= ? ORDER BY timestamp ASC",
+                (node_name, cutoff_datetime.isoformat())
+            )
+            rehydrated_events = 0
+            for row in cursor.fetchall():
+                try:
+                    timestamp_obj = datetime.datetime.fromisoformat(row['timestamp'])
+                    event = {
+                        "ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj,
+                        "action": row['action'], "status": row['status'], "size": row['size'],
+                        "piece_id": row['piece_id'], "satellite_id": row['satellite_id'],
+                        "remote_ip": row['remote_ip'],
+                        "location": {"lat": row['latitude'], "lon": row['longitude'], "country": row['country']},
+                        "error_reason": row['error_reason'], "node_name": row['node_name']
+                    }
+                    node_state['live_events'].append(event)
+                    rehydrated_events += 1
+                except Exception:
+                    log.error(f"Failed to process a database row for re-hydration.", exc_info=True)
+
+            node_state['last_perf_event_index'] = rehydrated_events
+            if rehydrated_events > 0:
+                log.info(f"Successfully re-hydrated {rehydrated_events} live events for node '{node_name}'.")
+
+            state_key = f"hashstore_stats_{node_name}"
+            cursor.execute("SELECT value FROM app_persistent_state WHERE key = ?", (state_key,))
+            result = cursor.fetchone()
+            if result:
+                try:
+                    node_state['hashstore_stats'] = json.loads(result['value'])
+                    log.info(f"Successfully loaded persisted hashstore stats for node '{node_name}'.")
+                except json.JSONDecodeError:
+                    log.error(f"Failed to parse persisted hashstore stats for node '{node_name}'.")
+
+            initial_state[node_name] = node_state
+    return initial_state
+
+
 async def start_background_tasks(app):
     log.info("Starting background tasks...")
     app['db_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=5)
     app['log_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=len(app['nodes']) + 1)
     app['tasks'] = []
 
+    loop = asyncio.get_running_loop()
+    initial_node_states = await loop.run_in_executor(
+        app['db_executor'], load_initial_state_from_db, app['nodes']
+    )
+    app_state['nodes'] = initial_node_states
+    log.info("Initial state has been populated from the database.")
+
     for node_name, log_path in app['nodes'].items():
-        app_state['nodes'][node_name] = {
-            'live_events': deque(),
-            'last_perf_event_index': 0,
-            'active_compactions': {},
-            'hashstore_stats': {}
-        }
+        if node_name not in app_state['nodes']:
+             app_state['nodes'][node_name] = {
+                'live_events': deque(), 'last_perf_event_index': 0,
+                'active_compactions': {}, 'hashstore_stats': {}
+            }
         app['tasks'].append(asyncio.create_task(log_tailer_task(app, node_name, log_path)))
         app['tasks'].append(asyncio.create_task(performance_calculator(app, node_name)))
 
