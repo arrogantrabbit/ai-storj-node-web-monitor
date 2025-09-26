@@ -201,9 +201,18 @@ def blocking_log_reader(log_path):
             log.error(f"Critical error in blocking_log_reader for '{log_path}':", exc_info=True)
             time.sleep(15)
 
-async def robust_broadcast(websockets_dict, payload):
+async def robust_broadcast(websockets_dict, payload, node_name: Optional[str] = None):
     tasks = []
-    for ws in set(websockets_dict.keys()):
+    # If this is a node-specific message, filter the recipients
+    if node_name:
+        recipients = {
+            ws for ws, state in websockets_dict.items()
+            if state.get("view") == "Aggregate" or state.get("view") == node_name
+        }
+    else: # Broadcast to all
+        recipients = set(websockets_dict.keys())
+
+    for ws in recipients:
         try:
             task = asyncio.create_task(ws.send_json(payload))
             tasks.append(task)
@@ -326,7 +335,7 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                 event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason, "node_name": node_name}
                 node_state['live_events'].append(event)
                 broadcast_payload = {"type": "log_entry", "action": action, "status": status, "size": size, "location": location, "error_reason": error_reason, "timestamp": timestamp_obj.isoformat(), "node_name": node_name}
-                await robust_broadcast(app_state['websockets'], broadcast_payload)
+                await robust_broadcast(app_state['websockets'], broadcast_payload, node_name=node_name)
 
                 if app_state['db_write_queue'].full():
                     log.warning(f"Database write queue is full. Pausing log tailing to allow DB to catch up.")
@@ -402,6 +411,7 @@ async def performance_calculator(app, node_name: str):
 
         ingress_bytes, egress_bytes, ingress_pieces, egress_pieces = 0, 0, 0, 0
 
+
         # Concurrency is a snapshot, so it's calculated over a fixed recent window (e.g., last 1 sec)
         concurrency_snapshot_time = time.time()
         concurrency = sum(1 for event in reversed(node_state['live_events']) if event['ts_unix'] > concurrency_snapshot_time - 1)
@@ -430,7 +440,7 @@ async def performance_calculator(app, node_name: str):
             "egress_pieces": egress_pieces,
             "concurrency": concurrency
         }
-        await robust_broadcast(app_state['websockets'], payload)
+        await robust_broadcast(app_state['websockets'], payload, node_name=node_name)
 
 
 async def prune_live_events_task(app):
@@ -967,6 +977,7 @@ async def websocket_handler(request):
                                 app['db_executor'], blocking_get_aggregated_performance,
                                 view, time_window_hours
                             )
+
 
                         payload = {"type": "aggregated_performance_data", "view": view, "performance_data": aggregated_data}
                         await ws.send_json(payload)
