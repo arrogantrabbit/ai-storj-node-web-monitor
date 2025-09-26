@@ -51,7 +51,6 @@
         .toggle-link.active { font-weight: bold; text-decoration: underline; }
         #aggregation-toggles { text-align: right; margin-top: 4px; font-size: 0.9em; }
 
-        /* --- CORRECTED & IMPROVED STYLES --- */
         #analysis-card .stats-grid {
             grid-template-columns: 2.5fr 2fr 1.5fr 1.5fr;
             gap: 30px;
@@ -67,7 +66,7 @@
         }
         #size-charts-card .card-content {
             position: relative;
-            height: 600px; /* Increased height for better visual balance on a full-width chart */
+            height: 600px;
         }
 
 
@@ -75,18 +74,16 @@
         .rate-ok { color: #f59e0b; }
         .rate-bad { color: #ef4444; }
 
-        /* --- UPDATED STYLES for Map Maximize --- */
         .card-header-flex { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ddd; padding-bottom: 8px; margin-bottom: 15px; }
         .card-header-flex .card-title { margin-bottom: 0; border-bottom: none; padding-bottom: 0; }
         #toggle-map-size-btn { background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer; font-size: 1.5em; padding: 0; line-height: 1; color: #606770; transition: background-color 0.2s; }
         #toggle-map-size-btn:hover { background-color: rgba(0,0,0,0.05); border-color: #ddd; }
 
-        body.map-maximized { overflow: hidden; } /* NEW: Prevents background scroll */
+        body.map-maximized { overflow: hidden; }
 
         #map-card.maximized { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; margin: 0; border-radius: 0; padding: 15px; box-sizing: border-box; }
         #map-card.maximized .card-header-flex { margin-bottom: 10px; }
-        #map-card.maximized #map { height: calc(100% - 50px); } /* Adjusted height for padding */
-        /* --- END UPDATED STYLES --- */
+        #map-card.maximized #map { height: calc(100% - 50px); }
 
 
         /* --- Dark Mode --- */
@@ -94,7 +91,7 @@
             body { background-color: #121212; color: #e0e0e0; }
             .card { background-color: #1e1e1e; box-shadow: none; border: 1px solid #333; }
             h1, h3, h5 { color: #ffffff; }
-            h3, .card-header-flex { border-bottom-color: #444; } /* UPDATED */
+            h3, .card-header-flex { border-bottom-color: #444; }
             .stat-label { color: #888; }
             .info-table th, .info-table td { border-bottom-color: #333; }
             .info-table th { color: #aaa; }
@@ -120,7 +117,6 @@
 
 
         <div id="map-card" class="card">
-             <!-- CHANGED: h3 no longer has style, wrapper div does -->
             <div class="card-header-flex">
                 <h3 class="card-title">Live Traffic Heatmap</h3>
                 <button id="toggle-map-size-btn" title="Maximize Map">&#x26F6;</button>
@@ -271,27 +267,6 @@
                 this.playbackSpeed = 1.0; // Real-time playback
                 this.maxQueueDelay = 10000; // Max 10 seconds delay
                 this.processQueueInterval = null;
-
-                // Color palettes for different data types - more subtle
-                this.palettes = {
-                    download: {
-                        colors: ['#0066CC', '#0099FF', '#00CCFF', '#66E0FF', '#CCFFFF'],
-                        label: 'Downloads (Blue)'
-                    },
-                    upload: {
-                        colors: ['#006600', '#00AA00', '#00FF00', '#66FF66', '#CCFFCC'],
-                        label: 'Uploads (Green)'
-                    },
-                    audit: {
-                        colors: ['#660066', '#9900CC', '#CC00FF', '#E066FF', '#FFCCFF'],
-                        label: 'Audits (Purple)'
-                    },
-                    heat: {
-                        colors: ['rgba(0,0,0,0)', 'rgba(0,0,255,0.2)', 'rgba(0,255,255,0.4)',
-                                'rgba(0,255,0,0.6)', 'rgba(255,255,0,0.8)', 'rgba(255,0,0,1)'],
-                        label: 'Activity Intensity'
-                    }
-                };
 
                 this.setupCanvas();
                 this.startAnimation();
@@ -489,13 +464,9 @@
             }
 
             renderPersistentHeatmap(ctx, info, bounds, zoom, now) {
-                // Only show persistent heatmap at higher zoom levels
                 if (zoom < 5) return;
 
-                // Create heat accumulation layer
-                const heatmapRadius = this.getRadiusForZoom(zoom) * 2; // Larger radius for heat spread
-
-                // Create temporary canvas for blending
+                const heatmapRadius = this.getRadiusForZoom(zoom) * 2;
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = info.canvas.width;
                 tempCanvas.height = info.canvas.height;
@@ -509,112 +480,80 @@
                     const age = now - heat.timestamp;
                     const ageFactor = Math.max(0.1, 1 - (age / (this.maxDataAge * 4)));
 
-                    // Normalize value
                     const maxValue = this.viewMode === 'size' ? 10000000 : 100;
                     const intensity = Math.min(1, Math.sqrt(heat.value / maxValue));
 
-                    // Create gradient
-                    const gradient = tempCtx.createRadialGradient(
-                        point.x, point.y, 0,
-                        point.x, point.y, heatmapRadius
-                    );
-
-                    // Use heat colors
-                    gradient.addColorStop(0, `rgba(255, 255, 0, ${intensity * ageFactor * 0.6})`);
-                    gradient.addColorStop(0.3, `rgba(255, 200, 0, ${intensity * ageFactor * 0.4})`);
-                    gradient.addColorStop(0.6, `rgba(255, 100, 0, ${intensity * ageFactor * 0.2})`);
+                    const gradient = tempCtx.createRadialGradient(point.x, point.y, 0, point.x, point.y, heatmapRadius);
+                    gradient.addColorStop(0, `rgba(255, 255, 0, ${intensity * ageFactor * 0.75})`);
+                    gradient.addColorStop(0.3, `rgba(255, 200, 0, ${intensity * ageFactor * 0.5})`);
+                    gradient.addColorStop(0.6, `rgba(255, 100, 0, ${intensity * ageFactor * 0.25})`);
                     gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
                     tempCtx.fillStyle = gradient;
                     tempCtx.fillRect(point.x - heatmapRadius, point.y - heatmapRadius, heatmapRadius * 2, heatmapRadius * 2);
                 }
 
-                // Blend temp canvas onto main canvas
-                ctx.globalAlpha = 0.7;
-                ctx.globalCompositeOperation = 'screen';
+                const isDarkMode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                ctx.globalCompositeOperation = isDarkMode ? 'screen' : 'lighter';
+                ctx.globalAlpha = isDarkMode ? 1.0 : 0.7;
                 ctx.drawImage(tempCanvas, 0, 0);
                 ctx.globalCompositeOperation = 'source-over';
             }
 
             renderLivePoints(ctx, info, bounds, zoom, now) {
                 const clusterThreshold = this.getClusterThreshold(zoom);
-
-                // Process and cluster data points
                 const clusters = this.clusterPoints(this.dataPoints, clusterThreshold, bounds);
+                const isDarkMode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
-                // At low zoom levels, show aggregated heat only
                 if (zoom <= 4) {
+                    ctx.globalCompositeOperation = isDarkMode ? 'screen' : 'lighter';
                     clusters.forEach(cluster => {
                         const point = info.layer._map.latLngToContainerPoint([cluster.lat, cluster.lon]);
-
-                        // Calculate age factor
                         const age = now - cluster.avgTimestamp;
                         const ageFactor = Math.max(0, 1 - (age / this.maxDataAge));
 
-                        // Calculate intensity
                         const value = this.viewMode === 'size' ? cluster.totalSize : cluster.count;
                         const maxValue = this.viewMode === 'size' ? 50000000 : 500;
                         const intensity = Math.min(1, Math.sqrt(value / maxValue));
 
-                        // Large heat gradient for aggregated view
                         const radius = 50 + intensity * 50;
-                        const gradient = ctx.createRadialGradient(
-                            point.x, point.y, 0,
-                            point.x, point.y, radius
-                        );
+                        const gradient = ctx.createRadialGradient(point.x, point.y, 0, point.x, point.y, radius);
 
-                        // Heat colors based on intensity
                         if (intensity > 0.7) {
-                            gradient.addColorStop(0, `rgba(255, 0, 0, ${ageFactor * 0.5})`);
-                            gradient.addColorStop(0.5, `rgba(255, 255, 0, ${ageFactor * 0.3})`);
+                            gradient.addColorStop(0, `rgba(255, 0, 0, ${ageFactor * 0.6})`);
+                            gradient.addColorStop(0.5, `rgba(255, 255, 0, ${ageFactor * 0.4})`);
                             gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
                         } else if (intensity > 0.4) {
-                            gradient.addColorStop(0, `rgba(255, 255, 0, ${ageFactor * 0.4})`);
-                            gradient.addColorStop(0.5, `rgba(0, 255, 0, ${ageFactor * 0.2})`);
+                            gradient.addColorStop(0, `rgba(255, 255, 0, ${ageFactor * 0.5})`);
+                            gradient.addColorStop(0.5, `rgba(0, 255, 0, ${ageFactor * 0.25})`);
                             gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
                         } else {
-                            gradient.addColorStop(0, `rgba(0, 255, 255, ${ageFactor * 0.3})`);
-                            gradient.addColorStop(0.5, `rgba(0, 0, 255, ${ageFactor * 0.15})`);
+                            gradient.addColorStop(0, `rgba(0, 255, 255, ${ageFactor * 0.4})`);
+                            gradient.addColorStop(0.5, `rgba(0, 0, 255, ${ageFactor * 0.2})`);
                             gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
                         }
-
                         ctx.fillStyle = gradient;
                         ctx.fillRect(point.x - radius, point.y - radius, radius * 2, radius * 2);
                     });
+                    ctx.globalCompositeOperation = 'source-over';
                 } else {
-                    // At higher zoom levels, show individual points
                     clusters.forEach(cluster => {
                         const point = info.layer._map.latLngToContainerPoint([cluster.lat, cluster.lon]);
-
-                        // Calculate age factor
                         const age = now - cluster.avgTimestamp;
                         const ageFactor = Math.max(0, 1 - (age / this.maxDataAge));
-
-                        // Small circle for individual points
                         const value = this.viewMode === 'size' ? cluster.totalSize : cluster.count;
                         const maxValue = this.viewMode === 'size' ? 1000000 : 10;
                         const intensity = Math.min(1, Math.sqrt(value / maxValue));
-
-                        const radius = 3 + intensity * 5; // Much smaller: 3-8px
-
-                        // Type-based colors
-                        const typeColors = {
-                            download: '#0099FF',
-                            upload: '#00FF00',
-                            audit: '#CC00FF'
-                        };
-
-                        ctx.globalAlpha = ageFactor * 0.8;
+                        const radius = 3 + intensity * 5;
+                        const typeColors = { download: '#0099FF', upload: '#00FF00', audit: '#CC00FF' };
+                        ctx.globalAlpha = ageFactor * 0.9;
                         ctx.fillStyle = typeColors[cluster.dominantType];
-
-                        // Simple filled circle, no stroke for cleaner look
                         ctx.beginPath();
                         ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
                         ctx.fill();
 
-                        // Add subtle glow for new data
                         if (cluster.hasNew) {
-                            ctx.globalAlpha = ageFactor * 0.3;
+                            ctx.globalAlpha = ageFactor * 0.5;
                             ctx.strokeStyle = typeColors[cluster.dominantType];
                             ctx.lineWidth = 2;
                             ctx.beginPath();
@@ -627,7 +566,7 @@
 
             renderParticles(ctx, info) {
                 const now = Date.now();
-                const particleLifetime = 2000; // 2 seconds
+                const particleLifetime = 2000;
 
                 this.particleSystem = this.particleSystem.filter(particle => {
                     const age = now - particle.timestamp;
@@ -635,11 +574,8 @@
 
                     const point = info.layer._map.latLngToContainerPoint([particle.lat, particle.lon]);
                     const progress = age / particleLifetime;
-
-                    // Expand and fade
                     const size = particle.size * (1 + progress * 3);
                     const opacity = particle.opacity * (1 - progress);
-
                     ctx.save();
                     ctx.globalAlpha = opacity;
                     ctx.strokeStyle = particle.color;
@@ -648,1069 +584,171 @@
                     ctx.arc(point.x, point.y, size, 0, Math.PI * 2);
                     ctx.stroke();
 
-                    // Inner glow
                     if (progress < 0.5) {
                         ctx.globalAlpha = opacity * 0.5;
                         ctx.fillStyle = particle.color;
                         ctx.fill();
                     }
-
                     ctx.restore();
-
                     return true;
                 });
             }
 
             clusterPoints(points, threshold, bounds) {
                 const clusters = [];
-                const zoom = this.map.getZoom();
-
                 points.forEach(point => {
                     if (!bounds.contains([point.lat, point.lon])) return;
-
-                    // Find nearby cluster
                     let merged = false;
                     for (let cluster of clusters) {
                         const dist = this.getDistance(point.lat, point.lon, cluster.lat, cluster.lon);
                         if (dist < threshold) {
-                            // Merge into cluster
                             cluster.count++;
                             cluster.totalSize += point.size;
                             cluster.lat = (cluster.lat * (cluster.count - 1) + point.lat) / cluster.count;
                             cluster.lon = (cluster.lon * (cluster.count - 1) + point.lon) / cluster.count;
                             cluster.avgTimestamp = (cluster.avgTimestamp * (cluster.count - 1) + point.timestamp) / cluster.count;
-
-                            // Update type counts
                             cluster.types[point.type] = (cluster.types[point.type] || 0) + 1;
-                            cluster.dominantType = Object.keys(cluster.types).reduce((a, b) =>
-                                cluster.types[a] > cluster.types[b] ? a : b
-                            );
-
+                            cluster.dominantType = Object.keys(cluster.types).reduce((a, b) => cluster.types[a] > cluster.types[b] ? a : b);
                             if (point.isNew) cluster.hasNew = true;
                             merged = true;
                             break;
                         }
                     }
-
                     if (!merged) {
-                        clusters.push({
-                            lat: point.lat,
-                            lon: point.lon,
-                            count: 1,
-                            totalSize: point.size,
-                            avgTimestamp: point.timestamp,
-                            types: { [point.type]: 1 },
-                            dominantType: point.type,
-                            hasNew: point.isNew
-                        });
+                        clusters.push({ lat: point.lat, lon: point.lon, count: 1, totalSize: point.size, avgTimestamp: point.timestamp, types: { [point.type]: 1 }, dominantType: point.type, hasNew: point.isNew });
                     }
                 });
-
                 return clusters;
             }
 
             getDistance(lat1, lon1, lat2, lon2) {
-                const R = 6371; // Earth radius in km
+                const R = 6371;
                 const dLat = (lat2 - lat1) * Math.PI / 180;
                 const dLon = (lon2 - lon1) * Math.PI / 180;
-                const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                         Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                         Math.sin(dLon/2) * Math.sin(dLon/2);
-                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
                 return R * c;
             }
 
-            getRadiusForZoom(zoom) {
-                // Much smaller radii for individual points
-                if (zoom <= 2) return 15;
-                if (zoom <= 4) return 12;
-                if (zoom <= 6) return 10;
-                if (zoom <= 8) return 8;
-                if (zoom <= 10) return 6;
-                if (zoom <= 12) return 5;
-                return 4;
-            }
+            getRadiusForZoom = zoom => (zoom <= 2) ? 15 : (zoom <= 4) ? 12 : (zoom <= 6) ? 10 : (zoom <= 8) ? 8 : (zoom <= 10) ? 6 : (zoom <= 12) ? 5 : 4;
+            getClusterThreshold = zoom => (zoom <= 2) ? 1000 : (zoom <= 4) ? 500 : (zoom <= 6) ? 200 : (zoom <= 8) ? 100 : (zoom <= 10) ? 50 : (zoom <= 12) ? 20 : 10;
 
-            getClusterThreshold(zoom) {
-                // More aggressive clustering at low zoom levels
-                if (zoom <= 2) return 1000;
-                if (zoom <= 4) return 500;
-                if (zoom <= 6) return 200;
-                if (zoom <= 8) return 100;
-                if (zoom <= 10) return 50;
-                if (zoom <= 12) return 20;
-                return 10;
-            }
-
-            interpolateColors(colorArray, intensity, ageFactor) {
-                // Use hex colors from palette
-                const idx = Math.min(colorArray.length - 1, Math.floor(intensity * (colorArray.length - 1)));
-                return colorArray[idx];
-            }
-
-            setViewMode(mode) {
-                this.viewMode = mode;
-                this.canvasLayer.needRedraw();
-            }
+            setViewMode(mode) { this.viewMode = mode; this.canvasLayer.needRedraw(); }
 
             startAnimation() {
                 const animate = () => {
                     const now = Date.now();
-
-                    // Mark old "new" points as not new
-                    this.dataPoints.forEach(p => {
-                        if (p.isNew && now - p.timestamp > 500) {
-                            p.isNew = false;
-                        }
-                    });
-
-                    // Redraw if we have particles or new data
-                    if (this.particleSystem.length > 0 || this.dataPoints.some(p => p.isNew)) {
-                        this.canvasLayer.needRedraw();
-                    }
-
+                    this.dataPoints.forEach(p => { if (p.isNew && now - p.timestamp > 500) p.isNew = false; });
+                    if (this.particleSystem.length > 0 || this.dataPoints.some(p => p.isNew)) { this.canvasLayer.needRedraw(); }
                     this.animationFrame = requestAnimationFrame(animate);
                 };
                 animate();
             }
 
             destroy() {
-                if (this.animationFrame) {
-                    cancelAnimationFrame(this.animationFrame);
-                }
-                if (this.processQueueInterval) {
-                    clearInterval(this.processQueueInterval);
-                }
-                if (this.canvasLayer) {
-                    this.map.removeLayer(this.canvasLayer);
-                }
+                if (this.animationFrame) cancelAnimationFrame(this.animationFrame);
+                if (this.processQueueInterval) clearInterval(this.processQueueInterval);
+                if (this.canvasLayer) this.map.removeLayer(this.canvasLayer);
             }
         }
 
-        // Custom Canvas Layer for Leaflet
         L.CanvasLayer = L.Layer.extend({
-            options: {
-                pane: 'overlayPane'
-            },
-
-            initialize: function(options) {
-                L.setOptions(this, options);
-                this._map = null;
-                this._canvas = null;
-                this._frame = null;
-            },
-
-            onAdd: function(map) {
-                this._map = map;
-                this._canvas = L.DomUtil.create('canvas', 'leaflet-canvas-layer');
-
-                const size = this._map.getSize();
-                this._canvas.width = size.x;
-                this._canvas.height = size.y;
-
-                const animated = this._map.options.zoomAnimation && L.Browser.any3d;
-                L.DomUtil.addClass(this._canvas, 'leaflet-zoom-' + (animated ? 'animated' : 'hide'));
-
-                map.getPane(this.options.pane).appendChild(this._canvas);
-
-                map.on('move moveend resize zoomend', this._reset, this);
-
-                if (map.options.zoomAnimation && L.Browser.any3d) {
-                    map.on('zoomanim', this._animateZoom, this);
-                }
-
-                this._reset();
-            },
-
-            onRemove: function(map) {
-                L.DomUtil.remove(this._canvas);
-                map.off('moveend resize zoomend', this._reset, this);
-                if (map.options.zoomAnimation) {
-                    map.off('zoomanim', this._animateZoom, this);
-                }
-            },
-
-            delegate: function(del) {
-                this._delegate = del;
-                return this;
-            },
-
-            needRedraw: function() {
-                if (!this._frame) {
-                    this._frame = L.Util.requestAnimFrame(this._redraw, this);
-                }
-                return this;
-            },
-
-            _redraw: function() {
-                if (this._delegate && this._delegate.onDrawLayer) {
-                    const size = this._map.getSize();
-                    const bounds = this._map.getBounds();
-                    const topLeft = this._map.latLngToLayerPoint(bounds.getNorthWest());
-
-                    const info = {
-                        layer: this,
-                        canvas: this._canvas,
-                        bounds: bounds,
-                        size: size,
-                        topLeft: topLeft
-                    };
-
-                    this._delegate.onDrawLayer(info);
-                }
-                this._frame = null;
-            },
-
-            _reset: function() {
-                const topLeft = this._map.containerPointToLayerPoint([0, 0]);
-                L.DomUtil.setPosition(this._canvas, topLeft);
-
-                const size = this._map.getSize();
-                this._canvas.width = size.x;
-                this._canvas.height = size.y;
-
-                this._redraw();
-            },
-
-            _animateZoom: function(e) {
-                const scale = this._map.getZoomScale(e.zoom);
-                const offset = this._map._latLngBoundsToNewLayerBounds(
-                    this._map.getBounds(), e.zoom, e.center
-                ).min;
-
-                L.DomUtil.setTransform(this._canvas, offset, scale);
-            }
+            options: { pane: 'overlayPane' },
+            initialize: function(options) { L.setOptions(this, options); },
+            onAdd: function(map) { this._map = map; this._canvas = L.DomUtil.create('canvas', 'leaflet-canvas-layer'); const size = this._map.getSize(); this._canvas.width = size.x; this._canvas.height = size.y; const animated = this._map.options.zoomAnimation && L.Browser.any3d; L.DomUtil.addClass(this._canvas, 'leaflet-zoom-' + (animated ? 'animated' : 'hide')); map.getPane(this.options.pane).appendChild(this._canvas); map.on('move moveend resize zoomend', this._reset, this); if (map.options.zoomAnimation && L.Browser.any3d) { map.on('zoomanim', this._animateZoom, this); } this._reset(); },
+            onRemove: function(map) { L.DomUtil.remove(this._canvas); map.off('moveend resize zoomend', this._reset, this); if (map.options.zoomAnimation) { map.off('zoomanim', this._animateZoom, this); } },
+            delegate: function(del) { this._delegate = del; return this; },
+            needRedraw: function() { if (!this._frame) { this._frame = L.Util.requestAnimFrame(this._redraw, this); } return this; },
+            _redraw: function() { if (this._delegate && this._delegate.onDrawLayer) { const info = { layer: this, canvas: this._canvas, bounds: this._map.getBounds(), size: this._map.getSize(), topLeft: this._map.latLngToLayerPoint(this._map.getBounds().getNorthWest()) }; this._delegate.onDrawLayer(info); } this._frame = null; },
+            _reset: function() { const topLeft = this._map.containerPointToLayerPoint([0, 0]); L.DomUtil.setPosition(this._canvas, topLeft); const size = this._map.getSize(); this._canvas.width = size.x; this._canvas.height = size.y; this._redraw(); },
+            _animateZoom: function(e) { const scale = this._map.getZoomScale(e.zoom); const offset = this._map._latLngBoundsToNewLayerBounds(this._map.getBounds(), e.zoom, e.center).min; L.DomUtil.setTransform(this._canvas, offset, scale); }
         });
+        L.canvasLayer = options => new L.CanvasLayer(options);
 
-        L.canvasLayer = function(options) {
-            return new L.CanvasLayer(options);
-        };
-
-        // --- Map Setup ---
+        // --- Map Setup (Reverted to single tile layer) ---
         const map = L.map('map').setView([20, 0], 2);
+
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap contributors',
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
             maxZoom: 18
         }).addTo(map);
 
-        // Initialize the advanced heatmap
         const heatmap = new AdvancedHeatmap(map);
 
-        // Add heatmap controls with dark mode support
         const HeatmapControl = L.Control.extend({
-            options: {
-                position: 'topright'
-            },
-
-            onAdd: function(map) {
-                const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control heatmap-control');
-
-                const isDarkMode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-
-                container.innerHTML = `
-                    <style>
-                        .heatmap-control {
-                            background-color: ${isDarkMode ? '#1e1e1e' : 'white'};
-                            color: ${isDarkMode ? '#e0e0e0' : '#333'};
-                            padding: 10px;
-                            border-radius: 4px;
-                            border: 1px solid ${isDarkMode ? '#444' : '#ccc'};
-                        }
-                        .heatmap-control h4 {
-                            margin: 0 0 8px 0;
-                            font-size: 13px;
-                            font-weight: bold;
-                        }
-                        .heatmap-control label {
-                            display: block;
-                            cursor: pointer;
-                            margin: 4px 0;
-                            font-size: 12px;
-                        }
-                        .legend-section {
-                            margin-top: 12px;
-                            padding-top: 8px;
-                            border-top: 1px solid ${isDarkMode ? '#444' : '#ddd'};
-                        }
-                        .legend-item {
-                            display: flex;
-                            align-items: center;
-                            margin: 3px 0;
-                            font-size: 11px;
-                        }
-                        .legend-color {
-                            width: 16px;
-                            height: 16px;
-                            margin-right: 6px;
-                            border-radius: 50%;
-                            border: 1px solid ${isDarkMode ? '#666' : '#ccc'};
-                        }
-                        .legend-gradient {
-                            width: 100%;
-                            height: 10px;
-                            margin: 4px 0;
-                            border-radius: 2px;
-                            background: linear-gradient(to right,
-                                rgba(0,0,255,0.2), rgba(0,255,255,0.4),
-                                rgba(0,255,0,0.6), rgba(255,255,0,0.8), rgba(255,0,0,1));
-                        }
-                    </style>
-                    <div>
-                        <h4>Heatmap View</h4>
-                        <label>
-                            <input type="radio" name="heatview" value="size" checked> Data Size
-                        </label>
-                        <label>
-                            <input type="radio" name="heatview" value="pieces"> Piece Count
-                        </label>
-                    </div>
-                    <div class="legend-section">
-                        <h4>Legend</h4>
-                        <div class="legend-item">
-                            <span class="legend-color" style="background: #0099FF;"></span>
-                            <span>Downloads</span>
-                        </div>
-                        <div class="legend-item">
-                            <span class="legend-color" style="background: #00FF00;"></span>
-                            <span>Uploads</span>
-                        </div>
-                        <div class="legend-item">
-                            <span class="legend-color" style="background: #CC00FF;"></span>
-                            <span>Audits</span>
-                        </div>
-                        <div style="margin-top: 8px;">
-                            <div style="font-size: 11px; margin-bottom: 2px;">Activity Heat:</div>
-                            <div class="legend-gradient"></div>
-                            <div style="font-size: 10px; display: flex; justify-content: space-between;">
-                                <span>Low</span>
-                                <span>High</span>
-                            </div>
-                        </div>
-                    </div>
-                `;
-
-                // Handle view mode changes
-                container.addEventListener('change', function(e) {
-                    if (e.target.name === 'heatview') {
-                        heatmap.setViewMode(e.target.value);
-                    }
-                });
-
-                // Update styles on dark mode change
-                window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-                    const isDark = e.matches;
-                    container.style.backgroundColor = isDark ? '#1e1e1e' : 'white';
-                    container.style.color = isDark ? '#e0e0e0' : '#333';
-                    container.style.borderColor = isDark ? '#444' : '#ccc';
-                });
-
-                // Prevent map interactions
-                L.DomEvent.disableClickPropagation(container);
-                L.DomEvent.disableScrollPropagation(container);
-
-                return container;
-            }
+            options: { position: 'topright' },
+            onAdd: function(map) { const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control heatmap-control'); const isDarkMode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; container.innerHTML = `<style>.heatmap-control{background-color:${isDarkMode?'#1e1e1e':'white'};color:${isDarkMode?'#e0e0e0':'#333'};padding:10px;border-radius:4px;border:1px solid ${isDarkMode?'#444':'#ccc'}}.heatmap-control h4{margin:0 0 8px 0;font-size:13px;font-weight:bold}.heatmap-control label{display:block;cursor:pointer;margin:4px 0;font-size:12px}.legend-section{margin-top:12px;padding-top:8px;border-top:1px solid ${isDarkMode?'#444':'#ddd'}}.legend-item{display:flex;align-items:center;margin:3px 0;font-size:11px}.legend-color{width:16px;height:16px;margin-right:6px;border-radius:50%;border:1px solid ${isDarkMode?'#666':'#ccc'}}.legend-gradient{width:100%;height:10px;margin:4px 0;border-radius:2px;background:linear-gradient(to right,rgba(0,0,255,0.2),rgba(0,255,255,0.4),rgba(0,255,0,0.6),rgba(255,255,0,0.8),rgba(255,0,0,1))}</style><div><h4>Heatmap View</h4><label><input type="radio" name="heatview" value="size" checked> Data Size</label><label><input type="radio" name="heatview" value="pieces"> Piece Count</label></div><div class="legend-section"><h4>Legend</h4><div class="legend-item"><span class="legend-color" style="background:#0099FF"></span> <span>Downloads</span></div><div class="legend-item"><span class="legend-color" style="background:#00FF00"></span> <span>Uploads</span></div><div class="legend-item"><span class="legend-color" style="background:#CC00FF"></span> <span>Audits</span></div><div style="margin-top:8px"><div style="font-size:11px;margin-bottom:2px">Activity Heat:</div><div class="legend-gradient"></div><div style="font-size:10px;display:flex;justify-content:space-between"><span>Low</span> <span>High</span></div></div></div>`; container.addEventListener('change', e => { if (e.target.name === 'heatview') heatmap.setViewMode(e.target.value); }); window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => { const isDark = e.matches; container.style.backgroundColor = isDark ? '#1e1e1e' : 'white'; container.style.color = isDark ? '#e0e0e0' : '#333'; container.style.borderColor = isDark ? '#444' : '#ccc'; }); L.DomEvent.disableClickPropagation(container); L.DomEvent.disableScrollPropagation(container); return container; }
         });
-
         map.addControl(new HeatmapControl());
 
         // --- Constants & State ---
         const DOWNLOAD_COLOR = '#0ea5e9'; const UPLOAD_COLOR = '#22c55e';
-        const PIE_CHART_COLORS = ['#36A2EB', '#FF6384', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40', '#E7E9ED'];
         const PERFORMANCE_INTERVAL_MS = 2000;
         const MAX_PERF_POINTS = 150;
         let satelliteViewIsBySize = false; let lastSatelliteData = [];
         let performanceChartView = 'rate';
         let performanceAggregationMode = 'sum';
-        let performanceData = {}; // Structured as { nodeName: { rate: [[],[]], ... }, ... }
+        let performanceData = {};
         let aggregatedPerformanceData = {};
         let currentNodeView = 'Aggregate';
         let availableNodes = [];
-        // New state for handling historical data loading
         let performanceHistoryLoaded = {};
         let livePerformanceDataQueue = {};
 
-
         // --- Helper Functions ---
-        function formatBytes(bytes, decimals = 2) {
-            if (!bytes || bytes === 0) return '0 Bytes';
-            const k = 1024; const dm = decimals < 0 ? 0 : decimals;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-        }
-        function getRateClass(rate) {
-            if (rate > 99.5) return 'rate-good';
-            if (rate > 95) return 'rate-ok';
-            return 'rate-bad';
-        }
-
+        function formatBytes(bytes, decimals = 2) { if (!bytes || bytes === 0) return '0 Bytes'; const k = 1024; const dm = decimals < 0 ? 0 : decimals; const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']; const i = Math.floor(Math.log(bytes) / Math.log(k)); return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]; }
+        function getRateClass(rate) { if (rate > 99.5) return 'rate-good'; if (rate > 95) return 'rate-ok'; return 'rate-bad'; }
         const SATELLITE_NAMES = { '121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1', '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1', '12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs': 'eu1', '1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE': 'saltlake' };
 
         // --- Chart Initialization ---
-        const performanceChart = new Chart(document.getElementById('performanceChart').getContext('2d'), {
-            type: 'line',
-            data: { datasets: [{ label: 'Ingress (Upload)', data: [], borderColor: UPLOAD_COLOR, tension: 0.2 }, { label: 'Egress (Download)', data: [], borderColor: DOWNLOAD_COLOR, tension: 0.2 }] },
-            options: {
-                responsive: true, maintainAspectRatio: false,
-                scales: { x: { type: 'time', time: { unit: 'minute' } }, y: { beginAtZero: true, title: { display: true, text: 'Mbps'} } }
-            }
-        });
-        const satelliteChart = new Chart(document.getElementById('satelliteChart').getContext('2d'), {
-            type: 'bar',
-            data: { labels: [], datasets: [{ label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Downloads/Audits', data: [], backgroundColor: DOWNLOAD_COLOR }] },
-            options: {
-                indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-                scales: { x: { stacked: true }, y: { stacked: true } },
-                plugins: {
-                    tooltip: {
-                        callbacks: {
-                            footer: function(tooltipItems) {
-                                const context = tooltipItems[0];
-                                if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return '';
-                                const satData = lastSatelliteData[context.dataIndex];
-                                const lines = [];
-                                const totalDl = satData.downloads;
-                                if (totalDl > 0) { lines.push(`DL Success: ${(satData.dl_success / totalDl * 100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); }
-                                const totalUl = satData.uploads;
-                                if (totalUl > 0) { lines.push(`UL Success: ${(satData.ul_success / totalUl * 100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); }
-                                const totalAudit = satData.audits;
-                                if (totalAudit > 0) { lines.push(`Audit Success: ${(satData.audit_success / totalAudit * 100).toFixed(2)}% (${satData.audit_success}/${totalAudit})`); }
-                                return lines;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        // Initialize size bar chart - vertical orientation with actual error data
-        const sizeBarChart = new Chart(document.getElementById('sizeBarChart').getContext('2d'), {
-            type: 'bar',
-            data: {
-                labels: [],
-                datasets: [
-                    { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
-                    { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
-                    { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' },
-                    { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: {
-                        title: { display: true, text: 'Size Bucket' },
-                        stacked: true
-                    },
-                    y: {
-                        title: { display: true, text: 'Count' },
-                        stacked: true
-                    }
-                },
-                plugins: {
-                    legend: {
-                        position: 'top'
-                    },
-                    tooltip: {
-                        callbacks: {
-                            footer: function(tooltipItems) {
-                                const item = tooltipItems[0];
-                                const datasetLabels = ['successful downloads', 'successful uploads', 'failed downloads', 'failed uploads'];
-                                return `${item.parsed.y} ${datasetLabels[item.datasetIndex]} in this size range`;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
+        const performanceChart = new Chart(document.getElementById('performanceChart').getContext('2d'), { type: 'line', data: { datasets: [{ label: 'Ingress (Upload)', data: [], borderColor: UPLOAD_COLOR, tension: 0.2 }, { label: 'Egress (Download)', data: [], borderColor: DOWNLOAD_COLOR, tension: 0.2 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { unit: 'minute' } }, y: { beginAtZero: true, title: { display: true, text: 'Mbps' } } } } });
+        const satelliteChart = new Chart(document.getElementById('satelliteChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Downloads/Audits', data: [], backgroundColor: DOWNLOAD_COLOR }] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true }, y: { stacked: true } }, plugins: { tooltip: { callbacks: { footer: function(tooltipItems) { const context = tooltipItems[0]; if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return ''; const satData = lastSatelliteData[context.dataIndex]; const lines = []; const totalDl = satData.downloads; if (totalDl > 0) lines.push(`DL Success: ${(satData.dl_success/totalDl*100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); const totalUl = satData.uploads; if (totalUl > 0) lines.push(`UL Success: ${(satData.ul_success/totalUl*100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); const totalAudit = satData.audits; if (totalAudit > 0) lines.push(`Audit Success: ${(satData.audit_success/totalAudit*100).toFixed(2)}% (${satData.audit_success}/${totalAudit})`); return lines; } } } } } });
+        const sizeBarChart = new Chart(document.getElementById('sizeBarChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' }, { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Size Bucket' }, stacked: true }, y: { title: { display: true, text: 'Count' }, stacked: true } }, plugins: { legend: { position: 'top' }, tooltip: { callbacks: { footer: function(tooltipItems) { const item = tooltipItems[0]; const datasetLabels = ['successful downloads', 'successful uploads', 'failed downloads', 'failed uploads']; return `${item.parsed.y} ${datasetLabels[item.datasetIndex]} in this size range`; } } } } } });
         let sizeViewIsPercentage = false;
 
         // --- UI Update Functions ---
-        function updateAllVisuals(data) {
-            updateOverallStats(data.overall);
-            updateSatelliteChart(data.satellites);
-            updateSizeBarChart(data.transfer_sizes);
-            updateTitles(data.first_event_iso, data.last_event_iso);
-            updateHistoricalTable(data.historical_stats);
-            updateAnalysisTables(data);
-            updateHashstorePanel(data.hashstore_stats);
-        }
-
-        function updateOverallStats(stats) {
-            if (!stats || Object.keys(stats).length === 0) return; // Guard against empty data
-            const totalDownloads = stats.dl_success + stats.dl_fail;
-            const totalUploads = stats.ul_success + stats.ul_fail;
-            const totalAudits = stats.audit_success + stats.audit_fail;
-            const dlRate = totalDownloads > 0 ? (stats.dl_success / totalDownloads * 100).toFixed(2) : '100.00';
-            const ulRate = totalUploads > 0 ? (stats.ul_success / totalUploads * 100).toFixed(2) : '100.00';
-            const auditRate = totalAudits > 0 ? (stats.audit_success / totalAudits * 100).toFixed(2) : '100.00';
-
-            document.getElementById('dl-rate').textContent = `${dlRate}%`;
-            document.getElementById('dl-rate').className = `stat-value ${getRateClass(parseFloat(dlRate))}`;
-            document.getElementById('dl-success').textContent = stats.dl_success;
-            document.getElementById('dl-total').textContent = totalDownloads;
-
-            document.getElementById('ul-rate').textContent = `${ulRate}%`;
-            document.getElementById('ul-rate').className = `stat-value ${getRateClass(parseFloat(ulRate))}`;
-            document.getElementById('ul-success').textContent = stats.ul_success;
-            document.getElementById('ul-total').textContent = totalUploads;
-
-            document.getElementById('dl-speed').textContent = `${(stats.avg_egress_mbps || 0).toFixed(2)} Mbps`;
-            document.getElementById('ul-speed').textContent = `${(stats.avg_ingress_mbps || 0).toFixed(2)} Mbps`;
-
-            document.getElementById('audit-rate').textContent = `${auditRate}%`;
-            document.getElementById('audit-rate').className = `stat-value ${getRateClass(parseFloat(auditRate))}`;
-            document.getElementById('audit-success').textContent = stats.audit_success;
-            document.getElementById('audit-total').textContent = totalAudits;
-        }
-
-        function updateSatelliteChart(satStats) {
-            if (!satStats) return;
-            lastSatelliteData = satStats;
-            satelliteChart.data.labels = satStats.map(s => SATELLITE_NAMES[s.satellite_id] || s.satellite_id.substring(0, 12));
-            if (satelliteViewIsBySize) {
-                satelliteChart.options.scales.x.title.text = 'Data Transferred';
-                satelliteChart.data.datasets[0].data = satStats.map(s => s.total_upload_size);
-                satelliteChart.data.datasets[1].data = satStats.map(s => s.total_download_size);
-                satelliteChart.data.datasets[0].label = 'Upload Size';
-                satelliteChart.data.datasets[1].label = 'Download Size';
-            } else {
-                satelliteChart.options.scales.x.title.text = 'Pieces';
-                satelliteChart.data.datasets[0].data = satStats.map(s => s.uploads);
-                satelliteChart.data.datasets[1].data = satStats.map(s => s.downloads + s.audits);
-                satelliteChart.data.datasets[0].label = 'Uploads';
-                satelliteChart.data.datasets[1].label = 'Downloads/Audits';
-            }
-            satelliteChart.update();
-        }
-
-        function updateSizeBarChart(transferSizes) {
-            if (!transferSizes) return;
-            // Store the data for later use with the toggle
-            lastTransferSizes = transferSizes;
-
-            // Create a unified set of size buckets in the correct order
-            const allBuckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"];
-
-            // Initialize data arrays with zeros
-            const successfulDownloadData = new Array(allBuckets.length).fill(0);
-            const successfulUploadData = new Array(allBuckets.length).fill(0);
-            const failedDownloadData = new Array(allBuckets.length).fill(0);
-            const failedUploadData = new Array(allBuckets.length).fill(0);
-
-            // Map the actual data from the backend's transfer_sizes structure
-            transferSizes.forEach(item => {
-                const index = allBuckets.indexOf(item.bucket);
-                if (index !== -1) {
-                    successfulDownloadData[index] = item.downloads_success;
-                    successfulUploadData[index] = item.uploads_success;
-                    failedDownloadData[index] = item.downloads_failed;
-                    failedUploadData[index] = item.uploads_failed;
-                }
-            });
-
-            // Calculate percentages if needed
-            if (sizeViewIsPercentage) {
-                const totalDownloadsSuccess = successfulDownloadData.reduce((sum, val) => sum + val, 0);
-                const totalUploadsSuccess = successfulUploadData.reduce((sum, val) => sum + val, 0);
-                const totalDownloadsFailed = failedDownloadData.reduce((sum, val) => sum + val, 0);
-                const totalUploadsFailed = failedUploadData.reduce((sum, val) => sum + val, 0);
-                const totalAll = totalDownloadsSuccess + totalUploadsSuccess + totalDownloadsFailed + totalUploadsFailed;
-
-                if (totalAll > 0) {
-                    for (let i = 0; i < allBuckets.length; i++) {
-                        successfulDownloadData[i] = (successfulDownloadData[i] / totalAll * 100).toFixed(1);
-                        successfulUploadData[i] = (successfulUploadData[i] / totalAll * 100).toFixed(1);
-                        failedDownloadData[i] = (failedDownloadData[i] / totalAll * 100).toFixed(1);
-                        failedUploadData[i] = (failedUploadData[i] / totalAll * 100).toFixed(1);
-                    }
-                }
-
-                sizeBarChart.options.scales.y.title.text = 'Percentage (%)';
-            } else {
-                sizeBarChart.options.scales.y.title.text = 'Count';
-            }
-
-            sizeBarChart.data.labels = allBuckets;
-            sizeBarChart.data.datasets[0].data = successfulDownloadData;
-            sizeBarChart.data.datasets[1].data = successfulUploadData;
-            sizeBarChart.data.datasets[2].data = failedDownloadData;
-            sizeBarChart.data.datasets[3].data = failedUploadData;
-            sizeBarChart.update();
-        }
-
-        function updateTitles(firstIso, lastIso) {
-            const formatTime = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            let timeWindowStr = "(Last 60 Mins)";
-            if (firstIso && lastIso) { timeWindowStr = `(${formatTime(new Date(firstIso))} - ${formatTime(new Date(lastIso))})`; }
-
-            const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`;
-            document.getElementById('stats-title').textContent = `Overall Success Rates & Speed${viewName} ${timeWindowStr}`;
-            document.getElementById('satellite-title').textContent = `Traffic by Satellite${viewName} ${timeWindowStr}`;
-            document.getElementById('size-chart-title').textContent = `Data Transfer Size Distribution${viewName} ${timeWindowStr}`;
-            document.getElementById('hashstore-title').textContent = `Hashstore Compaction Stats${viewName}`;
-            document.getElementById('dl-speed-label').textContent = currentNodeView === 'Aggregate' ? 'Total Download Speed' : 'Download Speed';
-            document.getElementById('ul-speed-label').textContent = currentNodeView === 'Aggregate' ? 'Total Upload Speed' : 'Upload Speed';
-        }
-
-        function updateHistoricalTable(history) {
-            const tbody = document.getElementById('history-body');
-            tbody.innerHTML = '';
-            if (!history || history.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No historical data yet.</td></tr>'; return;
-            }
-            for (const hour of history) {
-                const totalDl = hour.dl_success + hour.dl_fail, dlRate = totalDl > 0 ? (hour.dl_success / totalDl * 100) : 100;
-                const totalUl = hour.ul_success + hour.ul_fail, ulRate = totalUl > 0 ? (hour.ul_success / totalUl * 100) : 100;
-                const totalAudit = hour.audit_success + hour.audit_fail, auditRate = totalAudit > 0 ? (hour.audit_success / totalAudit * 100) : 100;
-                const dlSpeed = hour.dl_mbps !== undefined ? hour.dl_mbps.toFixed(2) : '...';
-                const ulSpeed = hour.ul_mbps !== undefined ? hour.ul_mbps.toFixed(2) : '...';
-
-                const row = tbody.insertRow();
-                row.innerHTML = `<td>${new Date(hour.hour_timestamp).toLocaleTimeString([], { hour: 'numeric' })}</td>
-                    <td class="numeric ${getRateClass(dlRate)}">${dlRate.toFixed(2)}%</td>
-                    <td class="numeric ${getRateClass(ulRate)}">${ulRate.toFixed(2)}%</td>
-                    <td class="numeric ${getRateClass(auditRate)}">${auditRate.toFixed(2)}%</td>
-                    <td class="numeric">${dlSpeed} Mbps</td>
-                    <td class="numeric">${ulSpeed} Mbps</td>`;
-            }
-        }
-
-        function updateAnalysisTables(data) {
-            const errorBody = document.getElementById('error-body');
-            errorBody.innerHTML = '';
-            if (data.error_categories && data.error_categories.length > 0) {
-                data.error_categories.forEach(e => {
-                    errorBody.innerHTML += `<tr><td class="reason-cell">${e.reason}</td><td class="numeric">${e.count}</td></tr>`;
-                });
-            } else {
-                errorBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No errors in this time window.</td></tr>';
-            }
-
-            const piecesBody = document.getElementById('pieces-body');
-            piecesBody.innerHTML = '';
-            if (data.top_pieces && data.top_pieces.length > 0) {
-                data.top_pieces.forEach(p => {
-                    piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,25)}...</td><td class="numeric">${p.count}</td><td class="numeric">${formatBytes(p.size)}</td></tr>`;
-                });
-            } else {
-                piecesBody.innerHTML = '<tr><td colspan="3" style="text-align: center;">No data in this time window.</td></tr>';
-            }
-
-            const countriesDlBody = document.getElementById('countries-dl-body');
-            countriesDlBody.innerHTML = '';
-            if (data.top_countries_dl && data.top_countries_dl.length > 0) {
-                data.top_countries_dl.forEach(c => countriesDlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`);
-            } else {
-                countriesDlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>';
-            }
-
-            const countriesUlBody = document.getElementById('countries-ul-body');
-            countriesUlBody.innerHTML = '';
-            if (data.top_countries_ul && data.top_countries_ul.length > 0) {
-                data.top_countries_ul.forEach(c => countriesUlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`);
-            } else {
-                countriesUlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>';
-            }
-        }
-
-        function updateHashstorePanel(stats) {
-            const tbody = document.getElementById('hashstore-body');
-            const showNodeColumn = currentNodeView === 'Aggregate';
-            document.querySelector('#hashstore-card th:first-child').style.display = showNodeColumn ? '' : 'none';
-
-            tbody.innerHTML = '';
-            if (!stats || stats.length === 0) {
-                const colspan = showNodeColumn ? 9 : 8;
-                tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align: center;">Waiting for hashstore compaction events...</td></tr>`;
-                return;
-            }
-
-            for (const item of stats) {
-                const row = tbody.insertRow();
-                let cellIndex = 0;
-
-                if (showNodeColumn) {
-                    row.insertCell(cellIndex++).textContent = item.node_name;
-                    row.cells[0].style.display = '';
-                } else {
-                    // We need a dummy cell to hide, otherwise indices are off
-                    row.insertCell(cellIndex++).style.display = 'none';
-                }
-
-                row.insertCell(cellIndex++).textContent = SATELLITE_NAMES[item.satellite] || item.satellite.substring(0,12);
-                row.insertCell(cellIndex++).textContent = item.store;
-                row.insertCell(cellIndex++).textContent = new Date(item.last_run_iso).toLocaleTimeString();
-
-                const durationCell = row.insertCell(cellIndex++);
-                durationCell.className = 'numeric';
-                durationCell.textContent = `${item.duration.toFixed(1)}s`;
-
-                const reclaimedCell = row.insertCell(cellIndex++);
-                reclaimedCell.className = 'numeric';
-                reclaimedCell.textContent = formatBytes(item.data_reclaimed_bytes);
-
-                const rewrittenCell = row.insertCell(cellIndex++);
-                rewrittenCell.className = 'numeric';
-                rewrittenCell.textContent = formatBytes(item.data_rewritten_bytes);
-
-                const loadCell = row.insertCell(cellIndex++);
-                loadCell.className = 'numeric';
-                loadCell.textContent = `${item.table_load.toFixed(2)}%`;
-
-                const trashCell = row.insertCell(cellIndex++);
-                trashCell.className = 'numeric';
-                trashCell.textContent = `${item.trash_percent.toFixed(2)}%`;
-            }
-        }
-
-
-        function updatePerformanceChart() {
-            const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`;
-            const viewTitles = { rate: 'Live Performance (Mbps)', volume: 'Data Volume (MB)', pieces: 'Pieces', concurrency: 'Active Operations' };
-            const yAxisTitles = { rate: 'Mbps', volume: 'MB', pieces: 'Count', concurrency: 'Concurrent Ops' };
-            document.getElementById('performance-title').textContent = viewTitles[performanceChartView] + viewName;
-
-            document.getElementById('aggregation-toggles').style.display = (currentNodeView === 'Aggregate') ? 'block' : 'none';
-
-            const dataToDisplay = (currentNodeView === 'Aggregate') ? aggregatedPerformanceData : performanceData[currentNodeView];
-            if (!dataToDisplay) return;
-
-            let yAxisTitle = yAxisTitles[performanceChartView];
-            if(currentNodeView === 'Aggregate' && performanceAggregationMode === 'avg') {
-                yAxisTitle = yAxisTitle.replace('Mbps', 'Avg. Mbps').replace('MB', 'Avg. MB');
-            } else if (currentNodeView === 'Aggregate' && performanceAggregationMode === 'sum') {
-                 yAxisTitle = yAxisTitle.replace('Mbps', 'Total Mbps').replace('MB', 'Total MB');
-            }
-            performanceChart.options.scales.y.title.text = yAxisTitle;
-
-            const isConcurrency = performanceChartView === 'concurrency';
-            let datasetsToShow = [];
-
-            if (isConcurrency) {
-                datasetsToShow.push({
-                    label: 'Operations',
-                    data: dataToDisplay.concurrency ? dataToDisplay.concurrency[0] : [],
-                    borderColor: UPLOAD_COLOR,
-                    tension: 0.2
-                });
-            } else {
-                datasetsToShow.push({
-                    label: 'Ingress (Upload)',
-                    data: dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][0] : [],
-                    borderColor: UPLOAD_COLOR,
-                    tension: 0.2
-                });
-                datasetsToShow.push({
-                    label: 'Egress (Download)',
-                    data: dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][1] : [],
-                    borderColor: DOWNLOAD_COLOR,
-                    tension: 0.2
-                });
-            }
-
-            performanceChart.data.datasets = datasetsToShow;
-            performanceChart.update('none');
-        }
-
-        function initializePerformanceData(nodes) {
-            const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] });
-            nodes.forEach(node => {
-                performanceData[node] = dataTemplate();
-                livePerformanceDataQueue[node] = [];
-                performanceHistoryLoaded[node] = false;
-            });
-            aggregatedPerformanceData = dataTemplate();
-        }
-
-        function recalculateAggregateData() {
-            const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] });
-            const newAggData = dataTemplate();
-            const individualNodes = availableNodes.filter(n => n !== 'Aggregate');
-            if (individualNodes.length === 0) return;
-
-            const allTimestamps = new Set();
-            individualNodes.forEach(node => {
-                Object.values(performanceData[node]).forEach(seriesPair => {
-                    seriesPair.forEach(series => {
-                        series.forEach(point => allTimestamps.add(point.x.getTime()));
-                    });
-                });
-            });
-
-            const sortedTimestamps = Array.from(allTimestamps).sort((a,b) => a - b);
-
-            sortedTimestamps.forEach(ts => {
-                const timestamp = new Date(ts);
-                Object.keys(newAggData).forEach(metric => {
-                    const isConcurrency = metric === 'concurrency';
-                    const numSeries = isConcurrency ? 1 : 2;
-
-                    for (let i = 0; i < numSeries; i++) {
-                        let sum = 0;
-                        let count = 0;
-                        individualNodes.forEach(node => {
-                            const point = performanceData[node][metric][i].find(p => p.x.getTime() === ts);
-                            if (point) {
-                                sum += point.y;
-                                count++;
-                            }
-                        });
-
-                        if (count > 0) {
-                            const value = (performanceAggregationMode === 'avg' && metric !== 'concurrency') ? sum / count : sum;
-                            newAggData[metric][i].push({ x: timestamp, y: value });
-                        }
-                    }
-                });
-            });
-            aggregatedPerformanceData = newAggData;
-        }
-
+        function updateAllVisuals(data) { updateOverallStats(data.overall); updateSatelliteChart(data.satellites); updateSizeBarChart(data.transfer_sizes); updateTitles(data.first_event_iso, data.last_event_iso); updateHistoricalTable(data.historical_stats); updateAnalysisTables(data); updateHashstorePanel(data.hashstore_stats); }
+        function updateOverallStats(stats) { if (!stats || Object.keys(stats).length === 0) return; const totalDownloads = stats.dl_success + stats.dl_fail; const totalUploads = stats.ul_success + stats.ul_fail; const totalAudits = stats.audit_success + stats.audit_fail; const dlRate = totalDownloads > 0 ? (stats.dl_success / totalDownloads * 100).toFixed(2) : '100.00'; const ulRate = totalUploads > 0 ? (stats.ul_success / totalUploads * 100).toFixed(2) : '100.00'; const auditRate = totalAudits > 0 ? (stats.audit_success / totalAudits * 100).toFixed(2) : '100.00'; document.getElementById('dl-rate').textContent = `${dlRate}%`; document.getElementById('dl-rate').className = `stat-value ${getRateClass(parseFloat(dlRate))}`; document.getElementById('dl-success').textContent = stats.dl_success; document.getElementById('dl-total').textContent = totalDownloads; document.getElementById('ul-rate').textContent = `${ulRate}%`; document.getElementById('ul-rate').className = `stat-value ${getRateClass(parseFloat(ulRate))}`; document.getElementById('ul-success').textContent = stats.ul_success; document.getElementById('ul-total').textContent = totalUploads; document.getElementById('dl-speed').textContent = `${(stats.avg_egress_mbps||0).toFixed(2)} Mbps`; document.getElementById('ul-speed').textContent = `${(stats.avg_ingress_mbps||0).toFixed(2)} Mbps`; document.getElementById('audit-rate').textContent = `${auditRate}%`; document.getElementById('audit-rate').className = `stat-value ${getRateClass(parseFloat(auditRate))}`; document.getElementById('audit-success').textContent = stats.audit_success; document.getElementById('audit-total').textContent = totalAudits; }
+        function updateSatelliteChart(satStats) { if (!satStats) return; lastSatelliteData = satStats; satelliteChart.data.labels = satStats.map(s => SATELLITE_NAMES[s.satellite_id] || s.satellite_id.substring(0, 12)); if (satelliteViewIsBySize) { satelliteChart.options.scales.x.title.text = 'Data Transferred'; satelliteChart.data.datasets[0].data = satStats.map(s => s.total_upload_size); satelliteChart.data.datasets[1].data = satStats.map(s => s.total_download_size); satelliteChart.data.datasets[0].label = 'Upload Size'; satelliteChart.data.datasets[1].label = 'Download Size'; } else { satelliteChart.options.scales.x.title.text = 'Pieces'; satelliteChart.data.datasets[0].data = satStats.map(s => s.uploads); satelliteChart.data.datasets[1].data = satStats.map(s => s.downloads + s.audits); satelliteChart.data.datasets[0].label = 'Uploads'; satelliteChart.data.datasets[1].label = 'Downloads/Audits'; } satelliteChart.update(); }
+        let lastTransferSizes = []; function updateSizeBarChart(transferSizes) { if (!transferSizes) return; lastTransferSizes = transferSizes; const allBuckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]; const successfulDownloadData = new Array(allBuckets.length).fill(0); const successfulUploadData = new Array(allBuckets.length).fill(0); const failedDownloadData = new Array(allBuckets.length).fill(0); const failedUploadData = new Array(allBuckets.length).fill(0); transferSizes.forEach(item => { const index = allBuckets.indexOf(item.bucket); if (index !== -1) { successfulDownloadData[index] = item.downloads_success; successfulUploadData[index] = item.uploads_success; failedDownloadData[index] = item.downloads_failed; failedUploadData[index] = item.uploads_failed; } }); if (sizeViewIsPercentage) { const totalAll = successfulDownloadData.reduce((s,v)=>s+v,0)+successfulUploadData.reduce((s,v)=>s+v,0)+failedDownloadData.reduce((s,v)=>s+v,0)+failedUploadData.reduce((s,v)=>s+v,0); if (totalAll > 0) { for (let i = 0; i < allBuckets.length; i++) { successfulDownloadData[i] = (successfulDownloadData[i]/totalAll*100).toFixed(1); successfulUploadData[i] = (successfulUploadData[i]/totalAll*100).toFixed(1); failedDownloadData[i] = (failedDownloadData[i]/totalAll*100).toFixed(1); failedUploadData[i] = (failedUploadData[i]/totalAll*100).toFixed(1); } } sizeBarChart.options.scales.y.title.text = 'Percentage (%)'; } else { sizeBarChart.options.scales.y.title.text = 'Count'; } sizeBarChart.data.labels = allBuckets; sizeBarChart.data.datasets[0].data = successfulDownloadData; sizeBarChart.data.datasets[1].data = successfulUploadData; sizeBarChart.data.datasets[2].data = failedDownloadData; sizeBarChart.data.datasets[3].data = failedUploadData; sizeBarChart.update(); }
+        function updateTitles(firstIso, lastIso) { const formatTime = date => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); let timeWindowStr = "(Last 60 Mins)"; if (firstIso && lastIso) { timeWindowStr = `(${formatTime(new Date(firstIso))} - ${formatTime(new Date(lastIso))})`; } const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`; document.getElementById('stats-title').textContent = `Overall Success Rates & Speed${viewName} ${timeWindowStr}`; document.getElementById('satellite-title').textContent = `Traffic by Satellite${viewName} ${timeWindowStr}`; document.getElementById('size-chart-title').textContent = `Data Transfer Size Distribution${viewName} ${timeWindowStr}`; document.getElementById('hashstore-title').textContent = `Hashstore Compaction Stats${viewName}`; document.getElementById('dl-speed-label').textContent = currentNodeView === 'Aggregate' ? 'Total Download Speed' : 'Download Speed'; document.getElementById('ul-speed-label').textContent = currentNodeView === 'Aggregate' ? 'Total Upload Speed' : 'Upload Speed'; }
+        function updateHistoricalTable(history) { const tbody = document.getElementById('history-body'); tbody.innerHTML = ''; if (!history || history.length === 0) { tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No historical data yet.</td></tr>'; return; } for (const hour of history) { const totalDl = hour.dl_success + hour.dl_fail, dlRate = totalDl > 0 ? (hour.dl_success / totalDl * 100) : 100; const totalUl = hour.ul_success + hour.ul_fail, ulRate = totalUl > 0 ? (hour.ul_success / totalUl * 100) : 100; const totalAudit = hour.audit_success + hour.audit_fail, auditRate = totalAudit > 0 ? (hour.audit_success / totalAudit * 100) : 100; const dlSpeed = hour.dl_mbps !== undefined ? hour.dl_mbps.toFixed(2) : '...'; const ulSpeed = hour.ul_mbps !== undefined ? hour.ul_mbps.toFixed(2) : '...'; const row = tbody.insertRow(); row.innerHTML = `<td>${new Date(hour.hour_timestamp).toLocaleTimeString([],{hour:'numeric'})}</td><td class="numeric ${getRateClass(dlRate)}">${dlRate.toFixed(2)}%</td><td class="numeric ${getRateClass(ulRate)}">${ulRate.toFixed(2)}%</td><td class="numeric ${getRateClass(auditRate)}">${auditRate.toFixed(2)}%</td><td class="numeric">${dlSpeed} Mbps</td><td class="numeric">${ulSpeed} Mbps</td>`; } }
+        function updateAnalysisTables(data) { const errorBody = document.getElementById('error-body'); errorBody.innerHTML = ''; if (data.error_categories && data.error_categories.length > 0) { data.error_categories.forEach(e => { errorBody.innerHTML += `<tr><td class="reason-cell">${e.reason}</td><td class="numeric">${e.count}</td></tr>`; }); } else { errorBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No errors in this time window.</td></tr>'; } const piecesBody = document.getElementById('pieces-body'); piecesBody.innerHTML = ''; if (data.top_pieces && data.top_pieces.length > 0) { data.top_pieces.forEach(p => { piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,25)}...</td><td class="numeric">${p.count}</td><td class="numeric">${formatBytes(p.size)}</td></tr>`; }); } else { piecesBody.innerHTML = '<tr><td colspan="3" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesDlBody = document.getElementById('countries-dl-body'); countriesDlBody.innerHTML = ''; if (data.top_countries_dl && data.top_countries_dl.length > 0) { data.top_countries_dl.forEach(c => countriesDlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesDlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesUlBody = document.getElementById('countries-ul-body'); countriesUlBody.innerHTML = ''; if (data.top_countries_ul && data.top_countries_ul.length > 0) { data.top_countries_ul.forEach(c => countriesUlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesUlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } }
+        function updateHashstorePanel(stats) { const tbody = document.getElementById('hashstore-body'); const showNodeColumn = currentNodeView === 'Aggregate'; document.querySelector('#hashstore-card th:first-child').style.display = showNodeColumn ? '' : 'none'; tbody.innerHTML = ''; if (!stats || stats.length === 0) { const colspan = showNodeColumn ? 9 : 8; tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align: center;">Waiting for hashstore compaction events...</td></tr>`; return; } for (const item of stats) { const row = tbody.insertRow(); let cellIndex = 0; if (showNodeColumn) { row.insertCell(cellIndex++).textContent = item.node_name; row.cells[0].style.display = ''; } else { row.insertCell(cellIndex++).style.display = 'none'; } row.insertCell(cellIndex++).textContent = SATELLITE_NAMES[item.satellite] || item.satellite.substring(0,12); row.insertCell(cellIndex++).textContent = item.store; row.insertCell(cellIndex++).textContent = new Date(item.last_run_iso).toLocaleTimeString(); const durationCell = row.insertCell(cellIndex++); durationCell.className = 'numeric'; durationCell.textContent = `${item.duration.toFixed(1)}s`; const reclaimedCell = row.insertCell(cellIndex++); reclaimedCell.className = 'numeric'; reclaimedCell.textContent = formatBytes(item.data_reclaimed_bytes); const rewrittenCell = row.insertCell(cellIndex++); rewrittenCell.className = 'numeric'; rewrittenCell.textContent = formatBytes(item.data_rewritten_bytes); const loadCell = row.insertCell(cellIndex++); loadCell.className = 'numeric'; loadCell.textContent = `${item.table_load.toFixed(2)}%`; const trashCell = row.insertCell(cellIndex++); trashCell.className = 'numeric'; trashCell.textContent = `${item.trash_percent.toFixed(2)}%`; } }
+        function updatePerformanceChart() { const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`; const viewTitles = { rate: 'Live Performance (Mbps)', volume: 'Data Volume (MB)', pieces: 'Pieces', concurrency: 'Active Operations' }; const yAxisTitles = { rate: 'Mbps', volume: 'MB', pieces: 'Count', concurrency: 'Concurrent Ops' }; document.getElementById('performance-title').textContent = viewTitles[performanceChartView] + viewName; document.getElementById('aggregation-toggles').style.display = (currentNodeView === 'Aggregate') ? 'block' : 'none'; const dataToDisplay = (currentNodeView === 'Aggregate') ? aggregatedPerformanceData : performanceData[currentNodeView]; if (!dataToDisplay) return; let yAxisTitle = yAxisTitles[performanceChartView]; if(currentNodeView === 'Aggregate' && performanceAggregationMode === 'avg') { yAxisTitle = yAxisTitle.replace('Mbps', 'Avg. Mbps').replace('MB', 'Avg. MB'); } else if (currentNodeView === 'Aggregate' && performanceAggregationMode === 'sum') { yAxisTitle = yAxisTitle.replace('Mbps', 'Total Mbps').replace('MB', 'Total MB'); } performanceChart.options.scales.y.title.text = yAxisTitle; const isConcurrency = performanceChartView === 'concurrency'; let datasetsToShow = []; if (isConcurrency) { datasetsToShow.push({ label: 'Operations', data: dataToDisplay.concurrency ? dataToDisplay.concurrency[0] : [], borderColor: UPLOAD_COLOR, tension: 0.2 }); } else { datasetsToShow.push({ label: 'Ingress (Upload)', data: dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][0] : [], borderColor: UPLOAD_COLOR, tension: 0.2 }); datasetsToShow.push({ label: 'Egress (Download)', data: dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][1] : [], borderColor: DOWNLOAD_COLOR, tension: 0.2 }); } performanceChart.data.datasets = datasetsToShow; performanceChart.update('none'); }
+        function initializePerformanceData(nodes) { const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] }); nodes.forEach(node => { performanceData[node] = dataTemplate(); livePerformanceDataQueue[node] = []; performanceHistoryLoaded[node] = false; }); aggregatedPerformanceData = dataTemplate(); }
+        function recalculateAggregateData() { const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] }); const newAggData = dataTemplate(); const individualNodes = availableNodes.filter(n => n !== 'Aggregate'); if (individualNodes.length === 0) return; const allTimestamps = new Set(); individualNodes.forEach(node => { Object.values(performanceData[node]).forEach(seriesPair => { seriesPair.forEach(series => { series.forEach(point => allTimestamps.add(point.x.getTime())); }); }); }); const sortedTimestamps = Array.from(allTimestamps).sort((a,b) => a - b); sortedTimestamps.forEach(ts => { const timestamp = new Date(ts); Object.keys(newAggData).forEach(metric => { const isConcurrency = metric === 'concurrency'; const numSeries = isConcurrency ? 1 : 2; for (let i = 0; i < numSeries; i++) { let sum = 0; let count = 0; individualNodes.forEach(node => { const point = performanceData[node][metric][i].find(p => p.x.getTime() === ts); if (point) { sum += point.y; count++; } }); if (count > 0) { const value = (performanceAggregationMode === 'avg' && metric !== 'concurrency') ? sum / count : sum; newAggData[metric][i].push({ x: timestamp, y: value }); } } }); }); aggregatedPerformanceData = newAggData; }
 
         // --- Event Listeners ---
-        document.getElementById('toggle-satellite-view').addEventListener('click', function(e) {
-            e.preventDefault();
-            satelliteViewIsBySize = !satelliteViewIsBySize;
-            this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size';
-            updateSatelliteChart(lastSatelliteData);
-        });
-
-        let lastTransferSizes = [];
-
-        document.getElementById('toggle-size-view').addEventListener('click', function(e) {
-            e.preventDefault();
-            sizeViewIsPercentage = !sizeViewIsPercentage;
-            this.textContent = sizeViewIsPercentage ? 'Show Counts' : 'Show Percentages';
-            updateSizeBarChart(lastTransferSizes);
-        });
-
-        document.getElementById('performance-toggles').addEventListener('click', function(e) {
-            e.preventDefault();
-            if (e.target.tagName === 'A') {
-                performanceChartView = e.target.getAttribute('data-view');
-                document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active'));
-                e.target.classList.add('active');
-                updatePerformanceChart();
-            }
-        });
-
-        document.getElementById('aggregation-toggles').addEventListener('click', function(e) {
-            e.preventDefault();
-            if (e.target.tagName === 'A') {
-                performanceAggregationMode = e.target.getAttribute('data-agg');
-                document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active'));
-                e.target.classList.add('active');
-                recalculateAggregateData();
-                updatePerformanceChart();
-            }
-        });
-
-        function requestHistoricalPerformance(view) {
-            if (ws && ws.readyState === WebSocket.OPEN && view !== 'Aggregate') {
-                console.log(`Requesting historical performance data for node: ${view}`);
-                ws.send(JSON.stringify({
-                    type: 'get_historical_performance',
-                    view: view,
-                    points: MAX_PERF_POINTS,
-                    interval_sec: PERFORMANCE_INTERVAL_MS / 1000
-                }));
-            }
-        }
-
-        document.getElementById('node-selector').addEventListener('click', function(e) {
-            e.preventDefault();
-            if (e.target.classList.contains('node-link')) {
-                const newView = e.target.getAttribute('data-view');
-                if (newView === currentNodeView) return;
-
-                currentNodeView = newView;
-
-                document.querySelectorAll('#node-selector .node-link').forEach(el => el.classList.remove('active'));
-                e.target.classList.add('active');
-
-                ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView }));
-
-                // The history for individual nodes is already loading.
-                // We just need to update the chart to point to the right data source.
-                updatePerformanceChart();
-            }
-        });
-
-        // --- UPDATED EVENT LISTENER for Map Maximize Button ---
+        document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); satelliteViewIsBySize = !satelliteViewIsBySize; this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size'; updateSatelliteChart(lastSatelliteData); });
+        document.getElementById('toggle-size-view').addEventListener('click', function(e) { e.preventDefault(); sizeViewIsPercentage = !sizeViewIsPercentage; this.textContent = sizeViewIsPercentage ? 'Show Counts' : 'Show Percentages'; updateSizeBarChart(lastTransferSizes); });
+        document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceChartView = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); updatePerformanceChart(); } });
+        document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceAggregationMode = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); recalculateAggregateData(); updatePerformanceChart(); } });
+        function requestHistoricalPerformance(view) { if (ws && ws.readyState === WebSocket.OPEN && view !== 'Aggregate') { ws.send(JSON.stringify({ type: 'get_historical_performance', view: view, points: MAX_PERF_POINTS, interval_sec: PERFORMANCE_INTERVAL_MS / 1000 })); } }
+        document.getElementById('node-selector').addEventListener('click', function(e) { e.preventDefault(); if (e.target.classList.contains('node-link')) { const newView = e.target.getAttribute('data-view'); if (newView === currentNodeView) return; currentNodeView = newView; document.querySelectorAll('#node-selector .node-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView })); updatePerformanceChart(); } });
         const mapCard = document.getElementById('map-card');
         const toggleMapSizeBtn = document.getElementById('toggle-map-size-btn');
-        toggleMapSizeBtn.addEventListener('click', () => {
-            const isMaximized = mapCard.classList.toggle('maximized');
-            document.body.classList.toggle('map-maximized', isMaximized); // Toggle body class
-
-            if (isMaximized) {
-                toggleMapSizeBtn.innerHTML = '&#x2924;'; // Arrows pointing inwards
-                toggleMapSizeBtn.title = 'Restore Map Size';
-            } else {
-                toggleMapSizeBtn.innerHTML = '&#x26F6;'; // Square with four corners
-                toggleMapSizeBtn.title = 'Maximize Map';
-            }
-            // Give the browser a moment to apply CSS changes before telling Leaflet to resize.
-            // This is CRUCIAL to fix the blurry/degraded map quality issue.
-            setTimeout(() => { map.invalidateSize(); }, 150);
-        });
-        // --- END UPDATED EVENT LISTENER ---
+        toggleMapSizeBtn.addEventListener('click', () => { const isMaximized = mapCard.classList.toggle('maximized'); document.body.classList.toggle('map-maximized', isMaximized); if (isMaximized) { toggleMapSizeBtn.innerHTML = '&#x2924;'; toggleMapSizeBtn.title = 'Restore Map Size'; } else { toggleMapSizeBtn.innerHTML = '&#x26F6;'; toggleMapSizeBtn.title = 'Maximize Map'; } setTimeout(() => { map.invalidateSize(); }, 150); });
 
         // --- WebSocket Connection ---
-        let ws;
-        const connectionManager = {
-            overlay: document.getElementById('connection-overlay'),
-            reconnectDelay: 1000, maxReconnectDelay: 30000,
-            connect: function() {
-                const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
-
-                ws.onopen = () => { console.log("WebSocket established."); this.overlay.style.display = 'none'; this.reconnectDelay = 1000; };
-
-                ws.onmessage = (event) => {
-                    const data = JSON.parse(event.data);
-                    switch(data.type) {
-                        case 'init':
-                            availableNodes = data.nodes;
-                            const selector = document.getElementById('node-selector');
-                            selector.innerHTML = '';
-                            data.nodes.forEach(name => {
-                                const link = document.createElement('a');
-                                link.href = '#';
-                                link.className = 'node-link';
-                                link.textContent = name;
-                                link.setAttribute('data-view', name);
-                                if (name === currentNodeView) link.classList.add('active');
-                                selector.appendChild(link);
-                            });
-                            initializePerformanceData(data.nodes);
-                            // Request history for all individual nodes
-                            availableNodes.filter(n => n !== 'Aggregate').forEach(nodeName => {
-                                requestHistoricalPerformance(nodeName);
-                            });
-                            break;
-                        case 'log_entry':
-                            if (data.location && data.location.lat) {
-                                const size = data.size || 1000;
-                                heatmap.addDataPoint(data.location.lat, data.location.lon, size, data.action, data.action, data.timestamp);
-                            }
-                            break;
-                        case 'performance_update':
-                            const { node_name, ...metrics } = data;
-                            if (!performanceHistoryLoaded[node_name]) {
-                                livePerformanceDataQueue[node_name].push(metrics);
-                            } else {
-                                processPerformanceUpdate(node_name, metrics);
-                            }
-                            break;
-
-                        case 'historical_performance_data':
-                            console.log(`Received historical performance data for view: ${data.view}`);
-                            const nodePerfData = performanceData[data.view];
-                            if (!nodePerfData) break;
-
-                            data.performance_data.forEach(point => {
-                                const ts = new Date(point.timestamp);
-                                nodePerfData.rate[0].push({ x: ts, y: point.ingress_mbps });
-                                nodePerfData.rate[1].push({ x: ts, y: point.egress_mbps });
-                                nodePerfData.volume[0].push({ x: ts, y: point.ingress_bytes / 1e6 });
-                                nodePerfData.volume[1].push({ x: ts, y: point.egress_bytes / 1e6 });
-                                nodePerfData.pieces[0].push({ x: ts, y: point.ingress_pieces });
-                                nodePerfData.pieces[1].push({ x: ts, y: point.egress_pieces });
-                                nodePerfData.concurrency[0].push({ x: ts, y: point.concurrency });
-                            });
-
-                            performanceHistoryLoaded[data.view] = true;
-
-                            // Process any queued live data for this specific node
-                            livePerformanceDataQueue[data.view].forEach(queuedMetrics => processPerformanceUpdate(data.view, queuedMetrics));
-                            livePerformanceDataQueue[data.view] = [];
-
-                            recalculateAggregateData();
-                            updatePerformanceChart();
-                            break;
-
-                        case 'stats_update':
-                            updateAllVisuals(data);
-                            break;
-                    }
-                };
-
-                ws.onclose = (event) => {
-                    console.log(`WebSocket closed. Reconnecting...`);
-                    this.overlay.style.display = 'flex';
-                    setTimeout(() => this.connect(), this.reconnectDelay);
-                    this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2);
-                };
-
-                ws.onerror = (err) => { console.error("WebSocket error:", err); ws.close(); };
-            }
-        };
-
-        function processPerformanceUpdate(node_name, metrics) {
-            const binnedTimestamp = Math.floor(new Date(metrics.timestamp).getTime() / PERFORMANCE_INTERVAL_MS) * PERFORMANCE_INTERVAL_MS;
-            const binnedNow = new Date(binnedTimestamp);
-
-            const nodePerf = performanceData[node_name];
-            if (!nodePerf) return;
-
-            const metricMap = {
-                rate: [metrics.ingress_mbps, metrics.egress_mbps],
-                volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6],
-                pieces: [metrics.ingress_pieces, metrics.egress_pieces],
-                concurrency: [metrics.concurrency]
-            };
-
-            const updateOrPushPoint = (series, point) => {
-                const lastPoint = series.length > 0 ? series[series.length - 1] : null;
-                if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) {
-                    lastPoint.y = point.y;
-                } else {
-                    series.push(point);
-                    if (series.length > MAX_PERF_POINTS) {
-                        series.shift();
-                    }
-                }
-            };
-
-            Object.keys(metricMap).forEach(metric => {
-                const values = metricMap[metric];
-                for (let i = 0; i < values.length; i++) {
-                    updateOrPushPoint(nodePerf[metric][i], { x: binnedNow, y: values[i] });
-                }
-            });
-
-            recalculateAggregateData();
-            updatePerformanceChart();
-        }
-
+        let ws; const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; }; ws.onmessage = (event) => { const data = JSON.parse(event.data); switch(data.type) { case 'init': availableNodes = data.nodes; const selector = document.getElementById('node-selector'); selector.innerHTML = ''; data.nodes.forEach(name => { const link = document.createElement('a'); link.href = '#'; link.className = 'node-link'; link.textContent = name; link.setAttribute('data-view', name); if (name === currentNodeView) link.classList.add('active'); selector.appendChild(link); }); initializePerformanceData(data.nodes); availableNodes.filter(n => n !== 'Aggregate').forEach(nodeName => { requestHistoricalPerformance(nodeName); }); break; case 'log_entry': if (data.location && data.location.lat) { heatmap.addDataPoint(data.location.lat, data.location.lon, data.size || 1000, data.action, data.action, data.timestamp); } break; case 'performance_update': const { node_name, ...metrics } = data; if (!performanceHistoryLoaded[node_name]) { livePerformanceDataQueue[node_name].push(metrics); } else { processPerformanceUpdate(node_name, metrics); } break; case 'historical_performance_data': const nodePerfData = performanceData[data.view]; if (!nodePerfData) break; data.performance_data.forEach(point => { const ts = new Date(point.timestamp); nodePerfData.rate[0].push({x:ts, y:point.ingress_mbps}); nodePerfData.rate[1].push({x:ts, y:point.egress_mbps}); nodePerfData.volume[0].push({x:ts, y:point.ingress_bytes / 1e6}); nodePerfData.volume[1].push({x:ts, y:point.egress_bytes / 1e6}); nodePerfData.pieces[0].push({x:ts, y:point.ingress_pieces}); nodePerfData.pieces[1].push({x:ts, y:point.egress_pieces}); nodePerfData.concurrency[0].push({x:ts, y:point.concurrency}); }); performanceHistoryLoaded[data.view] = true; livePerformanceDataQueue[data.view].forEach(queuedMetrics => processPerformanceUpdate(data.view, queuedMetrics)); livePerformanceDataQueue[data.view] = []; recalculateAggregateData(); updatePerformanceChart(); break; case 'stats_update': updateAllVisuals(data); break; } }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); }; ws.onerror = err => { console.error("WebSocket error:", err); ws.close(); }; } };
+        function processPerformanceUpdate(node_name, metrics) { const binnedTimestamp = Math.floor(new Date(metrics.timestamp).getTime() / PERFORMANCE_INTERVAL_MS) * PERFORMANCE_INTERVAL_MS; const binnedNow = new Date(binnedTimestamp); const nodePerf = performanceData[node_name]; if (!nodePerf) return; const metricMap = { rate: [metrics.ingress_mbps, metrics.egress_mbps], volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6], pieces: [metrics.ingress_pieces, metrics.egress_pieces], concurrency: [metrics.concurrency] }; const updateOrPushPoint = (series, point) => { const lastPoint = series.length > 0 ? series[series.length - 1] : null; if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) { lastPoint.y = point.y; } else { series.push(point); if (series.length > MAX_PERF_POINTS) { series.shift(); } } }; Object.keys(metricMap).forEach(metric => { const values = metricMap[metric]; for (let i = 0; i < values.length; i++) { updateOrPushPoint(nodePerf[metric][i], { x: binnedNow, y: values[i] }); } }); recalculateAggregateData(); updatePerformanceChart(); }
         connectionManager.connect();
 
         // --- Dark Mode Chart Handler ---
-        function updateChartColors(isDarkMode) {
+        const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        function handleThemeChange(isDarkMode) {
             const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
             const textColor = isDarkMode ? '#e0e0e0' : '#333';
-
-            Chart.defaults.color = textColor;
-            Chart.defaults.borderColor = gridColor;
-
+            Chart.defaults.color = textColor; Chart.defaults.borderColor = gridColor;
             for (const id in Chart.instances) {
                 const chart = Chart.instances[id];
-                if(chart.options.plugins.tooltip) {
-                    chart.options.plugins.tooltip.titleColor = textColor;
-                    chart.options.plugins.tooltip.bodyColor = textColor;
-                    chart.options.plugins.tooltip.footerColor = textColor;
-                }
+                if(chart.options.plugins.tooltip) { chart.options.plugins.tooltip.titleColor = textColor; chart.options.plugins.tooltip.bodyColor = textColor; chart.options.plugins.tooltip.footerColor = textColor; }
                 chart.update();
             }
         }
-
-        const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-        updateChartColors(darkModeMediaQuery.matches);
-        darkModeMediaQuery.addEventListener('change', e => updateChartColors(e.matches));
+        handleThemeChange(darkModeMediaQuery.matches);
+        darkModeMediaQuery.addEventListener('change', e => handleThemeChange(e.matches));
     </script>
 </body>
 </html>
