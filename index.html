@@ -561,9 +561,7 @@
                 } else {
                     // At higher zoom levels, show individual points
                     clusters.forEach(cluster => {
-                        const point = inf
-
-                                         o.layer._map.latLngToContainerPoint([cluster.lat, cluster.lon]);
+                        const point = info.layer._map.latLngToContainerPoint([cluster.lat, cluster.lon]);
 
                         // Calculate age factor
                         const age = now - cluster.avgTimestamp;
@@ -1005,6 +1003,10 @@
         let aggregatedPerformanceData = {};
         let currentNodeView = 'Aggregate';
         let availableNodes = [];
+        // New state for handling historical data loading
+        let performanceHistoryLoaded = {};
+        let livePerformanceDataQueue = {};
+
 
         // --- Helper Functions ---
         function formatBytes(bytes, decimals = 2) {
@@ -1365,7 +1367,6 @@
             let datasetsToShow = [];
 
             if (isConcurrency) {
-                // For Concurrency view, create a single dataset.
                 datasetsToShow.push({
                     label: 'Operations',
                     data: dataToDisplay.concurrency ? dataToDisplay.concurrency[0] : [],
@@ -1373,7 +1374,6 @@
                     tension: 0.2
                 });
             } else {
-                // For all other views, create two datasets.
                 datasetsToShow.push({
                     label: 'Ingress (Upload)',
                     data: dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][0] : [],
@@ -1393,37 +1393,42 @@
         }
 
         function initializePerformanceData(nodes) {
-            const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[], []] });
+            const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] });
             nodes.forEach(node => {
                 performanceData[node] = dataTemplate();
+                livePerformanceDataQueue[node] = [];
+                performanceHistoryLoaded[node] = false;
             });
             aggregatedPerformanceData = dataTemplate();
         }
 
         function recalculateAggregateData() {
-            const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[], []] });
+            const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] });
             const newAggData = dataTemplate();
-            const nodeNames = availableNodes.filter(n => n !== 'Aggregate');
-            if (nodeNames.length === 0) return;
+            const individualNodes = availableNodes.filter(n => n !== 'Aggregate');
+            if (individualNodes.length === 0) return;
 
             const allTimestamps = new Set();
-            nodeNames.forEach(node => {
+            individualNodes.forEach(node => {
                 Object.values(performanceData[node]).forEach(seriesPair => {
-                    seriesPair[0].forEach(point => allTimestamps.add(point.x.getTime()));
+                    seriesPair.forEach(series => {
+                        series.forEach(point => allTimestamps.add(point.x.getTime()));
+                    });
                 });
             });
 
-            const sortedTimestamps = Array.from(allTimestamps).sort();
+            const sortedTimestamps = Array.from(allTimestamps).sort((a,b) => a - b);
 
             sortedTimestamps.forEach(ts => {
                 const timestamp = new Date(ts);
                 Object.keys(newAggData).forEach(metric => {
                     const isConcurrency = metric === 'concurrency';
                     const numSeries = isConcurrency ? 1 : 2;
+
                     for (let i = 0; i < numSeries; i++) {
                         let sum = 0;
                         let count = 0;
-                        nodeNames.forEach(node => {
+                        individualNodes.forEach(node => {
                             const point = performanceData[node][metric][i].find(p => p.x.getTime() === ts);
                             if (point) {
                                 sum += point.y;
@@ -1431,16 +1436,14 @@
                             }
                         });
 
-
                         if (count > 0) {
-                            const value = performanceAggregationMode === 'avg' ? sum / count : sum;
+                            const value = (performanceAggregationMode === 'avg' && metric !== 'concurrency') ? sum / count : sum;
                             newAggData[metric][i].push({ x: timestamp, y: value });
                         }
                     }
                 });
             });
             aggregatedPerformanceData = newAggData;
-            updatePerformanceChart();
         }
 
 
@@ -1452,19 +1455,12 @@
             updateSatelliteChart(lastSatelliteData);
         });
 
-        // Store the last received data for toggling between views
-        let lastDownloadSizes = [];
-        let lastUploadSizes = [];
-
-        // Variable to store the last received transfer sizes data
         let lastTransferSizes = [];
 
         document.getElementById('toggle-size-view').addEventListener('click', function(e) {
             e.preventDefault();
             sizeViewIsPercentage = !sizeViewIsPercentage;
             this.textContent = sizeViewIsPercentage ? 'Show Counts' : 'Show Percentages';
-
-            // Update the chart with the stored data
             updateSizeBarChart(lastTransferSizes);
         });
 
@@ -1485,8 +1481,21 @@
                 document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active'));
                 e.target.classList.add('active');
                 recalculateAggregateData();
+                updatePerformanceChart();
             }
         });
+
+        function requestHistoricalPerformance(view) {
+            if (ws && ws.readyState === WebSocket.OPEN && view !== 'Aggregate') {
+                console.log(`Requesting historical performance data for node: ${view}`);
+                ws.send(JSON.stringify({
+                    type: 'get_historical_performance',
+                    view: view,
+                    points: MAX_PERF_POINTS,
+                    interval_sec: PERFORMANCE_INTERVAL_MS / 1000
+                }));
+            }
+        }
 
         document.getElementById('node-selector').addEventListener('click', function(e) {
             e.preventDefault();
@@ -1499,13 +1508,10 @@
                 document.querySelectorAll('#node-selector .node-link').forEach(el => el.classList.remove('active'));
                 e.target.classList.add('active');
 
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    Object.values(Chart.instances).forEach(chart => {
-                        chart.data.datasets.forEach(dataset => dataset.data = []);
-                        chart.update('none');
-                    });
-                    ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView }));
-                }
+                ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView }));
+
+                // The history for individual nodes is already loading.
+                // We just need to update the chart to point to the right data source.
                 updatePerformanceChart();
             }
         });
@@ -1534,97 +1540,56 @@
                                 link.className = 'node-link';
                                 link.textContent = name;
                                 link.setAttribute('data-view', name);
-                                if (name === currentNodeView) {
-                                    link.classList.add('active');
-                                }
+                                if (name === currentNodeView) link.classList.add('active');
                                 selector.appendChild(link);
                             });
-                            initializePerformanceData(data.nodes.filter(n => n !== 'Aggregate'));
-                            updatePerformanceChart();
+                            initializePerformanceData(data.nodes);
+                            // Request history for all individual nodes
+                            availableNodes.filter(n => n !== 'Aggregate').forEach(nodeName => {
+                                requestHistoricalPerformance(nodeName);
+                            });
                             break;
                         case 'log_entry':
                             if (data.location && data.location.lat) {
-                                // Add data point with proper size normalization
-                                // Size is typically in bytes, normalize it for visualization
-                                const size = data.size || 1000; // Default 1KB if no size
-                                // Pass the event timestamp for temporal smoothing
-                                heatmap.addDataPoint(
-                                    data.location.lat,
-                                    data.location.lon,
-                                    size,
-                                    data.action || 'unknown',
-                                    data.action || 'unknown',
-                                    data.timestamp // Pass actual event timestamp
-                                );
+                                const size = data.size || 1000;
+                                heatmap.addDataPoint(data.location.lat, data.location.lon, size, data.action, data.action, data.timestamp);
                             }
                             break;
                         case 'performance_update':
-                            const { node_name, timestamp, ...metrics } = data;
-                            const binnedTimestamp = Math.floor(new Date(timestamp).getTime() / PERFORMANCE_INTERVAL_MS) * PERFORMANCE_INTERVAL_MS;
-                            const binnedNow = new Date(binnedTimestamp);
-
-                            const nodePerf = performanceData[node_name];
-                            if (!nodePerf) break;
-
-                            const nodeNames = availableNodes.filter(n => n !== 'Aggregate');
-
-                            function updateOrPushPoint(series, point) {
-                                const lastPoint = series.length > 0 ? series[series.length - 1] : null;
-                                if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) {
-                                    lastPoint.y = point.y;
-                                } else {
-                                    series.push(point);
-                                }
+                            const { node_name, ...metrics } = data;
+                            if (!performanceHistoryLoaded[node_name]) {
+                                livePerformanceDataQueue[node_name].push(metrics);
+                            } else {
+                                processPerformanceUpdate(node_name, metrics);
                             }
+                            break;
 
-                            const metricMap = {
-                                rate: [metrics.ingress_mbps, metrics.egress_mbps],
-                                volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6],
-                                pieces: [metrics.ingress_pieces, metrics.egress_pieces],
-                                concurrency: [metrics.concurrency]
-                            };
+                        case 'historical_performance_data':
+                            console.log(`Received historical performance data for view: ${data.view}`);
+                            const nodePerfData = performanceData[data.view];
+                            if (!nodePerfData) break;
 
-                            Object.keys(metricMap).forEach(metric => {
-                                const values = metricMap[metric];
-                                for(let i=0; i<values.length; i++) {
-                                    updateOrPushPoint(nodePerf[metric][i], { x: binnedNow, y: values[i]});
-                                }
+                            data.performance_data.forEach(point => {
+                                const ts = new Date(point.timestamp);
+                                nodePerfData.rate[0].push({ x: ts, y: point.ingress_mbps });
+                                nodePerfData.rate[1].push({ x: ts, y: point.egress_mbps });
+                                nodePerfData.volume[0].push({ x: ts, y: point.ingress_bytes / 1e6 });
+                                nodePerfData.volume[1].push({ x: ts, y: point.egress_bytes / 1e6 });
+                                nodePerfData.pieces[0].push({ x: ts, y: point.ingress_pieces });
+                                nodePerfData.pieces[1].push({ x: ts, y: point.egress_pieces });
+                                nodePerfData.concurrency[0].push({ x: ts, y: point.concurrency });
                             });
 
-                            Object.keys(aggregatedPerformanceData).forEach(metric => {
-                                const isConcurrency = metric === 'concurrency';
-                                const numSeries = isConcurrency ? 1 : 2;
-                                for (let i = 0; i < numSeries; i++) {
-                                    let sum = 0;
-                                    let count = 0;
-                                    nodeNames.forEach(node => {
-                                        const series = performanceData[node][metric][i];
-                                        const lastPoint = series.length > 0 ? series[series.length-1] : null;
-                                        if(lastPoint && lastPoint.x.getTime() === binnedTimestamp) {
-                                            sum += lastPoint.y;
-                                            count++;
-                                        }
-                                    });
-                                    if(count > 0) {
-                                        const value = performanceAggregationMode === 'avg' ? sum / count : sum;
-                                        updateOrPushPoint(aggregatedPerformanceData[metric][i], { x: binnedNow, y: value });
-                                    }
-                                }
-                            });
+                            performanceHistoryLoaded[data.view] = true;
 
-                            Object.values(performanceData).forEach(nodePerf => {
-                                for (const key in nodePerf) {
-                                    while (nodePerf[key][0].length > MAX_PERF_POINTS) nodePerf[key][0].shift();
-                                    if(nodePerf[key][1]) while (nodePerf[key][1].length > MAX_PERF_POINTS) nodePerf[key][1].shift();
-                                }
-                            });
-                            for (const key in aggregatedPerformanceData) {
-                                while (aggregatedPerformanceData[key][0].length > MAX_PERF_POINTS) aggregatedPerformanceData[key][0].shift();
-                                if(aggregatedPerformanceData[key][1]) while (aggregatedPerformanceData[key][1].length > MAX_PERF_POINTS) aggregatedPerformanceData[key][1].shift();
-                            }
+                            // Process any queued live data for this specific node
+                            livePerformanceDataQueue[data.view].forEach(queuedMetrics => processPerformanceUpdate(data.view, queuedMetrics));
+                            livePerformanceDataQueue[data.view] = [];
 
+                            recalculateAggregateData();
                             updatePerformanceChart();
                             break;
+
                         case 'stats_update':
                             updateAllVisuals(data);
                             break;
@@ -1641,6 +1606,44 @@
                 ws.onerror = (err) => { console.error("WebSocket error:", err); ws.close(); };
             }
         };
+
+        function processPerformanceUpdate(node_name, metrics) {
+            const binnedTimestamp = Math.floor(new Date(metrics.timestamp).getTime() / PERFORMANCE_INTERVAL_MS) * PERFORMANCE_INTERVAL_MS;
+            const binnedNow = new Date(binnedTimestamp);
+
+            const nodePerf = performanceData[node_name];
+            if (!nodePerf) return;
+
+            const metricMap = {
+                rate: [metrics.ingress_mbps, metrics.egress_mbps],
+                volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6],
+                pieces: [metrics.ingress_pieces, metrics.egress_pieces],
+                concurrency: [metrics.concurrency]
+            };
+
+            const updateOrPushPoint = (series, point) => {
+                const lastPoint = series.length > 0 ? series[series.length - 1] : null;
+                if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) {
+                    lastPoint.y = point.y;
+                } else {
+                    series.push(point);
+                    if (series.length > MAX_PERF_POINTS) {
+                        series.shift();
+                    }
+                }
+            };
+
+            Object.keys(metricMap).forEach(metric => {
+                const values = metricMap[metric];
+                for (let i = 0; i < values.length; i++) {
+                    updateOrPushPoint(nodePerf[metric][i], { x: binnedNow, y: values[i] });
+                }
+            });
+
+            recalculateAggregateData();
+            updatePerformanceChart();
+        }
+
         connectionManager.connect();
 
         // --- Dark Mode Chart Handler ---

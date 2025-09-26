@@ -689,6 +689,51 @@ async def periodic_stats_updater(app):
 
 async def handle_index(request): return web.FileResponse('./index.html')
 
+def blocking_get_historical_performance(node_name: str, points: int, interval_sec: int) -> List[Dict[str, Any]]:
+    log.info(f"Fetching historical performance for node '{node_name}' ({points} points @ {interval_sec}s interval).")
+    window_sec = points * interval_sec
+    start_time = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=window_sec)
+    start_time_iso = start_time.isoformat()
+
+    results = []
+    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
+        conn.row_factory = sqlite3.Row
+
+        query = f"""
+            SELECT
+                (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start,
+                SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes,
+                SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes,
+                SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces,
+                SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces
+            FROM events
+            WHERE timestamp >= ? AND node_name = ?
+            GROUP BY time_bucket_start ORDER BY time_bucket_start ASC
+        """
+        params = [interval_sec, interval_sec, start_time_iso, node_name]
+
+        cursor = conn.cursor()
+        for row in cursor.execute(query, params).fetchall():
+            row_dict = dict(row)
+            ts_unix = row_dict['time_bucket_start']
+
+            ingress_mbps = (row_dict.get('ingress_bytes', 0) * 8) / (interval_sec * 1e6)
+            egress_mbps = (row_dict.get('egress_bytes', 0) * 8) / (interval_sec * 1e6)
+
+            results.append({
+                "timestamp": datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat(),
+                "ingress_mbps": round(ingress_mbps, 2),
+                "egress_mbps": round(egress_mbps, 2),
+                "ingress_bytes": row_dict.get('ingress_bytes', 0),
+                "egress_bytes": row_dict.get('egress_bytes', 0),
+                "ingress_pieces": row_dict.get('ingress_pieces', 0),
+                "egress_pieces": row_dict.get('egress_pieces', 0),
+                "concurrency": 0
+            })
+
+    log.info(f"Returning {len(results)} historical performance data points for node '{node_name}'.")
+    return results
+
 async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=10)
     await ws.prepare(request)
@@ -706,12 +751,36 @@ async def websocket_handler(request):
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
-                    if data.get('type') == 'set_view':
+                    msg_type = data.get('type')
+
+                    if msg_type == 'set_view':
                         new_view = data.get('view')
                         if new_view in node_names:
                             app_state['websockets'][ws]['view'] = new_view
                             log.info(f"Client switched view to: {new_view}")
                             await send_stats_for_view(app, ws, new_view)
+
+                    elif msg_type == 'get_historical_performance':
+                        view = data.get('view')
+                        if view == 'Aggregate': continue # Should not be requested by new client
+
+                        points = data.get('points', 150)
+                        interval = data.get('interval_sec', PERFORMANCE_INTERVAL_SECONDS)
+
+                        loop = asyncio.get_running_loop()
+                        historical_data = await loop.run_in_executor(
+                            app['db_executor'],
+                            blocking_get_historical_performance,
+                            view, points, interval
+                        )
+
+                        payload = {
+                            "type": "historical_performance_data",
+                            "view": view,
+                            "performance_data": historical_data
+                        }
+                        await ws.send_json(payload)
+
                 except Exception:
                     log.error("Could not parse websocket message:", exc_info=True)
 
