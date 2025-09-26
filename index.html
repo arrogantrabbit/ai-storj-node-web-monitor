@@ -155,7 +155,7 @@
 
         <div id="size-charts-card" class="card">
             <div class="chart-header">
-                <h3 class="card-title">Data Transfer Size Distribution</h3>
+                <h3 id="size-chart-title" class="card-title">Data Transfer Size Distribution</h3>
                 <div>
                     <a href="#" id="toggle-size-view" class="toggle-link">Show Percentages</a>
                 </div>
@@ -182,14 +182,14 @@
                 this.particleSystem = [];
                 this.lastRenderTime = Date.now();
                 this.gridSize = 0.5; // Degrees for heatmap grid
-                
+
                 // Event queue for temporal smoothing
                 this.eventQueue = [];
                 this.lastProcessedTime = null;
                 this.playbackSpeed = 1.0; // Real-time playback
                 this.maxQueueDelay = 10000; // Max 10 seconds delay
                 this.processQueueInterval = null;
-                
+
                 // Color palettes for different data types - more subtle
                 this.palettes = {
                     download: {
@@ -210,38 +210,38 @@
                         label: 'Activity Intensity'
                     }
                 };
-                
+
                 this.setupCanvas();
                 this.startAnimation();
             }
-            
+
             setupCanvas() {
                 // Create a custom pane for the heatmap
                 if (!this.map.getPane('heatmapPane')) {
                     this.map.createPane('heatmapPane');
                     this.map.getPane('heatmapPane').style.zIndex = 650;
                 }
-                
+
                 // Create canvas element
                 this.canvas = L.DomUtil.create('canvas', 'leaflet-heatmap-layer');
                 this.ctx = this.canvas.getContext('2d');
-                
+
                 // Create Leaflet canvas layer
                 this.canvasLayer = L.canvasLayer({
                     pane: 'heatmapPane'
                 }).addTo(this.map);
-                
+
                 const self = this;
                 this.canvasLayer.delegate({
                     onDrawLayer: function(info) {
                         self.render(info);
                     }
                 });
-                
+
                 // Redraw on map events
                 this.map.on('moveend zoomend resize', () => this.canvasLayer.needRedraw());
             }
-            
+
             // Queue event for temporal processing
             queueEvent(lat, lon, size, type, action, eventTimestamp) {
                 const event = {
@@ -251,72 +251,72 @@
                     eventTimestamp: eventTimestamp ? new Date(eventTimestamp).getTime() : Date.now(),
                     receivedTimestamp: Date.now()
                 };
-                
+
                 this.eventQueue.push(event);
-                
+
                 // Sort queue by event timestamp
                 this.eventQueue.sort((a, b) => a.eventTimestamp - b.eventTimestamp);
-                
+
                 // Start processing if not already running
                 if (!this.processQueueInterval) {
                     this.startEventProcessor();
                 }
             }
-            
+
             startEventProcessor() {
                 const processRate = 50; // Process events every 50ms for smooth animation
-                
+
                 this.processQueueInterval = setInterval(() => {
                     this.processEventQueue();
                 }, processRate);
             }
-            
+
             processEventQueue() {
                 if (this.eventQueue.length === 0) return;
-                
+
                 const now = Date.now();
-                
+
                 // Process events based on their relative timing
                 while (this.eventQueue.length > 0) {
                     const event = this.eventQueue[0];
-                    
+
                     // Calculate how long this event has been waiting
                     const waitTime = now - event.receivedTimestamp;
-                    
+
                     // Calculate the delay between event timestamp and when we received it
                     const eventDelay = event.receivedTimestamp - event.eventTimestamp;
-                    
+
                     // If the event is very old (received more than 10s ago), process immediately
                     if (waitTime > this.maxQueueDelay) {
                         this.eventQueue.shift();
                         this.processEvent(event, true); // Skip animation
                         continue;
                     }
-                    
+
                     // For recent events, maintain relative timing
                     // If we have multiple events from the same burst, spread them out
                     if (this.lastProcessedTime) {
                         const timeSinceLastEvent = event.eventTimestamp - this.lastProcessedTime;
                         const desiredDelay = Math.min(timeSinceLastEvent, 1000); // Max 1 second between events
                         const actualTimeSinceLastProcess = now - this.lastRenderTime;
-                        
+
                         // If not enough time has passed since last event, wait
                         if (actualTimeSinceLastProcess < desiredDelay) {
                             break; // Wait for next cycle
                         }
                     }
-                    
+
                     // Process this event
                     this.eventQueue.shift();
                     this.processEvent(event, false);
                     this.lastProcessedTime = event.eventTimestamp;
                     this.lastRenderTime = now;
-                    
+
                     // Only process one event per cycle for smooth animation
                     break;
                 }
             }
-            
+
             processEvent(event, skipAnimation) {
                 const now = Date.now();
                 const point = {
@@ -328,9 +328,9 @@
                     pieces: 1,
                     isNew: !skipAnimation
                 };
-                
+
                 this.dataPoints.push(point);
-                
+
                 // Add to persistent heatmap grid
                 const gridKey = `${Math.floor(event.lat / this.gridSize) * this.gridSize}_${Math.floor(event.lon / this.gridSize) * this.gridSize}`;
                 if (!this.persistentHeatData[gridKey]) {
@@ -343,38 +343,38 @@
                 }
                 this.persistentHeatData[gridKey].value += this.viewMode === 'size' ? event.size : 1;
                 this.persistentHeatData[gridKey].timestamp = now;
-                
+
                 // Add particle effect for new data (if not skipping animation)
                 if (!skipAnimation) {
                     this.addParticle(event.lat, event.lon, event.type);
                 }
-                
+
                 // Keep data points limited
                 const cutoffTime = now - this.maxDataAge * 2;
                 this.dataPoints = this.dataPoints.filter(p => p.timestamp > cutoffTime);
-                
+
                 // Clean old persistent data
                 for (let key in this.persistentHeatData) {
                     if (now - this.persistentHeatData[key].timestamp > this.maxDataAge * 4) {
                         delete this.persistentHeatData[key];
                     }
                 }
-                
+
                 this.canvasLayer.needRedraw();
             }
-            
+
             // Backward compatibility wrapper
             addDataPoint(lat, lon, size, type, action, timestamp) {
                 this.queueEvent(lat, lon, size, type, action, timestamp);
             }
-            
+
             addParticle(lat, lon, type) {
                 const colors = {
                     download: 'rgba(0, 200, 255, 0.8)',
                     upload: 'rgba(200, 255, 0, 0.8)',
                     audit: 'rgba(255, 150, 255, 0.8)'
                 };
-                
+
                 this.particleSystem.push({
                     lat, lon,
                     color: colors[type],
@@ -383,103 +383,103 @@
                     timestamp: Date.now()
                 });
             }
-            
+
             render(info) {
                 const ctx = info.canvas.getContext('2d');
                 const bounds = this.map.getBounds();
                 const zoom = this.map.getZoom();
                 const now = Date.now();
-                
+
                 // Clear canvas
                 ctx.clearRect(0, 0, info.canvas.width, info.canvas.height);
-                
+
                 // First, render persistent heatmap layer
                 this.renderPersistentHeatmap(ctx, info, bounds, zoom, now);
-                
+
                 // Then render live points on top
                 this.renderLivePoints(ctx, info, bounds, zoom, now);
-                
+
                 // Finally render particles
                 this.renderParticles(ctx, info);
-                
+
                 ctx.globalAlpha = 1;
             }
-            
+
             renderPersistentHeatmap(ctx, info, bounds, zoom, now) {
                 // Only show persistent heatmap at higher zoom levels
                 if (zoom < 5) return;
-                
+
                 // Create heat accumulation layer
                 const heatmapRadius = this.getRadiusForZoom(zoom) * 2; // Larger radius for heat spread
-                
+
                 // Create temporary canvas for blending
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = info.canvas.width;
                 tempCanvas.height = info.canvas.height;
                 const tempCtx = tempCanvas.getContext('2d');
-                
+
                 for (let key in this.persistentHeatData) {
                     const heat = this.persistentHeatData[key];
                     if (!bounds.contains([heat.lat, heat.lon])) continue;
-                    
+
                     const point = info.layer._map.latLngToContainerPoint([heat.lat, heat.lon]);
                     const age = now - heat.timestamp;
                     const ageFactor = Math.max(0.1, 1 - (age / (this.maxDataAge * 4)));
-                    
+
                     // Normalize value
                     const maxValue = this.viewMode === 'size' ? 10000000 : 100;
                     const intensity = Math.min(1, Math.sqrt(heat.value / maxValue));
-                    
+
                     // Create gradient
                     const gradient = tempCtx.createRadialGradient(
                         point.x, point.y, 0,
                         point.x, point.y, heatmapRadius
                     );
-                    
+
                     // Use heat colors
                     gradient.addColorStop(0, `rgba(255, 255, 0, ${intensity * ageFactor * 0.6})`);
                     gradient.addColorStop(0.3, `rgba(255, 200, 0, ${intensity * ageFactor * 0.4})`);
                     gradient.addColorStop(0.6, `rgba(255, 100, 0, ${intensity * ageFactor * 0.2})`);
                     gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-                    
+
                     tempCtx.fillStyle = gradient;
                     tempCtx.fillRect(point.x - heatmapRadius, point.y - heatmapRadius, heatmapRadius * 2, heatmapRadius * 2);
                 }
-                
+
                 // Blend temp canvas onto main canvas
                 ctx.globalAlpha = 0.7;
                 ctx.globalCompositeOperation = 'screen';
                 ctx.drawImage(tempCanvas, 0, 0);
                 ctx.globalCompositeOperation = 'source-over';
             }
-            
+
             renderLivePoints(ctx, info, bounds, zoom, now) {
                 const clusterThreshold = this.getClusterThreshold(zoom);
-                
+
                 // Process and cluster data points
                 const clusters = this.clusterPoints(this.dataPoints, clusterThreshold, bounds);
-                
+
                 // At low zoom levels, show aggregated heat only
                 if (zoom <= 4) {
                     clusters.forEach(cluster => {
                         const point = info.layer._map.latLngToContainerPoint([cluster.lat, cluster.lon]);
-                        
+
                         // Calculate age factor
                         const age = now - cluster.avgTimestamp;
                         const ageFactor = Math.max(0, 1 - (age / this.maxDataAge));
-                        
+
                         // Calculate intensity
                         const value = this.viewMode === 'size' ? cluster.totalSize : cluster.count;
                         const maxValue = this.viewMode === 'size' ? 50000000 : 500;
                         const intensity = Math.min(1, Math.sqrt(value / maxValue));
-                        
+
                         // Large heat gradient for aggregated view
                         const radius = 50 + intensity * 50;
                         const gradient = ctx.createRadialGradient(
                             point.x, point.y, 0,
                             point.x, point.y, radius
                         );
-                        
+
                         // Heat colors based on intensity
                         if (intensity > 0.7) {
                             gradient.addColorStop(0, `rgba(255, 0, 0, ${ageFactor * 0.5})`);
@@ -494,7 +494,7 @@
                             gradient.addColorStop(0.5, `rgba(0, 0, 255, ${ageFactor * 0.15})`);
                             gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
                         }
-                        
+
                         ctx.fillStyle = gradient;
                         ctx.fillRect(point.x - radius, point.y - radius, radius * 2, radius * 2);
                     });
@@ -502,33 +502,33 @@
                     // At higher zoom levels, show individual points
                     clusters.forEach(cluster => {
                         const point = info.layer._map.latLngToContainerPoint([cluster.lat, cluster.lon]);
-                        
+
                         // Calculate age factor
                         const age = now - cluster.avgTimestamp;
                         const ageFactor = Math.max(0, 1 - (age / this.maxDataAge));
-                        
+
                         // Small circle for individual points
                         const value = this.viewMode === 'size' ? cluster.totalSize : cluster.count;
                         const maxValue = this.viewMode === 'size' ? 1000000 : 10;
                         const intensity = Math.min(1, Math.sqrt(value / maxValue));
-                        
+
                         const radius = 3 + intensity * 5; // Much smaller: 3-8px
-                        
+
                         // Type-based colors
                         const typeColors = {
                             download: '#0099FF',
                             upload: '#00FF00',
                             audit: '#CC00FF'
                         };
-                        
+
                         ctx.globalAlpha = ageFactor * 0.8;
                         ctx.fillStyle = typeColors[cluster.dominantType];
-                        
+
                         // Simple filled circle, no stroke for cleaner look
                         ctx.beginPath();
                         ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
                         ctx.fill();
-                        
+
                         // Add subtle glow for new data
                         if (cluster.hasNew) {
                             ctx.globalAlpha = ageFactor * 0.3;
@@ -541,22 +541,22 @@
                     });
                 }
             }
-            
+
             renderParticles(ctx, info) {
                 const now = Date.now();
                 const particleLifetime = 2000; // 2 seconds
-                
+
                 this.particleSystem = this.particleSystem.filter(particle => {
                     const age = now - particle.timestamp;
                     if (age > particleLifetime) return false;
-                    
+
                     const point = info.layer._map.latLngToContainerPoint([particle.lat, particle.lon]);
                     const progress = age / particleLifetime;
-                    
+
                     // Expand and fade
                     const size = particle.size * (1 + progress * 3);
                     const opacity = particle.opacity * (1 - progress);
-                    
+
                     ctx.save();
                     ctx.globalAlpha = opacity;
                     ctx.strokeStyle = particle.color;
@@ -564,27 +564,27 @@
                     ctx.beginPath();
                     ctx.arc(point.x, point.y, size, 0, Math.PI * 2);
                     ctx.stroke();
-                    
+
                     // Inner glow
                     if (progress < 0.5) {
                         ctx.globalAlpha = opacity * 0.5;
                         ctx.fillStyle = particle.color;
                         ctx.fill();
                     }
-                    
+
                     ctx.restore();
-                    
+
                     return true;
                 });
             }
-            
+
             clusterPoints(points, threshold, bounds) {
                 const clusters = [];
                 const zoom = this.map.getZoom();
-                
+
                 points.forEach(point => {
                     if (!bounds.contains([point.lat, point.lon])) return;
-                    
+
                     // Find nearby cluster
                     let merged = false;
                     for (let cluster of clusters) {
@@ -596,19 +596,19 @@
                             cluster.lat = (cluster.lat * (cluster.count - 1) + point.lat) / cluster.count;
                             cluster.lon = (cluster.lon * (cluster.count - 1) + point.lon) / cluster.count;
                             cluster.avgTimestamp = (cluster.avgTimestamp * (cluster.count - 1) + point.timestamp) / cluster.count;
-                            
+
                             // Update type counts
                             cluster.types[point.type] = (cluster.types[point.type] || 0) + 1;
                             cluster.dominantType = Object.keys(cluster.types).reduce((a, b) =>
                                 cluster.types[a] > cluster.types[b] ? a : b
                             );
-                            
+
                             if (point.isNew) cluster.hasNew = true;
                             merged = true;
                             break;
                         }
                     }
-                    
+
                     if (!merged) {
                         clusters.push({
                             lat: point.lat,
@@ -622,10 +622,10 @@
                         });
                     }
                 });
-                
+
                 return clusters;
             }
-            
+
             getDistance(lat1, lon1, lat2, lon2) {
                 const R = 6371; // Earth radius in km
                 const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -636,7 +636,7 @@
                 const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
                 return R * c;
             }
-            
+
             getRadiusForZoom(zoom) {
                 // Much smaller radii for individual points
                 if (zoom <= 2) return 15;
@@ -647,7 +647,7 @@
                 if (zoom <= 12) return 5;
                 return 4;
             }
-            
+
             getClusterThreshold(zoom) {
                 // More aggressive clustering at low zoom levels
                 if (zoom <= 2) return 1000;
@@ -658,39 +658,39 @@
                 if (zoom <= 12) return 20;
                 return 10;
             }
-            
+
             interpolateColors(colorArray, intensity, ageFactor) {
                 // Use hex colors from palette
                 const idx = Math.min(colorArray.length - 1, Math.floor(intensity * (colorArray.length - 1)));
                 return colorArray[idx];
             }
-            
+
             setViewMode(mode) {
                 this.viewMode = mode;
                 this.canvasLayer.needRedraw();
             }
-            
+
             startAnimation() {
                 const animate = () => {
                     const now = Date.now();
-                    
+
                     // Mark old "new" points as not new
                     this.dataPoints.forEach(p => {
                         if (p.isNew && now - p.timestamp > 500) {
                             p.isNew = false;
                         }
                     });
-                    
+
                     // Redraw if we have particles or new data
                     if (this.particleSystem.length > 0 || this.dataPoints.some(p => p.isNew)) {
                         this.canvasLayer.needRedraw();
                     }
-                    
+
                     this.animationFrame = requestAnimationFrame(animate);
                 };
                 animate();
             }
-            
+
             destroy() {
                 if (this.animationFrame) {
                     cancelAnimationFrame(this.animationFrame);
@@ -703,42 +703,42 @@
                 }
             }
         }
-        
+
         // Custom Canvas Layer for Leaflet
         L.CanvasLayer = L.Layer.extend({
             options: {
                 pane: 'overlayPane'
             },
-            
+
             initialize: function(options) {
                 L.setOptions(this, options);
                 this._map = null;
                 this._canvas = null;
                 this._frame = null;
             },
-            
+
             onAdd: function(map) {
                 this._map = map;
                 this._canvas = L.DomUtil.create('canvas', 'leaflet-canvas-layer');
-                
+
                 const size = this._map.getSize();
                 this._canvas.width = size.x;
                 this._canvas.height = size.y;
-                
+
                 const animated = this._map.options.zoomAnimation && L.Browser.any3d;
                 L.DomUtil.addClass(this._canvas, 'leaflet-zoom-' + (animated ? 'animated' : 'hide'));
-                
+
                 map.getPane(this.options.pane).appendChild(this._canvas);
-                
+
                 map.on('moveend resize zoomend', this._reset, this);
-                
+
                 if (map.options.zoomAnimation && L.Browser.any3d) {
                     map.on('zoomanim', this._animateZoom, this);
                 }
-                
+
                 this._reset();
             },
-            
+
             onRemove: function(map) {
                 L.DomUtil.remove(this._canvas);
                 map.off('moveend resize zoomend', this._reset, this);
@@ -746,25 +746,25 @@
                     map.off('zoomanim', this._animateZoom, this);
                 }
             },
-            
+
             delegate: function(del) {
                 this._delegate = del;
                 return this;
             },
-            
+
             needRedraw: function() {
                 if (!this._frame) {
                     this._frame = L.Util.requestAnimFrame(this._redraw, this);
                 }
                 return this;
             },
-            
+
             _redraw: function() {
                 if (this._delegate && this._delegate.onDrawLayer) {
                     const size = this._map.getSize();
                     const bounds = this._map.getBounds();
                     const topLeft = this._map.latLngToLayerPoint(bounds.getNorthWest());
-                    
+
                     const info = {
                         layer: this,
                         canvas: this._canvas,
@@ -772,58 +772,58 @@
                         size: size,
                         topLeft: topLeft
                     };
-                    
+
                     this._delegate.onDrawLayer(info);
                 }
                 this._frame = null;
             },
-            
+
             _reset: function() {
                 const topLeft = this._map.containerPointToLayerPoint([0, 0]);
                 L.DomUtil.setPosition(this._canvas, topLeft);
-                
+
                 const size = this._map.getSize();
                 this._canvas.width = size.x;
                 this._canvas.height = size.y;
-                
+
                 this._redraw();
             },
-            
+
             _animateZoom: function(e) {
                 const scale = this._map.getZoomScale(e.zoom);
                 const offset = this._map._latLngBoundsToNewLayerBounds(
                     this._map.getBounds(), e.zoom, e.center
                 ).min;
-                
+
                 L.DomUtil.setTransform(this._canvas, offset, scale);
             }
         });
-        
+
         L.canvasLayer = function(options) {
             return new L.CanvasLayer(options);
         };
-        
+
         // --- Map Setup ---
         const map = L.map('map').setView([20, 0], 2);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors',
             maxZoom: 18
         }).addTo(map);
-        
+
         // Initialize the advanced heatmap
         const heatmap = new AdvancedHeatmap(map);
-        
+
         // Add heatmap controls with dark mode support
         const HeatmapControl = L.Control.extend({
             options: {
                 position: 'topright'
             },
-            
+
             onAdd: function(map) {
                 const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control heatmap-control');
-                
+
                 const isDarkMode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-                
+
                 container.innerHTML = `
                     <style>
                         .heatmap-control {
@@ -905,14 +905,14 @@
                         </div>
                     </div>
                 `;
-                
+
                 // Handle view mode changes
                 container.addEventListener('change', function(e) {
                     if (e.target.name === 'heatview') {
                         heatmap.setViewMode(e.target.value);
                     }
                 });
-                
+
                 // Update styles on dark mode change
                 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
                     const isDark = e.matches;
@@ -920,15 +920,15 @@
                     container.style.color = isDark ? '#e0e0e0' : '#333';
                     container.style.borderColor = isDark ? '#444' : '#ccc';
                 });
-                
+
                 // Prevent map interactions
                 L.DomEvent.disableClickPropagation(container);
                 L.DomEvent.disableScrollPropagation(container);
-                
+
                 return container;
             }
         });
-        
+
         map.addControl(new HeatmapControl());
 
         // --- Constants & State ---
@@ -1034,7 +1034,7 @@
                 }
             }
         });
-        
+
         let sizeViewIsPercentage = false;
 
         // --- UI Update Functions ---
@@ -1096,16 +1096,16 @@
         function updateSizeBarChart(transferSizes) {
                     // Store the data for later use with the toggle
                     lastTransferSizes = transferSizes;
-                    
+
                     // Create a unified set of size buckets in the correct order
                     const allBuckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"];
-                    
+
                     // Initialize data arrays with zeros
                     const successfulDownloadData = new Array(allBuckets.length).fill(0);
                     const successfulUploadData = new Array(allBuckets.length).fill(0);
                     const failedDownloadData = new Array(allBuckets.length).fill(0);
                     const failedUploadData = new Array(allBuckets.length).fill(0);
-                    
+
                     // Map the actual data from the backend's transfer_sizes structure
                     transferSizes.forEach(item => {
                         const index = allBuckets.indexOf(item.bucket);
@@ -1116,7 +1116,7 @@
                             failedUploadData[index] = item.uploads_failed;
                         }
                     });
-            
+
             // Calculate percentages if needed
             if (sizeViewIsPercentage) {
                 const totalDownloadsSuccess = successfulDownloadData.reduce((sum, val) => sum + val, 0);
@@ -1124,7 +1124,7 @@
                 const totalDownloadsFailed = failedDownloadData.reduce((sum, val) => sum + val, 0);
                 const totalUploadsFailed = failedUploadData.reduce((sum, val) => sum + val, 0);
                 const totalAll = totalDownloadsSuccess + totalUploadsSuccess + totalDownloadsFailed + totalUploadsFailed;
-                
+
                 if (totalAll > 0) {
                     for (let i = 0; i < allBuckets.length; i++) {
                         successfulDownloadData[i] = (successfulDownloadData[i] / totalAll * 100).toFixed(1);
@@ -1133,12 +1133,12 @@
                         failedUploadData[i] = (failedUploadData[i] / totalAll * 100).toFixed(1);
                     }
                 }
-                
+
                 sizeBarChart.options.scales.y.title.text = 'Percentage (%)';
             } else {
                 sizeBarChart.options.scales.y.title.text = 'Count';
             }
-            
+
             sizeBarChart.data.labels = allBuckets;
             sizeBarChart.data.datasets[0].data = successfulDownloadData;
             sizeBarChart.data.datasets[1].data = successfulUploadData;
@@ -1155,6 +1155,7 @@
             const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`;
             document.getElementById('stats-title').textContent = `Overall Success Rates & Speed${viewName} ${timeWindowStr}`;
             document.getElementById('satellite-title').textContent = `Traffic by Satellite${viewName} ${timeWindowStr}`;
+            document.getElementById('size-chart-title').textContent = `Data Transfer Size Distribution${viewName} ${timeWindowStr}`;
             document.getElementById('dl-speed-label').textContent = currentNodeView === 'Aggregate' ? 'Total Download Speed' : 'Download Speed';
             document.getElementById('ul-speed-label').textContent = currentNodeView === 'Aggregate' ? 'Total Upload Speed' : 'Upload Speed';
         }
@@ -1304,19 +1305,19 @@
             this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size';
             updateSatelliteChart(lastSatelliteData);
         });
-        
+
         // Store the last received data for toggling between views
         let lastDownloadSizes = [];
         let lastUploadSizes = [];
-        
+
         // Variable to store the last received transfer sizes data
         let lastTransferSizes = [];
-        
+
         document.getElementById('toggle-size-view').addEventListener('click', function(e) {
             e.preventDefault();
             sizeViewIsPercentage = !sizeViewIsPercentage;
             this.textContent = sizeViewIsPercentage ? 'Show Counts' : 'Show Percentages';
-            
+
             // Update the chart with the stored data
             updateSizeBarChart(lastTransferSizes);
         });
