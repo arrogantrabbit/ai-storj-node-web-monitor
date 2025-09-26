@@ -75,18 +75,34 @@
         .rate-ok { color: #f59e0b; }
         .rate-bad { color: #ef4444; }
 
+        /* --- UPDATED STYLES for Map Maximize --- */
+        .card-header-flex { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ddd; padding-bottom: 8px; margin-bottom: 15px; }
+        .card-header-flex .card-title { margin-bottom: 0; border-bottom: none; padding-bottom: 0; }
+        #toggle-map-size-btn { background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer; font-size: 1.5em; padding: 0; line-height: 1; color: #606770; transition: background-color 0.2s; }
+        #toggle-map-size-btn:hover { background-color: rgba(0,0,0,0.05); border-color: #ddd; }
+
+        body.map-maximized { overflow: hidden; } /* NEW: Prevents background scroll */
+
+        #map-card.maximized { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; margin: 0; border-radius: 0; padding: 15px; box-sizing: border-box; }
+        #map-card.maximized .card-header-flex { margin-bottom: 10px; }
+        #map-card.maximized #map { height: calc(100% - 50px); } /* Adjusted height for padding */
+        /* --- END UPDATED STYLES --- */
+
+
         /* --- Dark Mode --- */
         @media (prefers-color-scheme: dark) {
             body { background-color: #121212; color: #e0e0e0; }
             .card { background-color: #1e1e1e; box-shadow: none; border: 1px solid #333; }
             h1, h3, h5 { color: #ffffff; }
-            h3 { border-bottom-color: #444; }
+            h3, .card-header-flex { border-bottom-color: #444; } /* UPDATED */
             .stat-label { color: #888; }
             .info-table th, .info-table td { border-bottom-color: #333; }
             .info-table th { color: #aaa; }
             .toggle-link, #node-selector .node-link { color: #4dabf7; }
             #map { background-color: #333; }
             .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(95%) contrast(90%); }
+            #toggle-map-size-btn { color: #aaa; }
+            #toggle-map-size-btn:hover { background-color: rgba(255,255,255,0.1); border-color: #444; }
         }
     </style>
 </head>
@@ -103,7 +119,14 @@
         </div>
 
 
-        <div id="map-card" class="card"><h3 class="card-title">Live Traffic Heatmap</h3><div id="map"></div></div>
+        <div id="map-card" class="card">
+             <!-- CHANGED: h3 no longer has style, wrapper div does -->
+            <div class="card-header-flex">
+                <h3 class="card-title">Live Traffic Heatmap</h3>
+                <button id="toggle-map-size-btn" title="Maximize Map">&#x26F6;</button>
+            </div>
+            <div id="map"></div>
+        </div>
 
         <div id="stats-card" class="card">
             <h3 id="stats-title" class="card-title">Overall Success Rates & Speed</h3>
@@ -1515,6 +1538,26 @@
                 updatePerformanceChart();
             }
         });
+
+        // --- UPDATED EVENT LISTENER for Map Maximize Button ---
+        const mapCard = document.getElementById('map-card');
+        const toggleMapSizeBtn = document.getElementById('toggle-map-size-btn');
+        toggleMapSizeBtn.addEventListener('click', () => {
+            const isMaximized = mapCard.classList.toggle('maximized');
+            document.body.classList.toggle('map-maximized', isMaximized); // Toggle body class
+
+            if (isMaximized) {
+                toggleMapSizeBtn.innerHTML = '&#x2924;'; // Arrows pointing inwards
+                toggleMapSizeBtn.title = 'Restore Map Size';
+            } else {
+                toggleMapSizeBtn.innerHTML = '&#x26F6;'; // Square with four corners
+                toggleMapSizeBtn.title = 'Maximize Map';
+            }
+            // Give the browser a moment to apply CSS changes before telling Leaflet to resize.
+            // This is CRUCIAL to fix the blurry/degraded map quality issue.
+            setTimeout(() => { map.invalidateSize(); }, 150);
+        });
+        // --- END UPDATED EVENT LISTENER ---
 
         // --- WebSocket Connection ---
         let ws;
