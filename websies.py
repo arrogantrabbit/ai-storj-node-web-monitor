@@ -1,3 +1,5 @@
+--- START OF FILE websies.py ---
+
 # /// script
 # dependencies = [
 #   "aiohttp",
@@ -425,8 +427,10 @@ async def prune_live_events_task(app):
 
 def blocking_hourly_aggregation(node_names: List[str]):
     log.info("[AGGREGATOR] Running hourly aggregation.")
-    now = datetime.datetime.now().astimezone(); hour_start = now.replace(minute=0, second=0, microsecond=0)
-    hour_start_iso = hour_start.isoformat(); next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    hour_start = now.replace(minute=0, second=0, microsecond=0)
+    hour_start_iso = hour_start.isoformat()
+    next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
 
     with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
         conn.row_factory = sqlite3.Row
@@ -847,6 +851,56 @@ def load_initial_state_from_db(nodes_config: Dict[str, str]):
             initial_state[node_name] = node_state
     return initial_state
 
+def blocking_backfill_hourly_stats(node_names: List[str]):
+    log.info("[BACKFILL] Starting one-time backfill of hourly statistics.")
+    with sqlite3.connect(DATABASE_FILE, timeout=30, detect_types=0) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Find the earliest and latest event timestamps
+        cursor.execute("SELECT MIN(timestamp), MAX(timestamp) FROM events")
+        result = cursor.fetchone()
+        if not result or not result[0]:
+            log.info("[BACKFILL] No events found in the database. Skipping backfill.")
+            return
+
+        start_ts_str, end_ts_str = result
+        start_dt = datetime.datetime.fromisoformat(start_ts_str).replace(minute=0, second=0, microsecond=0)
+        end_dt = datetime.datetime.fromisoformat(end_ts_str)
+
+        log.info(f"[BACKFILL] Found events ranging from {start_dt.isoformat()} to {end_dt.isoformat()}.")
+
+        current_hour_start = start_dt
+        while current_hour_start <= end_dt:
+            hour_start_iso = current_hour_start.isoformat()
+            next_hour_start_iso = (current_hour_start + datetime.timedelta(hours=1)).isoformat()
+
+            for node_name in node_names:
+                query = """
+                    SELECT
+                        SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_s,
+                        SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_f,
+                        SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s,
+                        SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f,
+                        SUM(CASE WHEN action = 'GET_AUDIT' AND status = 'success' THEN 1 ELSE 0 END) as audit_s,
+                        SUM(CASE WHEN action = 'GET_AUDIT' AND status != 'success' THEN 1 ELSE 0 END) as audit_f,
+                        SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as total_dl_size,
+                        SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as total_ul_size
+                    FROM events WHERE node_name = ? AND timestamp >= ? AND timestamp < ?
+                """
+                stats = cursor.execute(query, (node_name, hour_start_iso, next_hour_start_iso)).fetchone()
+
+                if stats and stats['dl_s'] is not None:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO hourly_stats (hour_timestamp, node_name, dl_success, dl_fail, ul_success, ul_fail, audit_success, audit_fail, total_download_size, total_upload_size)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (hour_start_iso, node_name, stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f'], stats['audit_s'], stats['audit_f'], stats['total_dl_size'], stats['total_ul_size']))
+
+            log.info(f"[BACKFILL] Processed and saved stats for hour starting {hour_start_iso}.")
+            current_hour_start += datetime.timedelta(hours=1)
+
+        conn.commit()
+    log.info("[BACKFILL] Hourly statistics backfill complete.")
 
 async def start_background_tasks(app):
     log.info("Starting background tasks...")
@@ -855,6 +909,11 @@ async def start_background_tasks(app):
     app['tasks'] = []
 
     loop = asyncio.get_running_loop()
+
+    # Run the one-time backfill before starting other tasks
+    node_names = list(app['nodes'].keys())
+    await loop.run_in_executor(app['db_executor'], blocking_backfill_hourly_stats, node_names)
+
     initial_node_states = await loop.run_in_executor(
         app['db_executor'], load_initial_state_from_db, app['nodes']
     )
