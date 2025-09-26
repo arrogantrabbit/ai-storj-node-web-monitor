@@ -385,7 +385,16 @@ async def performance_calculator(app, node_name: str):
 
     while True:
         await asyncio.sleep(PERFORMANCE_INTERVAL_SECONDS)
+
         now = time.time()
+        last_run_time = node_state.get('last_perf_calc_time', now)
+        node_state['last_perf_calc_time'] = now
+        elapsed_seconds = now - last_run_time
+
+        # If the elapsed time is zero or negative, or unrealistically large, default to the interval to prevent errors.
+        if elapsed_seconds <= 0 or elapsed_seconds > (PERFORMANCE_INTERVAL_SECONDS * 5):
+            elapsed_seconds = PERFORMANCE_INTERVAL_SECONDS
+
         current_event_count = len(node_state['live_events'])
         start_index = node_state['last_perf_event_index']
         new_events_to_process = [node_state['live_events'][i] for i in range(start_index, current_event_count)]
@@ -393,17 +402,34 @@ async def performance_calculator(app, node_name: str):
 
         ingress_bytes, egress_bytes, ingress_pieces, egress_pieces = 0, 0, 0, 0
 
-        concurrency = sum(1 for event in reversed(node_state['live_events']) if event['ts_unix'] > now - 1)
+        # Concurrency is a snapshot, so it's calculated over a fixed recent window (e.g., last 1 sec)
+        concurrency_snapshot_time = time.time()
+        concurrency = sum(1 for event in reversed(node_state['live_events']) if event['ts_unix'] > concurrency_snapshot_time - 1)
 
         for event in new_events_to_process:
-            if 'GET' in event['action']: egress_bytes += event['size']; egress_pieces += 1
-            else: ingress_bytes += event['size']; ingress_pieces += 1
+            if event['status'] == 'success':
+                if 'GET' in event['action'] and event['action'] != 'GET_AUDIT':
+                    egress_bytes += event['size']
+                    egress_pieces += 1
+                elif 'PUT' in event['action']:
+                    ingress_bytes += event['size']
+                    ingress_pieces += 1
 
-        ingress_mbps = (ingress_bytes * 8) / (PERFORMANCE_INTERVAL_SECONDS * 1e6)
-        egress_mbps = (egress_bytes * 8) / (PERFORMANCE_INTERVAL_SECONDS * 1e6)
+        ingress_mbps = (ingress_bytes * 8) / (elapsed_seconds * 1e6)
+        egress_mbps = (egress_bytes * 8) / (elapsed_seconds * 1e6)
 
-        payload = { "type": "performance_update", "node_name": node_name, "timestamp": datetime.datetime.now(datetime.UTC).isoformat(), "ingress_mbps": round(ingress_mbps, 2), "egress_mbps": round(egress_mbps, 2), "ingress_bytes": ingress_bytes, "egress_bytes": egress_bytes, "ingress_pieces": ingress_pieces, "egress_pieces": egress_pieces, "concurrency": concurrency }
-
+        payload = {
+            "type": "performance_update",
+            "node_name": node_name,
+            "timestamp": datetime.datetime.fromtimestamp(now, tz=datetime.UTC).isoformat(),
+            "ingress_mbps": round(ingress_mbps, 2),
+            "egress_mbps": round(egress_mbps, 2),
+            "ingress_bytes": ingress_bytes,
+            "egress_bytes": egress_bytes,
+            "ingress_pieces": ingress_pieces,
+            "egress_pieces": egress_pieces,
+            "concurrency": concurrency
+        }
         await robust_broadcast(app_state['websockets'], payload)
 
 
@@ -691,49 +717,62 @@ async def periodic_stats_updater(app):
 
 async def handle_index(request): return web.FileResponse('./index.html')
 
-def blocking_get_historical_performance(node_name: str, points: int, interval_sec: int) -> List[Dict[str, Any]]:
-    log.info(f"Fetching historical performance for node '{node_name}' ({points} points @ {interval_sec}s interval).")
-    window_sec = points * interval_sec
-    start_time = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=window_sec)
-    start_time_iso = start_time.isoformat()
+def blocking_get_historical_performance(events: List[Dict[str, Any]], points: int, interval_sec: int) -> List[Dict[str, Any]]:
+    """
+    Processes a list of in-memory events to generate binned performance data,
+    suitable for bootstrapping the live performance chart. This avoids querying the
+    database, ensuring data consistency with the live performance calculator.
+    """
+    log.info(f"Processing {len(events)} in-memory events for historical performance graph generation.")
+    if not events:
+        return []
+
+    # Create time buckets to aggregate events
+    buckets: Dict[int, Dict[str, int]] = {}
+
+    for event in events:
+        # Ensure event has the necessary keys and is a successful transfer for rate calculation
+        if 'ts_unix' not in event or event.get('status') != 'success':
+            continue
+
+        ts_unix = event['ts_unix']
+        bucket_start_unix = int(ts_unix / interval_sec) * interval_sec
+
+        if bucket_start_unix not in buckets:
+            buckets[bucket_start_unix] = {
+                'ingress_bytes': 0, 'egress_bytes': 0,
+                'ingress_pieces': 0, 'egress_pieces': 0
+            }
+
+        bucket = buckets[bucket_start_unix]
+        action = event.get('action', '')
+        size = event.get('size', 0)
+
+        if 'GET' in action and action != 'GET_AUDIT':
+            bucket['egress_bytes'] += size
+            bucket['egress_pieces'] += 1
+        elif 'PUT' in action:
+            bucket['ingress_bytes'] += size
+            bucket['ingress_pieces'] += 1
 
     results = []
-    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
-        conn.row_factory = sqlite3.Row
+    # Sort buckets by timestamp and format the output
+    for ts_unix, data in sorted(buckets.items()):
+        ingress_mbps = (data['ingress_bytes'] * 8) / (interval_sec * 1e6)
+        egress_mbps = (data['egress_bytes'] * 8) / (interval_sec * 1e6)
 
-        query = f"""
-            SELECT
-                (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start,
-                SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes,
-                SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes,
-                SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces,
-                SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces
-            FROM events
-            WHERE timestamp >= ? AND node_name = ?
-            GROUP BY time_bucket_start ORDER BY time_bucket_start ASC
-        """
-        params = [interval_sec, interval_sec, start_time_iso, node_name]
+        results.append({
+            "timestamp": datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat(),
+            "ingress_mbps": round(ingress_mbps, 2),
+            "egress_mbps": round(egress_mbps, 2),
+            "ingress_bytes": data['ingress_bytes'],
+            "egress_bytes": data['egress_bytes'],
+            "ingress_pieces": data['ingress_pieces'],
+            "egress_pieces": data['egress_pieces'],
+            "concurrency": 0  # Concurrency is a live-only metric from the calculator task
+        })
 
-        cursor = conn.cursor()
-        for row in cursor.execute(query, params).fetchall():
-            row_dict = dict(row)
-            ts_unix = row_dict['time_bucket_start']
-
-            ingress_mbps = (row_dict.get('ingress_bytes', 0) * 8) / (interval_sec * 1e6)
-            egress_mbps = (row_dict.get('egress_bytes', 0) * 8) / (interval_sec * 1e6)
-
-            results.append({
-                "timestamp": datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat(),
-                "ingress_mbps": round(ingress_mbps, 2),
-                "egress_mbps": round(egress_mbps, 2),
-                "ingress_bytes": row_dict.get('ingress_bytes', 0),
-                "egress_bytes": row_dict.get('egress_bytes', 0),
-                "ingress_pieces": row_dict.get('ingress_pieces', 0),
-                "egress_pieces": row_dict.get('egress_pieces', 0),
-                "concurrency": 0
-            })
-
-    log.info(f"Returning {len(results)} historical performance data points for node '{node_name}'.")
+    log.info(f"Returning {len(results)} historical performance data points from in-memory events.")
     return results
 
 def blocking_get_aggregated_performance(node_name: str, time_window_hours: int) -> List[Dict[str, Any]]:
@@ -893,14 +932,22 @@ async def websocket_handler(request):
 
                     elif msg_type == 'get_historical_performance':
                         view = data.get('view')
-                        if view == 'Aggregate': continue
-
                         points = data.get('points', 150)
                         interval = data.get('interval_sec', PERFORMANCE_INTERVAL_SECONDS)
                         loop = asyncio.get_running_loop()
+
+                        # Collect events from the correct in-memory source to ensure consistency
+                        events_to_process = []
+                        if view == 'Aggregate':
+                             for node_state in app_state['nodes'].values():
+                                events_to_process.extend(list(node_state['live_events']))
+                        elif view in app_state['nodes']:
+                            events_to_process = list(app_state['nodes'][view]['live_events'])
+
+                        # Call the modified blocking function with the in-memory event data
                         historical_data = await loop.run_in_executor(
                             app['db_executor'], blocking_get_historical_performance,
-                            view, points, interval
+                            events_to_process, points, interval
                         )
                         payload = {"type": "historical_performance_data", "view": view, "performance_data": historical_data}
                         await ws.send_json(payload)
@@ -1065,6 +1112,8 @@ async def start_background_tasks(app):
                 'live_events': deque(), 'last_perf_event_index': 0,
                 'active_compactions': {}, 'hashstore_stats': {}
             }
+        # Initialize the timer for the performance calculator
+        app_state['nodes'][node_name]['last_perf_calc_time'] = time.time()
         app['tasks'].append(asyncio.create_task(log_tailer_task(app, node_name, log_path)))
         app['tasks'].append(asyncio.create_task(performance_calculator(app, node_name)))
 
