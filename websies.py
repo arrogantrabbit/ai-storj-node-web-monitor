@@ -22,7 +22,7 @@ import traceback
 import logging
 import sys
 import argparse
-from typing import Deque, Dict, Any, List, Set
+from typing import Deque, Dict, Any, List, Set, Optional
 
 
 # --- Centralized Logging Configuration ---
@@ -40,7 +40,6 @@ PERFORMANCE_INTERVAL_SECONDS = 2
 DB_WRITE_BATCH_INTERVAL_SECONDS = 10
 DB_QUEUE_MAX_SIZE = 30000
 EXPECTED_DB_COLUMNS = 13 # Increased for node_name
-
 HISTORICAL_HOURS_TO_SHOW = 6
 MAX_GEOIP_CACHE_SIZE = 5000
 HOURLY_AGG_INTERVAL_MINUTES = 10
@@ -62,18 +61,36 @@ app_state: Dict[str, Any] = {
 # --- New Helper Function for Parsing Size Strings ---
 def parse_size_to_bytes(size_str: str) -> int:
     if not isinstance(size_str, str): return 0
-    size_str = size_str.strip()
-    units = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4}
+    size_str = size_str.strip().upper()
+    units = {"B": 1, "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "TIB": 1024**4}
     try:
-        if size_str[-1].isalpha() and size_str[-3:] in units:
-            val_str, unit = size_str[:-4], size_str[-3:]
-        elif size_str[-1] == 'B':
-             val_str, unit = size_str[:-2], "B"
-        else: # Default to bytes if no unit
-            val_str, unit = size_str, "B"
-        return int(float(val_str) * units.get(unit, 1))
-    except (ValueError, IndexError):
+        # Split number from unit
+        value_str = "".join(re.findall(r'[\d\.]', size_str))
+        unit_str = "".join(re.findall(r'[A-Z]', size_str))
+        if not unit_str.endswith("B"): unit_str += "B"
+        if unit_str == "KB": unit_str = "KIB" # Handle common case
+
+        value = float(value_str)
+        unit_multiplier = next((v for k, v in units.items() if k.startswith(unit_str)), 1)
+        return int(value * unit_multiplier)
+
+    except (ValueError, IndexError, StopIteration):
         return 0
+
+def parse_duration_str_to_seconds(duration_str: str) -> Optional[float]:
+    """Parses a duration string like '198.8ms' or '4.5s' into seconds."""
+    if not isinstance(duration_str, str):
+        return None
+    try:
+        duration_str = duration_str.lower().strip()
+        if 'ms' in duration_str:
+            return float(duration_str.replace('ms', '')) / 1000.0
+        if 's' in duration_str:
+            return float(duration_str.replace('s', ''))
+        # If no unit is found, we cannot reliably determine the value.
+        return None
+    except (ValueError, TypeError):
+        return None
 
 
 def init_db():
@@ -91,7 +108,6 @@ def init_db():
         log.warning(f"Failed to set database journal mode to WAL. Current mode: {mode[0] if mode else 'unknown'}")
 
     log.info("Performing one-time database schema validation and upgrades. This may take a long time on large databases...")
-
 
     # --- Schema migration for events table ---
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='events';")
@@ -235,6 +251,16 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                         start_time = node_state['active_compactions'].pop(compaction_key, None)
                         if start_time:
                             duration_seconds = (timestamp_obj - start_time).total_seconds()
+
+                            # CORRECTED LOGIC: If timestamp difference is too coarse (< 1 minute),
+                            # use the more precise `duration` field from the log message.
+                            if duration_seconds < 60:
+                                duration_str = log_data.get("duration")
+                                if duration_str:
+                                    parsed_duration = parse_duration_str_to_seconds(duration_str)
+                                    if parsed_duration is not None:
+                                        duration_seconds = parsed_duration
+
                             stats = log_data.get("stats", {})
                             table_stats = stats.get("Table", {})
 
