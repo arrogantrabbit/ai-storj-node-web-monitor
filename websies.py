@@ -1,5 +1,3 @@
---- START OF FILE websies.py ---
-
 # /// script
 # dependencies = [
 #   "aiohttp",
