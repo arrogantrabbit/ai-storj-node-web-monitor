@@ -736,6 +736,135 @@ def blocking_get_historical_performance(node_name: str, points: int, interval_se
     log.info(f"Returning {len(results)} historical performance data points for node '{node_name}'.")
     return results
 
+def blocking_get_aggregated_performance(node_name: str, time_window_hours: int) -> List[Dict[str, Any]]:
+    log.info(f"Fetching AGGREGATED performance for node '{node_name}' (last {time_window_hours} hours).")
+    start_time = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=time_window_hours)
+    start_time_iso = start_time.isoformat()
+
+    # Determine the appropriate bin size for the time window
+    if time_window_hours <= 1:
+        bin_size_min = 2
+    elif time_window_hours <= 6:
+        bin_size_min = 10
+    else: # 24 hours
+        bin_size_min = 30
+
+    bin_sec = bin_size_min * 60
+    results = []
+
+    with sqlite3.connect(DATABASE_FILE, timeout=20, detect_types=0) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # For longer ranges, we can leverage the pre-aggregated hourly table for speed
+        if time_window_hours > 6:
+             # Note: This query uses hourly data, so bin_sec will be effectively 3600
+            query = """
+                SELECT
+                    hour_timestamp as time_bucket_start_iso,
+                    total_upload_size as ingress_bytes,
+                    total_download_size as egress_bytes,
+                    ul_success as ingress_pieces,
+                    dl_success as egress_pieces
+                FROM hourly_stats
+                WHERE hour_timestamp >= ? AND node_name = ?
+                ORDER BY hour_timestamp ASC
+            """
+            params = [start_time_iso, node_name]
+            actual_bin_sec = 3600 # Override bin_sec since we are using hourly data
+        else:
+            query = f"""
+                SELECT
+                    (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start,
+                    SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes,
+                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes,
+                    SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces,
+                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces
+                FROM events
+                WHERE timestamp >= ? AND node_name = ?
+                GROUP BY time_bucket_start ORDER BY time_bucket_start ASC
+            """
+            params = [bin_sec, bin_sec, start_time_iso, node_name]
+            actual_bin_sec = bin_sec
+
+        for row in cursor.execute(query, params).fetchall():
+            row_dict = dict(row)
+            ts_unix = row_dict.get('time_bucket_start')
+            iso_ts = row_dict.get('time_bucket_start_iso') or datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat()
+
+            results.append({
+                "timestamp": iso_ts,
+                "ingress_mbps": round((row_dict.get('ingress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
+                "egress_mbps": round((row_dict.get('egress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
+                "ingress_bytes": row_dict.get('ingress_bytes', 0),
+                "egress_bytes": row_dict.get('egress_bytes', 0),
+                "ingress_pieces": row_dict.get('ingress_pieces', 0),
+                "egress_pieces": row_dict.get('egress_pieces', 0),
+                "concurrency": 0
+            })
+
+    log.info(f"Returning {len(results)} aggregated performance data points for node '{node_name}'.")
+    return results
+
+def blocking_get_aggregated_performance_for_all(time_window_hours: int) -> List[Dict[str, Any]]:
+    log.info(f"Fetching AGGREGATED performance for ALL NODES (last {time_window_hours} hours).")
+    start_time = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=time_window_hours)
+    start_time_iso = start_time.isoformat()
+
+    if time_window_hours <= 1: bin_size_min = 2
+    elif time_window_hours <= 6: bin_size_min = 10
+    else: bin_size_min = 30
+    bin_sec = bin_size_min * 60
+    results = []
+
+    with sqlite3.connect(DATABASE_FILE, timeout=20, detect_types=0) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        if time_window_hours > 6:
+            query = """
+                SELECT
+                    hour_timestamp as time_bucket_start_iso,
+                    SUM(total_upload_size) as ingress_bytes,
+                    SUM(total_download_size) as egress_bytes,
+                    SUM(ul_success) as ingress_pieces,
+                    SUM(dl_success) as egress_pieces
+                FROM hourly_stats WHERE hour_timestamp >= ?
+                GROUP BY hour_timestamp ORDER BY hour_timestamp ASC
+            """
+            params = [start_time_iso]
+            actual_bin_sec = 3600
+        else:
+            query = f"""
+                SELECT
+                    (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start,
+                    SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes,
+                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes,
+                    SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces,
+                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces
+                FROM events WHERE timestamp >= ?
+                GROUP BY time_bucket_start ORDER BY time_bucket_start ASC
+            """
+            params = [bin_sec, bin_sec, start_time_iso]
+            actual_bin_sec = bin_sec
+
+        for row in cursor.execute(query, params).fetchall():
+            row_dict = dict(row)
+            ts_unix = row_dict.get('time_bucket_start')
+            iso_ts = row_dict.get('time_bucket_start_iso') or datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat()
+            results.append({
+                "timestamp": iso_ts,
+                "ingress_mbps": round((row_dict.get('ingress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
+                "egress_mbps": round((row_dict.get('egress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
+                "ingress_bytes": row_dict.get('ingress_bytes', 0),
+                "egress_bytes": row_dict.get('egress_bytes', 0),
+                "ingress_pieces": row_dict.get('ingress_pieces', 0),
+                "egress_pieces": row_dict.get('egress_pieces', 0),
+                "concurrency": 0
+            })
+    log.info(f"Returning {len(results)} aggregated performance data points for ALL NODES.")
+    return results
+
 async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=10)
     await ws.prepare(request)
@@ -764,23 +893,35 @@ async def websocket_handler(request):
 
                     elif msg_type == 'get_historical_performance':
                         view = data.get('view')
-                        if view == 'Aggregate': continue # Should not be requested by new client
+                        if view == 'Aggregate': continue
 
                         points = data.get('points', 150)
                         interval = data.get('interval_sec', PERFORMANCE_INTERVAL_SECONDS)
-
                         loop = asyncio.get_running_loop()
                         historical_data = await loop.run_in_executor(
-                            app['db_executor'],
-                            blocking_get_historical_performance,
+                            app['db_executor'], blocking_get_historical_performance,
                             view, points, interval
                         )
+                        payload = {"type": "historical_performance_data", "view": view, "performance_data": historical_data}
+                        await ws.send_json(payload)
 
-                        payload = {
-                            "type": "historical_performance_data",
-                            "view": view,
-                            "performance_data": historical_data
-                        }
+                    elif msg_type == 'get_aggregated_performance':
+                        view = data.get('view')
+                        time_window_hours = data.get('hours', 1)
+                        loop = asyncio.get_running_loop()
+
+                        if view == 'Aggregate':
+                            aggregated_data = await loop.run_in_executor(
+                                app['db_executor'], blocking_get_aggregated_performance_for_all,
+                                time_window_hours
+                            )
+                        else:
+                            aggregated_data = await loop.run_in_executor(
+                                app['db_executor'], blocking_get_aggregated_performance,
+                                view, time_window_hours
+                            )
+
+                        payload = {"type": "aggregated_performance_data", "view": view, "performance_data": aggregated_data}
                         await ws.send_json(payload)
 
                 except Exception:

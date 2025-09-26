@@ -49,6 +49,7 @@
         .chart-header h3 { border-bottom: none; margin-bottom: 15px; }
         .toggle-link { font-size: 0.8em; cursor: pointer; text-decoration: none; color: #007bff; margin: 0 4px; }
         .toggle-link.active { font-weight: bold; text-decoration: underline; }
+        .toggle-link.disabled { color: #888; cursor: not-allowed; text-decoration: none; }
         #aggregation-toggles { text-align: right; margin-top: 4px; font-size: 0.9em; }
 
         #analysis-card .stats-grid {
@@ -96,6 +97,7 @@
             .info-table th, .info-table td { border-bottom-color: #333; }
             .info-table th { color: #aaa; }
             .toggle-link, #node-selector .node-link { color: #4dabf7; }
+            .toggle-link.disabled { color: #555; }
             #map { background-color: #333; }
             .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(95%) contrast(90%); }
             #toggle-map-size-btn { color: #aaa; }
@@ -154,6 +156,14 @@
                 <div>
                      <div id="performance-toggles">
                         <a href="#" class="toggle-link active" data-view="rate">Rate (Mbps)</a> | <a href="#" class="toggle-link" data-view="volume">Volume (MB)</a> | <a href="#" class="toggle-link" data-view="pieces">Pieces</a> | <a href="#" class="toggle-link" data-view="concurrency">Concurrency</a>
+                    </div>
+                    <div id="time-range-toggles" style="text-align: right; font-size: 0.9em; margin-top: 4px;">
+                        <small>Range:</small>
+                        <a href="#" class="toggle-link active" data-range="5m">5m</a> |
+                        <a href="#" class="toggle-link" data-range="30m">30m</a> |
+                        <a href="#" class="toggle-link" data-range="1h">1h</a> |
+                        <a href="#" class="toggle-link" data-range="6h">6h</a> |
+                        <a href="#" class="toggle-link" data-range="24h">24h</a>
                     </div>
                     <div id="aggregation-toggles">
                         <small>Aggregate:</small>
@@ -686,14 +696,18 @@
         const PERFORMANCE_INTERVAL_MS = 2000;
         const MAX_PERF_POINTS = 150;
         let satelliteViewIsBySize = false; let lastSatelliteData = [];
-        let performanceChartView = 'rate';
-        let performanceAggregationMode = 'sum';
-        let performanceData = {};
+        let performanceState = {
+            view: 'rate', // rate, volume, pieces, concurrency
+            range: '5m', // 5m, 30m, 1h, 6h, 24h
+            agg: 'sum' // sum, avg
+        };
+        let livePerformanceData = {};
         let aggregatedPerformanceData = {};
+        let historicalPerformanceData = {};
         let currentNodeView = 'Aggregate';
         let availableNodes = [];
         let performanceHistoryLoaded = {};
-        let livePerformanceDataQueue = {};
+        let performanceChartInstance = null;
 
         // --- Helper Functions ---
         function formatBytes(bytes, decimals = 2) { if (!bytes || bytes === 0) return '0 Bytes'; const k = 1024; const dm = decimals < 0 ? 0 : decimals; const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']; const i = Math.floor(Math.log(bytes) / Math.log(k)); return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]; }
@@ -701,8 +715,54 @@
         const SATELLITE_NAMES = { '121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1', '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1', '12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs': 'eu1', '1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE': 'saltlake' };
 
         // --- Chart Initialization ---
-        const performanceChart = new Chart(document.getElementById('performanceChart').getContext('2d'), { type: 'line', data: { datasets: [{ label: 'Ingress (Upload)', data: [], borderColor: UPLOAD_COLOR, tension: 0.2 }, { label: 'Egress (Download)', data: [], borderColor: DOWNLOAD_COLOR, tension: 0.2 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { unit: 'minute' } }, y: { beginAtZero: true, title: { display: true, text: 'Mbps' } } } } });
-        const satelliteChart = new Chart(document.getElementById('satelliteChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Downloads/Audits', data: [], backgroundColor: DOWNLOAD_COLOR }] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true }, y: { stacked: true } }, plugins: { tooltip: { callbacks: { footer: function(tooltipItems) { const context = tooltipItems[0]; if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return ''; const satData = lastSatelliteData[context.dataIndex]; const lines = []; const totalDl = satData.downloads; if (totalDl > 0) lines.push(`DL Success: ${(satData.dl_success/totalDl*100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); const totalUl = satData.uploads; if (totalUl > 0) lines.push(`UL Success: ${(satData.ul_success/totalUl*100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); const totalAudit = satData.audits; if (totalAudit > 0) lines.push(`Audit Success: ${(satData.audit_success/totalAudit*100).toFixed(2)}% (${satData.audit_success}/${totalAudit})`); return lines; } } } } } });
+        function createPerformanceChart() {
+            if (performanceChartInstance) {
+                performanceChartInstance.destroy();
+            }
+            const ctx = document.getElementById('performanceChart').getContext('2d');
+            const isLiveView = performanceState.range === '5m';
+            const chartType = isLiveView ? 'line' : 'bar';
+            const options = { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { tooltipFormat: 'PP pp' } }, y: { beginAtZero: true, title: { display: true } } } };
+            if (isLiveView) {
+                options.scales.x.time.unit = 'minute';
+            } else {
+                options.scales.x.stacked = true;
+                options.scales.y.stacked = true;
+                options.plugins = {
+                    tooltip: {
+                        callbacks: {
+                            title: function(context) {
+                                try {
+                                    if (!context || context.length === 0) return '';
+                                    const d = new Date(context[0].parsed.x);
+                                    const dataIndex = context[0].dataIndex;
+                                    const dataset = context[0].chart.data.datasets[context[0].datasetIndex];
+                                    let intervalMs = 0;
+                                    if (dataIndex + 1 < dataset.data.length) {
+                                        const nextPointX = dataset.data[dataIndex + 1].x;
+                                        intervalMs = new Date(nextPointX).getTime() - d.getTime();
+                                    } else if (dataIndex > 0) {
+                                        const prevPointX = dataset.data[dataIndex - 1].x;
+                                        intervalMs = d.getTime() - new Date(prevPointX).getTime();
+                                    }
+                                    if (intervalMs > 0) {
+                                        const next_d = new Date(d.getTime() + intervalMs);
+                                        const timeFormat = { hour: '2-digit', minute:'2-digit', second: '2-digit' };
+                                        return `Interval: ${d.toLocaleTimeString([], timeFormat)} - ${next_d.toLocaleTimeString([], timeFormat)}`;
+                                    }
+                                    return d.toLocaleString();
+                                } catch (e) {
+                                    console.error("Tooltip title error:", e);
+                                    return "Error";
+                                }
+                            }
+                        }
+                    }
+                };
+            }
+            performanceChartInstance = new Chart(ctx, { type: chartType, data: { datasets: [] }, options: options });
+        }
+        const satelliteChart = new Chart(document.getElementById('satelliteChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Downloads/Audits', data: [], backgroundColor: DOWNLOAD_COLOR }] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true, title: { display: true, text: 'Pieces' } }, y: { stacked: true } }, plugins: { tooltip: { callbacks: { footer: function(tooltipItems) { const context = tooltipItems[0]; if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return ''; const satData = lastSatelliteData[context.dataIndex]; const lines = []; const totalDl = satData.downloads; if (totalDl > 0) lines.push(`DL Success: ${(satData.dl_success/totalDl*100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); const totalUl = satData.uploads; if (totalUl > 0) lines.push(`UL Success: ${(satData.ul_success/totalUl*100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); const totalAudit = satData.audits; if (totalAudit > 0) lines.push(`Audit Success: ${(satData.audit_success/totalAudit*100).toFixed(2)}% (${satData.audit_success}/${totalAudit})`); return lines; } } } } } });
         const sizeBarChart = new Chart(document.getElementById('sizeBarChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' }, { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Size Bucket' }, stacked: true }, y: { title: { display: true, text: 'Count' }, stacked: true } }, plugins: { legend: { position: 'top' }, tooltip: { callbacks: { footer: function(tooltipItems) { const item = tooltipItems[0]; const datasetLabels = ['successful downloads', 'successful uploads', 'failed downloads', 'failed uploads']; return `${item.parsed.y} ${datasetLabels[item.datasetIndex]} in this size range`; } } } } } });
         let sizeViewIsPercentage = false;
 
@@ -715,25 +775,129 @@
         function updateHistoricalTable(history) { const tbody = document.getElementById('history-body'); tbody.innerHTML = ''; if (!history || history.length === 0) { tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No historical data yet.</td></tr>'; return; } for (const hour of history) { const totalDl = hour.dl_success + hour.dl_fail, dlRate = totalDl > 0 ? (hour.dl_success / totalDl * 100) : 100; const totalUl = hour.ul_success + hour.ul_fail, ulRate = totalUl > 0 ? (hour.ul_success / totalUl * 100) : 100; const totalAudit = hour.audit_success + hour.audit_fail, auditRate = totalAudit > 0 ? (hour.audit_success / totalAudit * 100) : 100; const dlSpeed = hour.dl_mbps !== undefined ? hour.dl_mbps.toFixed(2) : '...'; const ulSpeed = hour.ul_mbps !== undefined ? hour.ul_mbps.toFixed(2) : '...'; const row = tbody.insertRow(); row.innerHTML = `<td>${new Date(hour.hour_timestamp).toLocaleTimeString([],{hour:'numeric'})}</td><td class="numeric ${getRateClass(dlRate)}">${dlRate.toFixed(2)}%</td><td class="numeric ${getRateClass(ulRate)}">${ulRate.toFixed(2)}%</td><td class="numeric ${getRateClass(auditRate)}">${auditRate.toFixed(2)}%</td><td class="numeric">${dlSpeed} Mbps</td><td class="numeric">${ulSpeed} Mbps</td>`; } }
         function updateAnalysisTables(data) { const errorBody = document.getElementById('error-body'); errorBody.innerHTML = ''; if (data.error_categories && data.error_categories.length > 0) { data.error_categories.forEach(e => { errorBody.innerHTML += `<tr><td class="reason-cell">${e.reason}</td><td class="numeric">${e.count}</td></tr>`; }); } else { errorBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No errors in this time window.</td></tr>'; } const piecesBody = document.getElementById('pieces-body'); piecesBody.innerHTML = ''; if (data.top_pieces && data.top_pieces.length > 0) { data.top_pieces.forEach(p => { piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,25)}...</td><td class="numeric">${p.count}</td><td class="numeric">${formatBytes(p.size)}</td></tr>`; }); } else { piecesBody.innerHTML = '<tr><td colspan="3" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesDlBody = document.getElementById('countries-dl-body'); countriesDlBody.innerHTML = ''; if (data.top_countries_dl && data.top_countries_dl.length > 0) { data.top_countries_dl.forEach(c => countriesDlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesDlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesUlBody = document.getElementById('countries-ul-body'); countriesUlBody.innerHTML = ''; if (data.top_countries_ul && data.top_countries_ul.length > 0) { data.top_countries_ul.forEach(c => countriesUlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesUlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } }
         function updateHashstorePanel(stats) { const tbody = document.getElementById('hashstore-body'); const showNodeColumn = currentNodeView === 'Aggregate'; document.querySelector('#hashstore-card th:first-child').style.display = showNodeColumn ? '' : 'none'; tbody.innerHTML = ''; if (!stats || stats.length === 0) { const colspan = showNodeColumn ? 9 : 8; tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align: center;">Waiting for hashstore compaction events...</td></tr>`; return; } for (const item of stats) { const row = tbody.insertRow(); let cellIndex = 0; if (showNodeColumn) { row.insertCell(cellIndex++).textContent = item.node_name; row.cells[0].style.display = ''; } else { row.insertCell(cellIndex++).style.display = 'none'; } row.insertCell(cellIndex++).textContent = SATELLITE_NAMES[item.satellite] || item.satellite.substring(0,12); row.insertCell(cellIndex++).textContent = item.store; row.insertCell(cellIndex++).textContent = new Date(item.last_run_iso).toLocaleTimeString(); const durationCell = row.insertCell(cellIndex++); durationCell.className = 'numeric'; durationCell.textContent = `${item.duration.toFixed(1)}s`; const reclaimedCell = row.insertCell(cellIndex++); reclaimedCell.className = 'numeric'; reclaimedCell.textContent = formatBytes(item.data_reclaimed_bytes); const rewrittenCell = row.insertCell(cellIndex++); rewrittenCell.className = 'numeric'; rewrittenCell.textContent = formatBytes(item.data_rewritten_bytes); const loadCell = row.insertCell(cellIndex++); loadCell.className = 'numeric'; loadCell.textContent = `${item.table_load.toFixed(2)}%`; const trashCell = row.insertCell(cellIndex++); trashCell.className = 'numeric'; trashCell.textContent = `${item.trash_percent.toFixed(2)}%`; } }
-        function updatePerformanceChart() { const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`; const viewTitles = { rate: 'Live Performance (Mbps)', volume: 'Data Volume (MB)', pieces: 'Pieces', concurrency: 'Active Operations' }; const yAxisTitles = { rate: 'Mbps', volume: 'MB', pieces: 'Count', concurrency: 'Concurrent Ops' }; document.getElementById('performance-title').textContent = viewTitles[performanceChartView] + viewName; document.getElementById('aggregation-toggles').style.display = (currentNodeView === 'Aggregate') ? 'block' : 'none'; const dataToDisplay = (currentNodeView === 'Aggregate') ? aggregatedPerformanceData : performanceData[currentNodeView]; if (!dataToDisplay) return; let yAxisTitle = yAxisTitles[performanceChartView]; if(currentNodeView === 'Aggregate' && performanceAggregationMode === 'avg') { yAxisTitle = yAxisTitle.replace('Mbps', 'Avg. Mbps').replace('MB', 'Avg. MB'); } else if (currentNodeView === 'Aggregate' && performanceAggregationMode === 'sum') { yAxisTitle = yAxisTitle.replace('Mbps', 'Total Mbps').replace('MB', 'Total MB'); } performanceChart.options.scales.y.title.text = yAxisTitle; const isConcurrency = performanceChartView === 'concurrency'; let datasetsToShow = []; if (isConcurrency) { datasetsToShow.push({ label: 'Operations', data: dataToDisplay.concurrency ? dataToDisplay.concurrency[0] : [], borderColor: UPLOAD_COLOR, tension: 0.2 }); } else { datasetsToShow.push({ label: 'Ingress (Upload)', data: dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][0] : [], borderColor: UPLOAD_COLOR, tension: 0.2 }); datasetsToShow.push({ label: 'Egress (Download)', data: dataToDisplay[performanceChartView] ? dataToDisplay[performanceChartView][1] : [], borderColor: DOWNLOAD_COLOR, tension: 0.2 }); } performanceChart.data.datasets = datasetsToShow; performanceChart.update('none'); }
-        function initializePerformanceData(nodes) { const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] }); nodes.forEach(node => { performanceData[node] = dataTemplate(); livePerformanceDataQueue[node] = []; performanceHistoryLoaded[node] = false; }); aggregatedPerformanceData = dataTemplate(); }
-        function recalculateAggregateData() { const dataTemplate = () => ({ rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] }); const newAggData = dataTemplate(); const individualNodes = availableNodes.filter(n => n !== 'Aggregate'); if (individualNodes.length === 0) return; const allTimestamps = new Set(); individualNodes.forEach(node => { Object.values(performanceData[node]).forEach(seriesPair => { seriesPair.forEach(series => { series.forEach(point => allTimestamps.add(point.x.getTime())); }); }); }); const sortedTimestamps = Array.from(allTimestamps).sort((a,b) => a - b); sortedTimestamps.forEach(ts => { const timestamp = new Date(ts); Object.keys(newAggData).forEach(metric => { const isConcurrency = metric === 'concurrency'; const numSeries = isConcurrency ? 1 : 2; for (let i = 0; i < numSeries; i++) { let sum = 0; let count = 0; individualNodes.forEach(node => { const point = performanceData[node][metric][i].find(p => p.x.getTime() === ts); if (point) { sum += point.y; count++; } }); if (count > 0) { const value = (performanceAggregationMode === 'avg' && metric !== 'concurrency') ? sum / count : sum; newAggData[metric][i].push({ x: timestamp, y: value }); } } }); }); aggregatedPerformanceData = newAggData; }
+
+        function dataTemplate() {
+            return { rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] };
+        }
+
+        function updatePerformanceChart() {
+            try {
+                const isLiveView = performanceState.range === '5m';
+                let dataToDisplay;
+
+                if (isLiveView) {
+                    dataToDisplay = (currentNodeView === 'Aggregate') ? aggregatedPerformanceData : livePerformanceData[currentNodeView];
+                } else {
+                    dataToDisplay = historicalPerformanceData;
+                }
+
+                if (!dataToDisplay) { console.warn("[updatePerformanceChart] No data to display for current view."); return; }
+
+                if (isLiveView) { document.getElementById('performance-title').textContent = `Live Performance`; } else { document.getElementById('performance-title').textContent = `Performance History`; }
+                if (!performanceChartInstance) createPerformanceChart();
+                const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`;
+                const viewTitles = { rate: 'Rate (Mbps)', volume: 'Data Volume (MB)', pieces: 'Pieces', concurrency: 'Active Operations' };
+                const yAxisTitles = { rate: 'Mbps', volume: 'MB', pieces: 'Count', concurrency: 'Concurrent Ops' };
+                document.getElementById('performance-title').textContent = viewTitles[performanceState.view] + viewName;
+                document.getElementById('aggregation-toggles').style.display = (currentNodeView === 'Aggregate') ? 'block' : 'none';
+
+                let yAxisTitle = yAxisTitles[performanceState.view]; if(currentNodeView === 'Aggregate' && performanceState.agg === 'avg') { yAxisTitle = yAxisTitle.replace('Mbps', 'Avg. Mbps').replace('MB', 'Avg. MB'); } else if (currentNodeView === 'Aggregate' && performanceState.agg === 'sum') { yAxisTitle = yAxisTitle.replace('Mbps', 'Total Mbps').replace('MB', 'Total MB'); }
+                performanceChartInstance.options.scales.y.title.text = yAxisTitle;
+                const isConcurrency = performanceState.view === 'concurrency';
+                let datasetsToShow = [];
+                if (isConcurrency) { datasetsToShow.push({ label: 'Operations', data: dataToDisplay.concurrency ? dataToDisplay.concurrency[0] : [], borderColor: UPLOAD_COLOR, tension: 0.2, backgroundColor: UPLOAD_COLOR });
+                } else {
+                    datasetsToShow.push({ label: 'Ingress (Upload)', data: dataToDisplay[performanceState.view] ? dataToDisplay[performanceState.view][0] : [], borderColor: UPLOAD_COLOR, tension: 0.2, backgroundColor: UPLOAD_COLOR });
+                    datasetsToShow.push({ label: 'Egress (Download)', data: dataToDisplay[performanceState.view] ? dataToDisplay[performanceState.view][1] : [], borderColor: DOWNLOAD_COLOR, tension: 0.2, backgroundColor: DOWNLOAD_COLOR });
+                }
+                performanceChartInstance.data.datasets = datasetsToShow;
+                console.log(`[updatePerformanceChart] Rendering chart with ${datasetsToShow[0].data.length} data points.`);
+                performanceChartInstance.update(isLiveView ? 'none' : undefined);
+            } catch (error) {
+                console.error("[updatePerformanceChart] CRITICAL: Failed to update performance chart.", error);
+            }
+        }
+        function initializePerformanceData(nodes) { nodes.forEach(node => { if (!livePerformanceData[node]) { livePerformanceData[node] = dataTemplate(); } if (!performanceHistoryLoaded[node]) { performanceHistoryLoaded[node] = false; } }); aggregatedPerformanceData = dataTemplate(); historicalPerformanceData = dataTemplate(); }
+        function recalculateAggregateData() { const newAggData = dataTemplate(); const individualNodes = availableNodes.filter(n => n !== 'Aggregate'); if (individualNodes.length === 0) return; const allTimestamps = new Set(); individualNodes.forEach(node => { if(livePerformanceData[node]) { Object.values(livePerformanceData[node]).forEach(seriesPair => { seriesPair.forEach(series => { series.forEach(point => allTimestamps.add(point.x.getTime())); }); }); } }); const sortedTimestamps = Array.from(allTimestamps).sort((a,b) => a - b); sortedTimestamps.forEach(ts => { const timestamp = new Date(ts); Object.keys(newAggData).forEach(metric => { const isConcurrency = metric === 'concurrency'; const numSeries = isConcurrency ? 1 : 2; for (let i = 0; i < numSeries; i++) { let sum = 0; let count = 0; individualNodes.forEach(node => { const point = livePerformanceData[node][metric][i].find(p => p.x.getTime() === ts); if (point) { sum += point.y; count++; } }); if (count > 0) { const value = (performanceState.agg === 'avg' && metric !== 'concurrency') ? sum / count : sum; newAggData[metric][i].push({ x: timestamp, y: value }); } } }); }); aggregatedPerformanceData = newAggData; }
 
         // --- Event Listeners ---
         document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); satelliteViewIsBySize = !satelliteViewIsBySize; this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size'; updateSatelliteChart(lastSatelliteData); });
         document.getElementById('toggle-size-view').addEventListener('click', function(e) { e.preventDefault(); sizeViewIsPercentage = !sizeViewIsPercentage; this.textContent = sizeViewIsPercentage ? 'Show Counts' : 'Show Percentages'; updateSizeBarChart(lastTransferSizes); });
-        document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceChartView = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); updatePerformanceChart(); } });
-        document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceAggregationMode = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); recalculateAggregateData(); updatePerformanceChart(); } });
-        function requestHistoricalPerformance(view) { if (ws && ws.readyState === WebSocket.OPEN && view !== 'Aggregate') { ws.send(JSON.stringify({ type: 'get_historical_performance', view: view, points: MAX_PERF_POINTS, interval_sec: PERFORMANCE_INTERVAL_MS / 1000 })); } }
-        document.getElementById('node-selector').addEventListener('click', function(e) { e.preventDefault(); if (e.target.classList.contains('node-link')) { const newView = e.target.getAttribute('data-view'); if (newView === currentNodeView) return; currentNodeView = newView; document.querySelectorAll('#node-selector .node-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView })); updatePerformanceChart(); } });
+        document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.view = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); updatePerformanceChart(); } });
+        document.getElementById('time-range-toggles').addEventListener('click', function(e) {
+            e.preventDefault();
+            const newRange = e.target.getAttribute('data-range');
+            if (newRange === performanceState.range) return;
+            performanceState.range = newRange;
+            console.log(`[TimeRange] Switched to ${newRange}`);
+
+            document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active'));
+            e.target.classList.add('active');
+
+            createPerformanceChart(); // Re-create chart for bar/line switch
+            if (newRange === '5m') {
+                updatePerformanceChart(); // Re-render with existing live data
+            } else {
+                const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange];
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    console.log(`[WebSocket] Requesting aggregated performance for ${currentNodeView} over ${hours}h`);
+                    ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours }));
+                }
+            }
+        });
+        document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.agg = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); recalculateAggregateData(); updatePerformanceChart(); } });
+        function requestInitialPerformance(view) { if (ws && ws.readyState === WebSocket.OPEN && view !== 'Aggregate') { console.log(`[WebSocket] Requesting initial performance for ${view}`); ws.send(JSON.stringify({ type: 'get_historical_performance', view: view, points: MAX_PERF_POINTS, interval_sec: PERFORMANCE_INTERVAL_MS / 1000 })); } }
+
+        document.getElementById('node-selector').addEventListener('click', function(e) {
+             e.preventDefault();
+             if (e.target.classList.contains('node-link')) {
+                 const newView = e.target.getAttribute('data-view');
+                 if (newView === currentNodeView) return;
+                 currentNodeView = newView;
+                 console.log(`[NodeView] Switched to ${newView}`);
+                 document.querySelectorAll('#node-selector .node-link').forEach(el => el.classList.remove('active'));
+                 e.target.classList.add('active');
+                 ws.send(JSON.stringify({ type: 'set_view', view: newView }));
+
+                 // Always reset to 5m live view when switching node or to Aggregate
+                 if (performanceState.range !== '5m') {
+                    document.querySelector('#time-range-toggles [data-range="5m"]').click();
+                 } else {
+                    // If already on 5m, just clear and refetch data for the new node
+                    if (newView !== 'Aggregate' && !performanceHistoryLoaded[newView]) {
+                        requestInitialPerformance(newView);
+                    } else {
+                         updatePerformanceChart();
+                    }
+                 }
+             }
+        });
         const mapCard = document.getElementById('map-card');
         const toggleMapSizeBtn = document.getElementById('toggle-map-size-btn');
         toggleMapSizeBtn.addEventListener('click', () => { const isMaximized = mapCard.classList.toggle('maximized'); document.body.classList.toggle('map-maximized', isMaximized); if (isMaximized) { toggleMapSizeBtn.innerHTML = '&#x2924;'; toggleMapSizeBtn.title = 'Restore Map Size'; } else { toggleMapSizeBtn.innerHTML = '&#x26F6;'; toggleMapSizeBtn.title = 'Maximize Map'; } setTimeout(() => { map.invalidateSize(); }, 150); });
 
         // --- WebSocket Connection ---
-        let ws; const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; }; ws.onmessage = (event) => { const data = JSON.parse(event.data); switch(data.type) { case 'init': availableNodes = data.nodes; const selector = document.getElementById('node-selector'); selector.innerHTML = ''; data.nodes.forEach(name => { const link = document.createElement('a'); link.href = '#'; link.className = 'node-link'; link.textContent = name; link.setAttribute('data-view', name); if (name === currentNodeView) link.classList.add('active'); selector.appendChild(link); }); initializePerformanceData(data.nodes); availableNodes.filter(n => n !== 'Aggregate').forEach(nodeName => { requestHistoricalPerformance(nodeName); }); break; case 'log_entry': if (data.location && data.location.lat) { heatmap.addDataPoint(data.location.lat, data.location.lon, data.size || 1000, data.action, data.action, data.timestamp); } break; case 'performance_update': const { node_name, ...metrics } = data; if (!performanceHistoryLoaded[node_name]) { livePerformanceDataQueue[node_name].push(metrics); } else { processPerformanceUpdate(node_name, metrics); } break; case 'historical_performance_data': const nodePerfData = performanceData[data.view]; if (!nodePerfData) break; data.performance_data.forEach(point => { const ts = new Date(point.timestamp); nodePerfData.rate[0].push({x:ts, y:point.ingress_mbps}); nodePerfData.rate[1].push({x:ts, y:point.egress_mbps}); nodePerfData.volume[0].push({x:ts, y:point.ingress_bytes / 1e6}); nodePerfData.volume[1].push({x:ts, y:point.egress_bytes / 1e6}); nodePerfData.pieces[0].push({x:ts, y:point.ingress_pieces}); nodePerfData.pieces[1].push({x:ts, y:point.egress_pieces}); nodePerfData.concurrency[0].push({x:ts, y:point.concurrency}); }); performanceHistoryLoaded[data.view] = true; livePerformanceDataQueue[data.view].forEach(queuedMetrics => processPerformanceUpdate(data.view, queuedMetrics)); livePerformanceDataQueue[data.view] = []; recalculateAggregateData(); updatePerformanceChart(); break; case 'stats_update': updateAllVisuals(data); break; } }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); }; ws.onerror = err => { console.error("WebSocket error:", err); ws.close(); }; } };
-        function processPerformanceUpdate(node_name, metrics) { const binnedTimestamp = Math.floor(new Date(metrics.timestamp).getTime() / PERFORMANCE_INTERVAL_MS) * PERFORMANCE_INTERVAL_MS; const binnedNow = new Date(binnedTimestamp); const nodePerf = performanceData[node_name]; if (!nodePerf) return; const metricMap = { rate: [metrics.ingress_mbps, metrics.egress_mbps], volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6], pieces: [metrics.ingress_pieces, metrics.egress_pieces], concurrency: [metrics.concurrency] }; const updateOrPushPoint = (series, point) => { const lastPoint = series.length > 0 ? series[series.length - 1] : null; if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) { lastPoint.y = point.y; } else { series.push(point); if (series.length > MAX_PERF_POINTS) { series.shift(); } } }; Object.keys(metricMap).forEach(metric => { const values = metricMap[metric]; for (let i = 0; i < values.length; i++) { updateOrPushPoint(nodePerf[metric][i], { x: binnedNow, y: values[i] }); } }); recalculateAggregateData(); updatePerformanceChart(); }
-        connectionManager.connect();
+        let ws; const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); console.log("[WebSocket] Received message:", data.type, data); switch(data.type) { case 'init': availableNodes = data.nodes; const selector = document.getElementById('node-selector'); selector.innerHTML = ''; data.nodes.forEach(name => { const link = document.createElement('a'); link.href = '#'; link.className = 'node-link'; link.textContent = name; link.setAttribute('data-view', name); if (name === currentNodeView) link.classList.add('active'); selector.appendChild(link); }); initializePerformanceData(data.nodes); availableNodes.filter(n => n !== 'Aggregate').forEach(nodeName => { requestInitialPerformance(nodeName); }); break; case 'log_entry': if (data.location && data.location.lat) { heatmap.addDataPoint(data.location.lat, data.location.lon, data.size || 1000, data.action, data.action, data.timestamp); } break; case 'performance_update': const { node_name, ...metrics } = data; processPerformanceUpdate(node_name, metrics); break; case 'historical_performance_data': const nodeName = data.view; if (!livePerformanceData[nodeName]) { initializePerformanceData([nodeName]); } const nodePerfData = livePerformanceData[nodeName]; Object.keys(nodePerfData).forEach(key => { nodePerfData[key][0] = []; nodePerfData[key][1] = []; }); data.performance_data.forEach(point => { const ts = new Date(point.timestamp); nodePerfData.rate[0].push({x:ts, y:point.ingress_mbps}); nodePerfData.rate[1].push({x:ts, y:point.egress_mbps}); nodePerfData.volume[0].push({x:ts, y:point.ingress_bytes / 1e6}); nodePerfData.volume[1].push({x:ts, y:point.egress_bytes / 1e6}); nodePerfData.pieces[0].push({x:ts, y:point.ingress_pieces}); nodePerfData.pieces[1].push({x:ts, y:point.egress_pieces}); nodePerfData.concurrency[0].push({x:ts, y:point.concurrency}); }); performanceHistoryLoaded[nodeName] = true; recalculateAggregateData(); if (currentNodeView === nodeName && performanceState.range === '5m') { updatePerformanceChart(); } break; case 'aggregated_performance_data': historicalPerformanceData = dataTemplate(); data.performance_data.forEach(point => { const ts = new Date(point.timestamp); historicalPerformanceData.rate[0].push({x:ts, y:point.ingress_mbps}); historicalPerformanceData.rate[1].push({x:ts, y:point.egress_mbps}); historicalPerformanceData.volume[0].push({x:ts, y:point.ingress_bytes / 1e6}); historicalPerformanceData.volume[1].push({x:ts, y:point.egress_bytes / 1e6}); historicalPerformanceData.pieces[0].push({x:ts, y:point.ingress_pieces}); historicalPerformanceData.pieces[1].push({x:ts, y:point.egress_pieces}); historicalPerformanceData.concurrency[0].push({x:ts, y:point.concurrency}); }); updatePerformanceChart(); break; case 'stats_update': updateAllVisuals(data); break; } }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
+        function processPerformanceUpdate(node_name, metrics) {
+            const binnedTimestamp = Math.floor(new Date(metrics.timestamp).getTime() / PERFORMANCE_INTERVAL_MS) * PERFORMANCE_INTERVAL_MS;
+            const binnedNow = new Date(binnedTimestamp);
+            const nodePerf = livePerformanceData[node_name];
+            if (!nodePerf) {
+                console.warn(`[processPerformanceUpdate] Received update for unknown node: ${node_name}`);
+                return;
+            }
+            const metricMap = { rate: [metrics.ingress_mbps, metrics.egress_mbps], volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6], pieces: [metrics.ingress_pieces, metrics.egress_pieces], concurrency: [metrics.concurrency] };
+            const updateOrPushPoint = (series, point) => { const lastPoint = series.length > 0 ? series[series.length - 1] : null; if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) { lastPoint.y = point.y; } else { series.push(point); if (series.length > MAX_PERF_POINTS) { series.shift(); } } }; Object.keys(metricMap).forEach(metric => { const values = metricMap[metric]; for (let i = 0; i < values.length; i++) { updateOrPushPoint(nodePerf[metric][i], { x: binnedNow, y: values[i] }); } });
+            recalculateAggregateData();
+            if(performanceState.range === '5m') {
+                updatePerformanceChart();
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            createPerformanceChart();
+            connectionManager.connect();
+        });
 
         // --- Dark Mode Chart Handler ---
         const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -741,11 +905,10 @@
             const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
             const textColor = isDarkMode ? '#e0e0e0' : '#333';
             Chart.defaults.color = textColor; Chart.defaults.borderColor = gridColor;
-            for (const id in Chart.instances) {
-                const chart = Chart.instances[id];
+            Object.values(Chart.instances).forEach(chart => {
                 if(chart.options.plugins.tooltip) { chart.options.plugins.tooltip.titleColor = textColor; chart.options.plugins.tooltip.bodyColor = textColor; chart.options.plugins.tooltip.footerColor = textColor; }
                 chart.update();
-            }
+            });
         }
         handleThemeChange(darkModeMediaQuery.matches);
         darkModeMediaQuery.addEventListener('change', e => handleThemeChange(e.matches));
