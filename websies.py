@@ -737,10 +737,19 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
     if not events:
         return []
 
+    # --- FIX: Filter events to the requested time window (e.g., last 5 minutes) ---
+    now_unix = time.time()
+    time_window_seconds = points * interval_sec
+    cutoff_unix = now_unix - time_window_seconds
+    recent_events = [e for e in events if e.get('ts_unix', 0) >= cutoff_unix]
+    log.info(f"Filtered to {len(recent_events)} events within the last {time_window_seconds} seconds.")
+    # --- END FIX ---
+
     # Create time buckets to aggregate events
     buckets: Dict[int, Dict[str, int]] = {}
 
-    for event in events:
+    # --- FIX: Iterate over filtered recent_events, not the full events list ---
+    for event in recent_events:
         # Ensure event has the necessary keys and is a successful transfer for rate calculation
         if 'ts_unix' not in event or event.get('status') != 'success':
             continue
