@@ -802,7 +802,7 @@
 
         // --- WebSocket Connection & Data Handling ---
         let ws;
-        const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
+        const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
 
         function initializePerformanceData(nodes) {
             livePerformanceBins = {}; // Reset all data
@@ -811,38 +811,6 @@
             });
             historicalPerformanceData = dataTemplate(); // For non-live views
         }
-
-        function updateLivePerformanceBins(event) {
-            const binSize = PERFORMANCE_INTERVAL_MS;
-            const ts = new Date(event.timestamp).getTime();
-            const binnedTimestamp = Math.floor(ts / binSize) * binSize;
-
-            const processBin = (bins) => {
-                if (!bins[binnedTimestamp]) {
-                    bins[binnedTimestamp] = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0 };
-                }
-                const bin = bins[binnedTimestamp];
-                bin.total_ops++;
-                if (event.status === 'success') {
-                    if (event.action.includes('GET') && event.action !== 'GET_AUDIT') {
-                        bin.egress_bytes += event.size;
-                        bin.egress_pieces++;
-                    } else if (event.action.includes('PUT')) {
-                        bin.ingress_bytes += event.size;
-                        bin.ingress_pieces++;
-                    }
-                }
-            };
-
-            // Update node-specific bin and aggregate bin
-            if (livePerformanceBins[event.node_name]) {
-                 processBin(livePerformanceBins[event.node_name]);
-            }
-            if (livePerformanceBins['Aggregate']) {
-                 processBin(livePerformanceBins['Aggregate']);
-            }
-        }
-
 
         function updatePerformanceChart() {
             try {
@@ -924,12 +892,34 @@
                     if (data.location && data.location.lat) {
                         heatmap.addDataPoint(data.location.lat, data.location.lon, data.size || 1000, data.action, data.action, data.timestamp);
                     }
-                    updateLivePerformanceBins(data);
+                    break;
+                case 'performance_batch_update': {
+                    const { node_name, bins } = data;
+                    const updateNodeBins = (targetNodeName) => {
+                        if (!livePerformanceBins[targetNodeName]) {
+                            livePerformanceBins[targetNodeName] = {};
+                        }
+                        const targetBins = livePerformanceBins[targetNodeName];
+                        for (const ts in bins) {
+                            if (!targetBins[ts]) {
+                                targetBins[ts] = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0 };
+                            }
+                            const binData = bins[ts];
+                            targetBins[ts].ingress_bytes += binData.ingress_bytes || 0;
+                            targetBins[ts].egress_bytes += binData.egress_bytes || 0;
+                            targetBins[ts].ingress_pieces += binData.ingress_pieces || 0;
+                            targetBins[ts].egress_pieces += binData.egress_pieces || 0;
+                            targetBins[ts].total_ops += binData.total_ops || 0;
+                        }
+                    };
+                    updateNodeBins(node_name);
+                    updateNodeBins('Aggregate');
                     if (performanceState.range === '5m') {
-                         clearTimeout(chartUpdateTimer);
-                         chartUpdateTimer = setTimeout(updatePerformanceChart, 500);
+                        clearTimeout(chartUpdateTimer);
+                        chartUpdateTimer = setTimeout(updatePerformanceChart, 250);
                     }
                     break;
+                }
                 case 'historical_performance_data': {
                     const view = data.view;
                     const bins = {};

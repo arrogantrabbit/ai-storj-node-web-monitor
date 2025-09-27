@@ -320,7 +320,11 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                 elif "failed" in line or "ERROR" in line: status, error_reason = "failed", log_data.get("error", "unknown error")
 
                 action, size, piece_id, sat_id, remote_addr = log_data.get("Action"), log_data.get("Size"), log_data.get("Piece ID"), log_data.get("Satellite ID"), log_data.get("Remote Address")
-                if not all([action, size, piece_id, sat_id, remote_addr]): continue
+
+                # BUG FIX: The original check `if not all(...)` incorrectly filtered out events with size=0.
+                # This new check validates essential fields while correctly allowing `size` to be 0.
+                if not all([action, piece_id, sat_id, remote_addr]) or size is None:
+                    continue
 
                 remote_ip = remote_addr.split(':')[0]
                 location = geoip_cache.get(remote_ip)
@@ -331,6 +335,15 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                     except geoip2.errors.AddressNotFoundError: location = {"lat": None, "lon": None, "country": "Unknown"}
                     if len(geoip_cache) > MAX_GEOIP_CACHE_SIZE: geoip_cache.pop(next(iter(geoip_cache)))
                     geoip_cache[remote_ip] = location
+
+                # BUG FIX: Use broader, consistent logic to capture all GET/PUT variants (e.g., GET_REPAIR).
+                if 'GET' in action or 'PUT' in action:
+                    node_state['unprocessed_performance_events'].append({
+                        'ts_unix': timestamp_obj.timestamp(),
+                        'action': action,
+                        'status': status,
+                        'size': size
+                    })
 
                 event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason, "node_name": node_name}
                 node_state['live_events'].append(event)
@@ -383,9 +396,10 @@ async def debug_logger_task(app):
     while True:
         await asyncio.sleep(30)
         total_live_events = sum(len(n['live_events']) for n in app_state['nodes'].values())
-        log.info(f"[HEARTBEAT] Clients: {len(app_state['websockets'])}, Live Events: {total_live_events}, DB Queue: {app_state['db_write_queue'].qsize()}")
+        unprocessed_perf_events = sum(len(n['unprocessed_performance_events']) for n in app_state['nodes'].values())
+        log.info(f"[HEARTBEAT] Clients: {len(app_state['websockets'])}, Live Events: {total_live_events}, DB Queue: {app_state['db_write_queue'].qsize()}, Perf Queue: {unprocessed_perf_events}")
         for name, state in app_state['nodes'].items():
-            log.info(f"  -> Node '{name}': {len(state['live_events'])} events")
+            log.info(f"  -> Node '{name}': {len(state['live_events'])} events, {len(state['unprocessed_performance_events'])} perf events")
 
 
 async def prune_live_events_task(app):
@@ -572,7 +586,7 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
                 total_dl_size += size; dls_success[size_bucket] += 1
             else:
                 dl_f += 1; aggregate_error(error_reason); dls_failed[size_bucket] += 1
-        elif action == 'PUT':
+        elif 'PUT' in action:
             size_bucket = get_size_bucket(size)
             sats[sat_id]['uploads'] += 1
             if country: cul[country] += size
@@ -666,6 +680,53 @@ async def periodic_stats_updater(app):
                 await asyncio.gather(*tasks)
         except Exception:
             log.error("Error in periodic_stats_updater:", exc_info=True)
+
+
+async def performance_aggregator_task(app):
+    log.info("Live performance aggregator task started.")
+    while True:
+        await asyncio.sleep(PERFORMANCE_INTERVAL_SECONDS)
+        try:
+            for node_name, node_state in app_state['nodes'].items():
+                # Atomically get and clear the list of unprocessed events
+                events_to_process = node_state['unprocessed_performance_events']
+                node_state['unprocessed_performance_events'] = []
+
+                if not events_to_process:
+                    continue
+
+                bins = {}
+                bin_size_sec = PERFORMANCE_INTERVAL_SECONDS
+
+                for event in events_to_process:
+                    ts_unix = event['ts_unix']
+                    # Bin events into discrete time buckets
+                    binned_timestamp_ms = int(ts_unix / bin_size_sec) * bin_size_sec * 1000
+                    ts_key = str(binned_timestamp_ms)
+
+                    if ts_key not in bins:
+                        bins[ts_key] = { 'ingress_bytes': 0, 'egress_bytes': 0, 'ingress_pieces': 0, 'egress_pieces': 0, 'total_ops': 0 }
+
+                    bin_data = bins[ts_key]
+                    bin_data['total_ops'] += 1
+
+                    if event['status'] == 'success':
+                        action = event['action']
+                        size = event['size']
+                        if 'GET' in action and action != 'GET_AUDIT':
+                            bin_data['egress_bytes'] += size
+                            bin_data['egress_pieces'] += 1
+                        elif 'PUT' in action:
+                            bin_data['ingress_bytes'] += size
+                            bin_data['ingress_pieces'] += 1
+
+                if bins:
+                    payload = { "type": "performance_batch_update", "node_name": node_name, "bins": bins }
+                    # This broadcast is smart enough to send to 'Aggregate' viewers as well
+                    await robust_broadcast(app_state['websockets'], payload, node_name=node_name)
+
+        except Exception:
+            log.error("Error in performance_aggregator_task:", exc_info=True)
 
 
 async def handle_index(request): return web.FileResponse('./index.html')
@@ -912,7 +973,8 @@ def load_initial_state_from_db(nodes_config: Dict[str, str]):
             node_state = {
                 'live_events': deque(),
                 'active_compactions': {},
-                'hashstore_stats': {}
+                'hashstore_stats': {},
+                'unprocessed_performance_events': []
             }
             log.info(f"Re-hydrating live events for node '{node_name}' since {cutoff_datetime.isoformat()}")
             cursor.execute(
@@ -1024,13 +1086,17 @@ async def start_background_tasks(app):
     for node_name, log_path in app['nodes'].items():
         if node_name not in app_state['nodes']:
              app_state['nodes'][node_name] = {
-                'live_events': deque(), 'active_compactions': {}, 'hashstore_stats': {}
+                'live_events': deque(),
+                'active_compactions': {},
+                'hashstore_stats': {},
+                'unprocessed_performance_events': []
             }
         app['tasks'].append(asyncio.create_task(log_tailer_task(app, node_name, log_path)))
 
     app['tasks'].extend([
         asyncio.create_task(prune_live_events_task(app)),
         asyncio.create_task(periodic_stats_updater(app)),
+        asyncio.create_task(performance_aggregator_task(app)),
         asyncio.create_task(debug_logger_task(app)),
         asyncio.create_task(database_writer_task(app)),
         asyncio.create_task(hourly_aggregator_task(app)),
