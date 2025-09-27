@@ -404,6 +404,9 @@ async def performance_calculator(app, node_name: str):
         if elapsed_seconds <= 0 or elapsed_seconds > (PERFORMANCE_INTERVAL_SECONDS * 5):
             elapsed_seconds = PERFORMANCE_INTERVAL_SECONDS
 
+        # Added for debugging, as requested. This will show the variability.
+        log.info(f"[PERF_CALC:{node_name}] Elapsed seconds: {elapsed_seconds:.4f}")
+
         current_event_count = len(node_state['live_events'])
         start_index = node_state['last_perf_event_index']
         new_events_to_process = [node_state['live_events'][i] for i in range(start_index, current_event_count)]
@@ -425,20 +428,21 @@ async def performance_calculator(app, node_name: str):
                     ingress_bytes += event['size']
                     ingress_pieces += 1
 
-        ingress_mbps = (ingress_bytes * 8) / (elapsed_seconds * 1e6)
-        egress_mbps = (egress_bytes * 8) / (elapsed_seconds * 1e6)
+        # This calculation is now removed from the backend payload.
+        # ingress_mbps = (ingress_bytes * 8) / (elapsed_seconds * 1e6)
+        # egress_mbps = (egress_bytes * 8) / (elapsed_seconds * 1e6)
 
+        # --- FIX: Send raw data instead of pre-calculated rate ---
         payload = {
             "type": "performance_update",
             "node_name": node_name,
             "timestamp": datetime.datetime.fromtimestamp(now, tz=datetime.UTC).isoformat(),
-            "ingress_mbps": round(ingress_mbps, 2),
-            "egress_mbps": round(egress_mbps, 2),
             "ingress_bytes": ingress_bytes,
             "egress_bytes": egress_bytes,
             "ingress_pieces": ingress_pieces,
             "egress_pieces": egress_pieces,
-            "concurrency": concurrency
+            "concurrency": concurrency,
+            "elapsed_seconds": elapsed_seconds # Send the actual time delta
         }
         await robust_broadcast(app_state['websockets'], payload, node_name=node_name)
 

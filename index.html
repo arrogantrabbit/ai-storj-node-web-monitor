@@ -919,7 +919,19 @@
                     const binnedTimestamp = Math.floor(new Date(metrics.timestamp).getTime() / PERFORMANCE_INTERVAL_MS) * PERFORMANCE_INTERVAL_MS;
                     const binnedNow = new Date(binnedTimestamp);
 
-                    const metricMap = { rate: [metrics.ingress_mbps, metrics.egress_mbps], volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6], pieces: [metrics.ingress_pieces, metrics.egress_pieces], concurrency: [metrics.concurrency] };
+                    // --- FIX: Calculate rate on the frontend using actual elapsed time ---
+                    const elapsed = metrics.elapsed_seconds > 0 ? metrics.elapsed_seconds : (PERFORMANCE_INTERVAL_MS / 1000);
+                    const ingress_mbps = (metrics.ingress_bytes * 8) / (elapsed * 1e6);
+                    const egress_mbps = (metrics.egress_bytes * 8) / (elapsed * 1e6);
+
+                    const metricMap = {
+                        rate: [ingress_mbps, egress_mbps],
+                        volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6],
+                        pieces: [metrics.ingress_pieces, metrics.egress_pieces],
+                        concurrency: [metrics.concurrency]
+                    };
+                    // --- END FIX ---
+
                     const updateOrPushPoint = (series, point) => { const lastPoint = series.length > 0 ? series[series.length - 1] : null; if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) { lastPoint.y = point.y; } else { series.push(point); if (series.length > MAX_PERF_POINTS) { series.shift(); } } };
 
                     Object.keys(metricMap).forEach(metric => {
