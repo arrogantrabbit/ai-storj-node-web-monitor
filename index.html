@@ -876,16 +876,18 @@
             dataToRender.sort((a, b) => {
                 let valA = a[column];
                 let valB = b[column];
-                // Handle special case for Infinity in reclaim_efficiency
-                if (column === 'reclaim_efficiency') {
-                    if (valA === Infinity) valA = Number.MAX_SAFE_INTEGER;
-                    if (valB === Infinity) valB = Number.MAX_SAFE_INTEGER;
-                }
-                if (typeof valA === 'string') {
-                    return direction === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
-                } else {
+
+                if (typeof valA === 'number' && typeof valB === 'number') {
+                    if (column === 'reclaim_efficiency') {
+                        if (valA === Infinity) valA = Number.MAX_SAFE_INTEGER;
+                        if (valB === Infinity) valB = Number.MAX_SAFE_INTEGER;
+                    }
                     return direction === 'asc' ? valA - valB : valB - valA;
                 }
+
+                const strA = String(valA || '');
+                const strB = String(valB || '');
+                return direction === 'asc' ? strA.localeCompare(strB) : strB.localeCompare(strA);
             });
 
             // 4. Render
@@ -930,7 +932,6 @@
                 row.insertCell(cellIndex++).textContent = item.store;
 
                 const lastRunCell = row.insertCell(cellIndex++);
-                lastRunCell.className = 'numeric';
                 lastRunCell.textContent = new Date(item.last_run_iso).toLocaleTimeString();
 
                 const durationCell = row.insertCell(cellIndex++);
