@@ -51,7 +51,7 @@ NodeState = Dict[str, Any]
 
 # --- In-Memory State ---
 app_state: Dict[str, Any] = {
-    'websockets': {},  # {ws: {"view": "Aggregate"}}
+    'websockets': {},  # {ws: {"view": ["Aggregate"]}}
     'nodes': {},  # { "node_name": NodeState }
     'geoip_cache': {},
     'db_write_lock': asyncio.Lock(),  # Lock to serialize DB write operations
@@ -205,9 +205,8 @@ async def robust_broadcast(websockets_dict, payload, node_name: Optional[str] = 
     tasks = []
     # If this is a node-specific message, filter the recipients
     if node_name:
-        recipients = {
-            ws for ws, state in websockets_dict.items()
-            if state.get("view") == "Aggregate" or state.get("view") == node_name
+        recipients = { ws for ws, state in websockets_dict.items()
+            if state.get("view") and (state.get("view") == ["Aggregate"] or node_name in state.get("view"))
         }
     else: # Broadcast to all
         recipients = set(websockets_dict.keys())
@@ -498,21 +497,23 @@ async def database_pruner_task(app):
         await asyncio.sleep(3600 * DB_PRUNE_INTERVAL_HOURS)
 
 
-def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
+def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState]):
     events_copy = []
     hashstore_stats = []
-    if view == 'Aggregate':
-        for node_name, node_state in all_nodes_state.items():
+
+    nodes_to_process = view
+    if view == ['Aggregate']:
+        nodes_to_process = list(all_nodes_state.keys())
+
+    for node_name in nodes_to_process:
+        if node_name in all_nodes_state:
+            node_state = all_nodes_state[node_name]
             events_copy.extend(list(node_state['live_events']))
+
             for key, stats in node_state['hashstore_stats'].items():
                 stat_copy = stats.copy()
-                stat_copy['node_name'] = node_name
+                stat_copy['node_name'] = node_name  # Always add node_name for multi-node views
                 hashstore_stats.append(stat_copy)
-    elif view in all_nodes_state:
-        events_copy = list(all_nodes_state[view]['live_events'])
-        for key, stats in all_nodes_state[view]['hashstore_stats'].items():
-             hashstore_stats.append(stats)
-
 
     if not events_copy:
         if hashstore_stats:
@@ -599,19 +600,24 @@ def blocking_prepare_stats(view: str, all_nodes_state: Dict[str, NodeState]):
     hist_stats = []
     with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
         conn.row_factory = sqlite3.Row
-        if view == 'Aggregate':
-             raw_hist_stats = conn.execute("""
+
+        nodes_for_hist = view
+        if view == ['Aggregate']:
+            nodes_for_hist = list(all_nodes_state.keys())
+
+        if nodes_for_hist:
+            placeholders = ','.join('?' for _ in nodes_for_hist)
+            raw_hist_stats = conn.execute(f"""
                 SELECT hour_timestamp,
                        SUM(dl_success) as dl_success, SUM(dl_fail) as dl_fail,
                        SUM(ul_success) as ul_success, SUM(ul_fail) as ul_fail,
                        SUM(audit_success) as audit_success, SUM(audit_fail) as audit_fail,
                        SUM(total_download_size) as total_download_size, SUM(total_upload_size) as total_upload_size
-                FROM hourly_stats
-                GROUP BY hour_timestamp
-                ORDER BY hour_timestamp DESC LIMIT ?
-             """, (HISTORICAL_HOURS_TO_SHOW,)).fetchall()
+                FROM hourly_stats WHERE node_name IN ({placeholders})
+                GROUP BY hour_timestamp ORDER BY hour_timestamp DESC LIMIT ?
+            """, (*nodes_for_hist, HISTORICAL_HOURS_TO_SHOW)).fetchall()
         else:
-            raw_hist_stats = conn.execute("SELECT * FROM hourly_stats WHERE node_name = ? ORDER BY hour_timestamp DESC LIMIT ?", (view, HISTORICAL_HOURS_TO_SHOW,)).fetchall()
+            raw_hist_stats = []
 
         for row in raw_hist_stats:
             d_row = dict(row)
@@ -805,11 +811,13 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
     log.info(f"Returning {len(filled_results)} historical performance data points from in-memory events.")
     return filled_results
 
-def blocking_get_aggregated_performance(node_name: str, time_window_hours: int) -> List[Dict[str, Any]]:
-    log.info(f"Fetching AGGREGATED performance for node '{node_name}' (last {time_window_hours} hours).")
+def blocking_get_aggregated_performance(node_names: List[str], time_window_hours: int) -> List[Dict[str, Any]]:
+    if not node_names: return []
+    log.info(f"Fetching AGGREGATED performance for nodes {node_names} (last {time_window_hours} hours).")
     now_dt = datetime.datetime.now(datetime.UTC)
     start_time = now_dt - datetime.timedelta(hours=time_window_hours)
     start_time_iso = start_time.isoformat()
+    placeholders = ','.join('?' * len(node_names))
 
     if time_window_hours <= 1: bin_size_min = 2
     elif time_window_hours <= 6: bin_size_min = 10
@@ -820,11 +828,29 @@ def blocking_get_aggregated_performance(node_name: str, time_window_hours: int) 
     with sqlite3.connect(DATABASE_FILE, timeout=20, detect_types=0) as conn:
         conn.row_factory = sqlite3.Row; cursor = conn.cursor()
         if time_window_hours > 6:
-            query = """SELECT hour_timestamp as time_bucket_start_iso, total_upload_size as ingress_bytes, total_download_size as egress_bytes, ul_success as ingress_pieces, dl_success as egress_pieces, (dl_success + dl_fail + ul_success + ul_fail + audit_success + audit_fail) as total_ops FROM hourly_stats WHERE hour_timestamp >= ? AND node_name = ? ORDER BY hour_timestamp ASC"""
-            params = [start_time_iso, node_name]; actual_bin_sec = 3600
+            query = f"""
+                SELECT hour_timestamp as time_bucket_start_iso,
+                       SUM(total_upload_size) as ingress_bytes,
+                       SUM(total_download_size) as egress_bytes,
+                       SUM(ul_success) as ingress_pieces, SUM(dl_success) as egress_pieces,
+                       SUM(dl_success + dl_fail + ul_success + ul_fail + audit_success + audit_fail) as total_ops
+                FROM hourly_stats WHERE hour_timestamp >= ? AND node_name IN ({placeholders})
+                GROUP BY hour_timestamp ORDER BY hour_timestamp ASC
+            """
+            params = [start_time_iso, *node_names]
+            actual_bin_sec = 3600
         else:
-            query = f"""SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes, SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces, SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces, COUNT(*) as total_ops FROM events WHERE timestamp >= ? AND node_name = ? GROUP BY time_bucket_start ORDER BY time_bucket_start ASC"""
-            params = [bin_sec, bin_sec, start_time_iso, node_name]; actual_bin_sec = bin_sec
+            query = f"""
+                SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start,
+                       SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes,
+                       SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes,
+                       SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces,
+                       SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces,
+                       COUNT(*) as total_ops FROM events WHERE timestamp >= ? AND node_name IN ({placeholders})
+                GROUP BY time_bucket_start ORDER BY time_bucket_start ASC
+            """
+            params = [bin_sec, bin_sec, start_time_iso, *node_names]
+            actual_bin_sec = bin_sec
 
         for row in cursor.execute(query, params).fetchall():
             row_dict = dict(row)
@@ -840,58 +866,20 @@ def blocking_get_aggregated_performance(node_name: str, time_window_hours: int) 
             })
 
     filled_results = _zero_fill_performance_data(sparse_results, start_time.timestamp(), now_dt.timestamp(), actual_bin_sec)
-    log.info(f"Returning {len(filled_results)} aggregated performance data points for node '{node_name}'.")
-    return filled_results
-
-def blocking_get_aggregated_performance_for_all(time_window_hours: int) -> List[Dict[str, Any]]:
-    log.info(f"Fetching AGGREGATED performance for ALL NODES (last {time_window_hours} hours).")
-    now_dt = datetime.datetime.now(datetime.UTC)
-    start_time = now_dt - datetime.timedelta(hours=time_window_hours)
-    start_time_iso = start_time.isoformat()
-
-    if time_window_hours <= 1: bin_size_min = 2
-    elif time_window_hours <= 6: bin_size_min = 10
-    else: bin_size_min = 30
-    bin_sec = bin_size_min * 60
-
-    sparse_results = []
-    with sqlite3.connect(DATABASE_FILE, timeout=20, detect_types=0) as conn:
-        conn.row_factory = sqlite3.Row; cursor = conn.cursor()
-        if time_window_hours > 6:
-            query = """SELECT hour_timestamp as time_bucket_start_iso, SUM(total_upload_size) as ingress_bytes, SUM(total_download_size) as egress_bytes, SUM(ul_success) as ingress_pieces, SUM(dl_success) as egress_pieces, SUM(dl_success + dl_fail + ul_success + ul_fail + audit_success + audit_fail) as total_ops FROM hourly_stats WHERE hour_timestamp >= ? GROUP BY hour_timestamp ORDER BY hour_timestamp ASC"""
-            params = [start_time_iso]; actual_bin_sec = 3600
-        else:
-            query = f"""SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes, SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces, SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces, COUNT(*) as total_ops FROM events WHERE timestamp >= ? GROUP BY time_bucket_start ORDER BY time_bucket_start ASC"""
-            params = [bin_sec, bin_sec, start_time_iso]; actual_bin_sec = bin_sec
-
-        for row in cursor.execute(query, params).fetchall():
-            row_dict = dict(row)
-            ts_unix = row_dict.get('time_bucket_start')
-            iso_ts = row_dict.get('time_bucket_start_iso') or datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat()
-            sparse_results.append({
-                "timestamp": iso_ts,
-                "ingress_mbps": round((row_dict.get('ingress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2), "egress_mbps": round((row_dict.get('egress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
-                "ingress_bytes": row_dict.get('ingress_bytes', 0), "egress_bytes": row_dict.get('egress_bytes', 0),
-                "ingress_pieces": row_dict.get('ingress_pieces', 0), "egress_pieces": row_dict.get('egress_pieces', 0),
-                "concurrency": round(row_dict.get('total_ops', 0) / actual_bin_sec, 2) if actual_bin_sec > 0 else 0,
-                "total_ops": row_dict.get('total_ops', 0), "bin_duration_seconds": actual_bin_sec
-            })
-
-    filled_results = _zero_fill_performance_data(sparse_results, start_time.timestamp(), now_dt.timestamp(), actual_bin_sec)
-    log.info(f"Returning {len(filled_results)} aggregated performance data points for ALL NODES.")
+    log.info(f"Returning {len(filled_results)} aggregated performance data points for nodes {node_names}.")
     return filled_results
 
 async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=10)
     await ws.prepare(request)
     app = request.app
-    app_state['websockets'][ws] = {"view": "Aggregate"}
+    app_state['websockets'][ws] = {"view": ["Aggregate"]}
 
     log.info(f"WebSocket client connected. Total clients: {len(app_state['websockets'])}")
 
-    node_names = ["Aggregate"] + list(app['nodes'].keys())
+    node_names = list(app['nodes'].keys())
     await ws.send_json({"type": "init", "nodes": node_names})
-    await send_stats_for_view(app, ws, "Aggregate")
+    await send_stats_for_view(app, ws, ["Aggregate"])
 
     try:
         async for msg in ws:
@@ -902,24 +890,29 @@ async def websocket_handler(request):
 
                     if msg_type == 'set_view':
                         new_view = data.get('view')
-                        if new_view in node_names:
-                            app_state['websockets'][ws]['view'] = new_view
-                            log.info(f"Client switched view to: {new_view}")
-                            await send_stats_for_view(app, ws, new_view)
+                        if isinstance(new_view, list) and new_view:
+                            valid_nodes = set(app['nodes'].keys())
+                            is_aggregate = new_view == ['Aggregate']
+                            are_nodes_valid = all(node in valid_nodes for node in new_view)
+
+                            if is_aggregate or are_nodes_valid:
+                                app_state['websockets'][ws]['view'] = new_view
+                                log.info(f"Client switched view to: {new_view}")
+                                await send_stats_for_view(app, ws, new_view)
 
                     elif msg_type == 'get_historical_performance':
-                        view = data.get('view')
+                        view = data.get('view') # This is now a list
                         points = data.get('points', 150)
                         interval = data.get('interval_sec', PERFORMANCE_INTERVAL_SECONDS)
                         loop = asyncio.get_running_loop()
 
                         # Collect events from the correct in-memory source to ensure consistency
                         events_to_process = []
-                        if view == 'Aggregate':
-                             for node_state in app_state['nodes'].values():
-                                events_to_process.extend(list(node_state['live_events']))
-                        elif view in app_state['nodes']:
-                            events_to_process = list(app_state['nodes'][view]['live_events'])
+                        nodes_to_query = view if view != ['Aggregate'] else list(app_state['nodes'].keys())
+
+                        for node_name in nodes_to_query:
+                            if node_name in app_state['nodes']:
+                                events_to_process.extend(list(app_state['nodes'][node_name]['live_events']))
 
                         # Call the modified blocking function with the in-memory event data
                         historical_data = await loop.run_in_executor(
@@ -930,21 +923,16 @@ async def websocket_handler(request):
                         await ws.send_json(payload)
 
                     elif msg_type == 'get_aggregated_performance':
-                        view = data.get('view')
+                        view = data.get('view') # This is a list
                         time_window_hours = data.get('hours', 1)
                         loop = asyncio.get_running_loop()
 
-                        if view == 'Aggregate':
-                            aggregated_data = await loop.run_in_executor(
-                                app['db_executor'], blocking_get_aggregated_performance_for_all,
-                                time_window_hours
-                            )
-                        else:
-                            aggregated_data = await loop.run_in_executor(
-                                app['db_executor'], blocking_get_aggregated_performance,
-                                view, time_window_hours
-                            )
+                        nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
 
+                        aggregated_data = await loop.run_in_executor(
+                            app['db_executor'], blocking_get_aggregated_performance,
+                            nodes_to_query, time_window_hours
+                        )
 
                         payload = {"type": "aggregated_performance_data", "view": view, "performance_data": aggregated_data}
                         await ws.send_json(payload)
