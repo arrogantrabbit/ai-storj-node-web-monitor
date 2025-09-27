@@ -738,21 +738,16 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
     if not events:
         return []
 
-    # --- FIX: Filter events to the requested time window (e.g., last 5 minutes) ---
     now_unix = time.time()
     time_window_seconds = points * interval_sec
     cutoff_unix = now_unix - time_window_seconds
     recent_events = [e for e in events if e.get('ts_unix', 0) >= cutoff_unix]
     log.info(f"Filtered to {len(recent_events)} events within the last {time_window_seconds} seconds.")
-    # --- END FIX ---
 
-    # Create time buckets to aggregate events
     buckets: Dict[int, Dict[str, int]] = {}
 
-    # --- FIX: Iterate over filtered recent_events, not the full events list ---
     for event in recent_events:
-        # Ensure event has the necessary keys and is a successful transfer for rate calculation
-        if 'ts_unix' not in event or event.get('status') != 'success':
+        if 'ts_unix' not in event:
             continue
 
         ts_unix = event['ts_unix']
@@ -761,22 +756,25 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
         if bucket_start_unix not in buckets:
             buckets[bucket_start_unix] = {
                 'ingress_bytes': 0, 'egress_bytes': 0,
-                'ingress_pieces': 0, 'egress_pieces': 0
+                'ingress_pieces': 0, 'egress_pieces': 0,
+                'total_ops': 0
             }
 
         bucket = buckets[bucket_start_unix]
-        action = event.get('action', '')
-        size = event.get('size', 0)
+        bucket['total_ops'] += 1
 
-        if 'GET' in action and action != 'GET_AUDIT':
-            bucket['egress_bytes'] += size
-            bucket['egress_pieces'] += 1
-        elif 'PUT' in action:
-            bucket['ingress_bytes'] += size
-            bucket['ingress_pieces'] += 1
+        if event.get('status') == 'success':
+            action = event.get('action', '')
+            size = event.get('size', 0)
+
+            if 'GET' in action and action != 'GET_AUDIT':
+                bucket['egress_bytes'] += size
+                bucket['egress_pieces'] += 1
+            elif 'PUT' in action:
+                bucket['ingress_bytes'] += size
+                bucket['ingress_pieces'] += 1
 
     results = []
-    # Sort buckets by timestamp and format the output
     for ts_unix, data in sorted(buckets.items()):
         ingress_mbps = (data['ingress_bytes'] * 8) / (interval_sec * 1e6)
         egress_mbps = (data['egress_bytes'] * 8) / (interval_sec * 1e6)
@@ -789,7 +787,7 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
             "egress_bytes": data['egress_bytes'],
             "ingress_pieces": data['ingress_pieces'],
             "egress_pieces": data['egress_pieces'],
-            "concurrency": 0  # Concurrency is a live-only metric from the calculator task
+            "concurrency": data['total_ops']
         })
 
     log.info(f"Returning {len(results)} historical performance data points from in-memory events.")
@@ -824,7 +822,8 @@ def blocking_get_aggregated_performance(node_name: str, time_window_hours: int) 
                     total_upload_size as ingress_bytes,
                     total_download_size as egress_bytes,
                     ul_success as ingress_pieces,
-                    dl_success as egress_pieces
+                    dl_success as egress_pieces,
+                    (dl_success + dl_fail + ul_success + ul_fail + audit_success + audit_fail) as total_ops
                 FROM hourly_stats
                 WHERE hour_timestamp >= ? AND node_name = ?
                 ORDER BY hour_timestamp ASC
@@ -838,7 +837,8 @@ def blocking_get_aggregated_performance(node_name: str, time_window_hours: int) 
                     SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes,
                     SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes,
                     SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces,
-                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces
+                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces,
+                    COUNT(*) as total_ops
                 FROM events
                 WHERE timestamp >= ? AND node_name = ?
                 GROUP BY time_bucket_start ORDER BY time_bucket_start ASC
@@ -859,7 +859,7 @@ def blocking_get_aggregated_performance(node_name: str, time_window_hours: int) 
                 "egress_bytes": row_dict.get('egress_bytes', 0),
                 "ingress_pieces": row_dict.get('ingress_pieces', 0),
                 "egress_pieces": row_dict.get('egress_pieces', 0),
-                "concurrency": 0
+                "concurrency": row_dict.get('total_ops', 0)
             })
 
     log.info(f"Returning {len(results)} aggregated performance data points for node '{node_name}'.")
@@ -887,7 +887,8 @@ def blocking_get_aggregated_performance_for_all(time_window_hours: int) -> List[
                     SUM(total_upload_size) as ingress_bytes,
                     SUM(total_download_size) as egress_bytes,
                     SUM(ul_success) as ingress_pieces,
-                    SUM(dl_success) as egress_pieces
+                    SUM(dl_success) as egress_pieces,
+                    SUM(dl_success + dl_fail + ul_success + ul_fail + audit_success + audit_fail) as total_ops
                 FROM hourly_stats WHERE hour_timestamp >= ?
                 GROUP BY hour_timestamp ORDER BY hour_timestamp ASC
             """
@@ -900,7 +901,8 @@ def blocking_get_aggregated_performance_for_all(time_window_hours: int) -> List[
                     SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes,
                     SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes,
                     SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces,
-                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces
+                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces,
+                    COUNT(*) as total_ops
                 FROM events WHERE timestamp >= ?
                 GROUP BY time_bucket_start ORDER BY time_bucket_start ASC
             """
@@ -919,7 +921,7 @@ def blocking_get_aggregated_performance_for_all(time_window_hours: int) -> List[
                 "egress_bytes": row_dict.get('egress_bytes', 0),
                 "ingress_pieces": row_dict.get('ingress_pieces', 0),
                 "egress_pieces": row_dict.get('egress_pieces', 0),
-                "concurrency": 0
+                "concurrency": row_dict.get('total_ops', 0)
             })
     log.info(f"Returning {len(results)} aggregated performance data points for ALL NODES.")
     return results
