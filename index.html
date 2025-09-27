@@ -709,16 +709,18 @@
                 };
             });
 
-            // Only reconfigure the entire chart object if the view mode has changed.
+            // --- Pre-calculate data for both views ---
+            const downloadSuccessRate = processedData.map(d => { const total = d.dl_s + d.dl_f; return total > 0 ? (d.dl_s / total * 100) : 0; });
+            const uploadSuccessRate = processedData.map(d => { const total = d.ul_s + d.ul_f; return total > 0 ? (d.ul_s / total * 100) : 0; });
+
+            // --- Reconfigure the chart object only if the view mode has changed ---
             if (sizeViewIsPercentage !== sizeBarChart.isRateView) {
                 if (sizeViewIsPercentage) {
                     // --- RECONFIGURE FOR SUCCESS RATE VIEW (Grouped) ---
                     sizeBarChart.options.scales.x.stacked = false;
                     sizeBarChart.options.scales.y.stacked = false;
                     sizeBarChart.options.scales.y.title.text = 'Success Rate (%)';
-                    sizeBarChart.options.scales.y.min = 95; // Force the scale to focus on the top range
                     sizeBarChart.options.scales.y.max = 100;
-
                     sizeBarChart.data.datasets = [
                         { label: 'Download Success Rate', data: [], backgroundColor: DOWNLOAD_COLOR },
                         { label: 'Upload Success Rate', data: [], backgroundColor: UPLOAD_COLOR }
@@ -729,15 +731,13 @@
                         if (item.datasetIndex === 0) return `Raw Count: ${data.dl_s} / ${data.dl_s + data.dl_f}`;
                         else return `Raw Count: ${data.ul_s} / ${data.ul_s + data.ul_f}`;
                     };
-
                 } else {
                     // --- RECONFIGURE FOR COUNT VIEW (Stacked) ---
                     sizeBarChart.options.scales.x.stacked = true;
                     sizeBarChart.options.scales.y.stacked = true;
                     sizeBarChart.options.scales.y.title.text = 'Count';
-                    delete sizeBarChart.options.scales.y.min; // Use 'min' not 'suggestedMin'
+                    delete sizeBarChart.options.scales.y.min;
                     delete sizeBarChart.options.scales.y.max;
-
                     sizeBarChart.data.datasets = [
                         { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
                         { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
@@ -753,10 +753,17 @@
                 sizeBarChart.isRateView = sizeViewIsPercentage;
             }
 
-            // --- ALWAYS UPDATE DATA (for smooth animations on refresh) ---
+            // --- ALWAYS UPDATE DATA & DYNAMIC OPTIONS ---
             if (sizeViewIsPercentage) {
-                sizeBarChart.data.datasets[0].data = processedData.map(d => { const total = d.dl_s + d.dl_f; return total > 0 ? (d.dl_s / total * 100) : 0; });
-                sizeBarChart.data.datasets[1].data = processedData.map(d => { const total = d.ul_s + d.ul_f; return total > 0 ? (d.ul_s / total * 100) : 0; });
+                // Dynamically calculate the Y-axis minimum to ensure all data is visible
+                const allRates = downloadSuccessRate.concat(uploadSuccessRate).filter(r => r > 0);
+                const minRate = allRates.length > 0 ? Math.min(...allRates) : 95;
+
+                // The fix: Set the axis minimum. Give it a bit of padding if it's below 95.
+                sizeBarChart.options.scales.y.min = Math.floor(Math.min(95, minRate < 95 ? minRate - 1 : 95));
+
+                sizeBarChart.data.datasets[0].data = downloadSuccessRate;
+                sizeBarChart.data.datasets[1].data = uploadSuccessRate;
             } else {
                 sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s);
                 sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s);
