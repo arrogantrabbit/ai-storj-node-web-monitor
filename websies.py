@@ -26,7 +26,7 @@ from typing import Deque, Dict, Any, List, Set, Optional
 
 
 # --- Centralized Logging Configuration ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+# Set up later in main after parsing args
 log = logging.getLogger("StorjMonitor")
 
 # --- Configuration ---
@@ -385,52 +385,7 @@ async def debug_logger_task(app):
         total_live_events = sum(len(n['live_events']) for n in app_state['nodes'].values())
         log.info(f"[HEARTBEAT] Clients: {len(app_state['websockets'])}, Live Events: {total_live_events}, DB Queue: {app_state['db_write_queue'].qsize()}")
         for name, state in app_state['nodes'].items():
-            log.info(f"  -> Node '{name}': {len(state['live_events'])} events, Perf Index: {state['last_perf_event_index']}")
-
-
-async def performance_calculator(app, node_name: str):
-    log.info(f"Performance calculator task started for node: {node_name}")
-    node_state = app_state['nodes'][node_name]
-
-    while True:
-        await asyncio.sleep(PERFORMANCE_INTERVAL_SECONDS)
-
-        now = time.time()
-        last_run_time = node_state.get('last_perf_calc_time', now)
-        node_state['last_perf_calc_time'] = now
-        elapsed_seconds = now - last_run_time
-
-        if elapsed_seconds <= 0.1:
-            elapsed_seconds = PERFORMANCE_INTERVAL_SECONDS
-
-        current_event_count = len(node_state['live_events'])
-        start_index = node_state['last_perf_event_index']
-        new_events_to_process = [node_state['live_events'][i] for i in range(start_index, current_event_count)]
-        node_state['last_perf_event_index'] = current_event_count
-
-        ingress_bytes, egress_bytes, ingress_pieces, egress_pieces = 0, 0, 0, 0
-
-        for event in new_events_to_process:
-            if event['status'] == 'success':
-                if 'GET' in event['action'] and event['action'] != 'GET_AUDIT':
-                    egress_bytes += event['size']
-                    egress_pieces += 1
-                elif 'PUT' in event['action']:
-                    ingress_bytes += event['size']
-                    ingress_pieces += 1
-
-        payload = {
-            "type": "performance_update",
-            "node_name": node_name,
-            "timestamp": datetime.datetime.fromtimestamp(now, tz=datetime.UTC).isoformat(),
-            "ingress_bytes": ingress_bytes,
-            "egress_bytes": egress_bytes,
-            "ingress_pieces": ingress_pieces,
-            "egress_pieces": egress_pieces,
-            "total_ops": len(new_events_to_process),
-            "elapsed_seconds": elapsed_seconds
-        }
-        await robust_broadcast(app_state['websockets'], payload, node_name=node_name)
+            log.info(f"  -> Node '{name}': {len(state['live_events'])} events")
 
 
 async def prune_live_events_task(app):
@@ -444,9 +399,7 @@ async def prune_live_events_task(app):
                 node_state['live_events'].popleft()
                 events_to_prune_count += 1
             if events_to_prune_count > 0:
-                old_index = node_state['last_perf_event_index']
-                node_state['last_perf_event_index'] = max(0, old_index - events_to_prune_count)
-                log.info(f"[PRUNER] Node '{node_name}': Pruned {events_to_prune_count} events. Adjusted perf_index from {old_index} to {node_state['last_perf_event_index']}.")
+                log.info(f"[PRUNER] Node '{node_name}': Pruned {events_to_prune_count} events.")
 
 
 def blocking_hourly_aggregation(node_names: List[str]):
@@ -958,7 +911,6 @@ def load_initial_state_from_db(nodes_config: Dict[str, str]):
         for node_name in nodes_config.keys():
             node_state = {
                 'live_events': deque(),
-                'last_perf_event_index': 0,
                 'active_compactions': {},
                 'hashstore_stats': {}
             }
@@ -984,7 +936,6 @@ def load_initial_state_from_db(nodes_config: Dict[str, str]):
                 except Exception:
                     log.error(f"Failed to process a database row for re-hydration.", exc_info=True)
 
-            node_state['last_perf_event_index'] = rehydrated_events
             if rehydrated_events > 0:
                 log.info(f"Successfully re-hydrated {rehydrated_events} live events for node '{node_name}'.")
 
@@ -1073,13 +1024,9 @@ async def start_background_tasks(app):
     for node_name, log_path in app['nodes'].items():
         if node_name not in app_state['nodes']:
              app_state['nodes'][node_name] = {
-                'live_events': deque(), 'last_perf_event_index': 0,
-                'active_compactions': {}, 'hashstore_stats': {}
+                'live_events': deque(), 'active_compactions': {}, 'hashstore_stats': {}
             }
-        # Initialize the timer for the performance calculator
-        app_state['nodes'][node_name]['last_perf_calc_time'] = time.time()
         app['tasks'].append(asyncio.create_task(log_tailer_task(app, node_name, log_path)))
-        app['tasks'].append(asyncio.create_task(performance_calculator(app, node_name)))
 
     app['tasks'].extend([
         asyncio.create_task(prune_live_events_task(app)),
@@ -1120,7 +1067,11 @@ def parse_nodes(args: List[str]) -> Dict[str, str]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Storagenode Pro Monitor")
     parser.add_argument('--node', action='append', help="Specify a node in 'NodeName:/path/to/log.log' format. Can be used multiple times.", required=True)
+    parser.add_argument('--debug', action='store_true', help="Enable debug logging.")
     args = parser.parse_args()
+
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(level=log_level, format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
     init_db()
     app = web.Application()
