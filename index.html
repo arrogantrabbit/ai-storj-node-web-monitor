@@ -9,9 +9,11 @@
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color 0.3s, color 0.3s; }
         .container { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; max-width: 1800px; margin: auto; }
-        .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s; }
-        .header-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 0; flex-wrap: wrap; }
+        .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s, grid-column 0.3s ease, grid-row 0.3s ease; }
+        .header-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 0; flex-wrap: wrap; gap: 20px; }
         h1 { margin: 0; font-size: 1.8em; color: #1c1e21; }
+        
+        .header-controls { display: flex; align-items: center; gap: 20px; }
         #node-selector { font-size: 1em; padding: 8px; border-radius: 6px; }
         #node-selector .node-link { margin: 2px 4px; padding: 4px 8px; border-radius: 4px; border: 1px solid transparent; display: inline-block; text-decoration: none; color: #007bff; cursor: pointer; }
         #node-selector .node-link:hover { background-color: rgba(0,0,0,0.05); border-color: #ddd; }
@@ -28,16 +30,8 @@
         .card-content { flex-grow: 1; }
         .table-container { overflow-x: auto; }
 
-        #map-card { grid-column: 1 / 8; grid-row: 2 / 4; }
+        /* Note: grid-column and grid-row for cards are now set dynamically by JavaScript */
         #map { height: 620px; border-radius: 8px; background-color: #aad3df; }
-        #stats-card { grid-column: 8 / 13; grid-row: 2 / 3; }
-        #health-card { grid-column: 8 / 13; grid-row: 3 / 4; }
-        #performance-card { grid-column: 1 / 7; grid-row: 4 / 5; }
-        #satellite-card { grid-column: 7 / 13; grid-row: 4 / 5; }
-        #analysis-card { grid-column: 1 / -1; grid-row: 5 / 6; }
-        #size-charts-card { grid-column: 1 / -1; grid-row: 6 / 7; }
-        #hashstore-card { grid-column: 1 / -1; grid-row: 7 / 8; }
-
 
         .stat { text-align: center; }
         .stat-value { font-size: 2em; font-weight: bold; }
@@ -99,6 +93,37 @@
         #map-card.maximized .card-header-flex { margin-bottom: 10px; }
         #map-card.maximized #map { height: calc(100% - 50px); }
 
+        .card.is-hidden { display: none; }
+
+        /* --- New Display Menu Styles --- */
+        #display-menu-container { position: relative; }
+        #display-menu-btn {
+            font-size: 0.9em;
+            padding: 8px 12px;
+            border-radius: 6px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        #display-menu-btn:hover { background-color: #e9ecef; }
+        #display-menu-dropdown {
+            position: absolute;
+            top: calc(100% + 5px);
+            right: 0;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 15px;
+            z-index: 1001;
+            min-width: 280px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            display: none;
+        }
+        #display-menu-dropdown.visible { display: block; }
+        #display-menu-dropdown h5 { margin-top: 0; margin-bottom: 10px; font-size: 1em; color: #333; padding-bottom: 5px; border-bottom: 1px solid #eee; }
+        #display-menu-dropdown label { display: flex; align-items: center; padding: 6px 0; cursor: pointer; user-select: none; font-size: 0.95em; }
+        #display-menu-dropdown label input { margin-right: 10px; transform: scale(1.1); }
 
         /* --- Dark Mode --- */
         @media (prefers-color-scheme: dark) {
@@ -117,6 +142,12 @@
             .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(95%) contrast(90%); }
             #toggle-map-size-btn { color: #aaa; }
             #toggle-map-size-btn:hover { background-color: rgba(255,255,255,0.1); border-color: #444; }
+            
+            /* Dark mode for display menu */
+            #display-menu-btn { background: #343a40; border-color: #495057; color: #e0e0e0; }
+            #display-menu-btn:hover { background: #495057; }
+            #display-menu-dropdown { background: #2a2a2a; border-color: #555; }
+            #display-menu-dropdown h5 { color: #fff; border-bottom-color: #444; }
         }
     </style>
 </head>
@@ -127,11 +158,16 @@
     <div class="container">
         <div class="card header-card">
             <h1>Storagenode Pro Monitor</h1>
-            <div id="node-selector" title="Select a node to view or show an aggregate of all nodes">
-                <span>Loading...</span>
+            <div class="header-controls">
+                <div id="node-selector" title="Select a node to view or show an aggregate of all nodes">
+                    <span>Loading...</span>
+                </div>
+                <div id="display-menu-container">
+                    <button id="display-menu-btn">Options</button>
+                    <div id="display-menu-dropdown"></div>
+                </div>
             </div>
         </div>
-
 
         <div id="map-card" class="card">
             <div class="card-header-flex">
@@ -650,6 +686,18 @@
             range: '5m', // 5m, 30m, 1h, 6h, 24h
             agg: 'sum' // sum, avg
         };
+        const TOGGLEABLE_CARDS = {
+            'map-card': 'Live Traffic Heatmap',
+            'stats-card': 'Overall Success Rates & Speed',
+            'health-card': 'Node Health & History',
+            'performance-card': 'Live Performance',
+            'satellite-card': 'Traffic by Satellite',
+            'analysis-card': 'Network & Error Analysis',
+            'size-charts-card': 'Data Transfer Size Distribution',
+            'hashstore-card': 'Hashstore Compaction Stats'
+        };
+        let cardVisibilityState = {};
+        const VISIBILITY_STORAGE_KEY = 'storj-pro-monitor-card-visibility';
         // This is the new primary data store for performance data, keyed by node name.
         // Each node's data is an object where keys are binned timestamps.
         let livePerformanceBins = {};
@@ -661,6 +709,140 @@
         let hashstoreMasterData = []; // This holds the raw data from the server
         let hashstoreFilters = { node_name: 'all', satellite: 'all', store: 'all' };
         let hashstoreSort = { column: 'last_run_iso', direction: 'desc' };
+
+        // --- Card Visibility & Layout ---
+        function initializeDisplayMenu() {
+            const container = document.getElementById('display-menu-container');
+            const btn = document.getElementById('display-menu-btn');
+            const dropdown = document.getElementById('display-menu-dropdown');
+
+            if (!container || !btn || !dropdown) return;
+
+            let dropdownHTML = '<h5>Visible Cards</h5>';
+            for (const cardId in TOGGLEABLE_CARDS) {
+                dropdownHTML += `
+                    <label>
+                        <input type="checkbox" data-card-id="${cardId}">
+                        <span>${TOGGLEABLE_CARDS[cardId]}</span>
+                    </label>
+                `;
+            }
+            dropdown.innerHTML = dropdownHTML;
+
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                dropdown.classList.toggle('visible');
+                btn.classList.toggle('active');
+            });
+
+            dropdown.addEventListener('change', (e) => {
+                if (e.target.type === 'checkbox') {
+                    const cardId = e.target.dataset.cardId;
+                    cardVisibilityState[cardId] = e.target.checked;
+                    localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify(cardVisibilityState));
+                    applyCardLayout();
+                }
+            });
+            
+            document.addEventListener('click', (e) => {
+                if (!container.contains(e.target)) {
+                    dropdown.classList.remove('visible');
+                    btn.classList.remove('active');
+                }
+            });
+
+            loadCardVisibility();
+        }
+
+        function loadCardVisibility() {
+            const savedState = localStorage.getItem(VISIBILITY_STORAGE_KEY);
+            let state = {};
+            if (savedState) {
+                try { state = JSON.parse(savedState); } catch (e) { console.error("Could not parse visibility state.", e); }
+            }
+            
+            const defaultState = Object.keys(TOGGLEABLE_CARDS).reduce((acc, key) => ({...acc, [key]: true }), {});
+            cardVisibilityState = { ...defaultState, ...state };
+
+            applyCardLayout();
+        }
+
+        function applyCardLayout() {
+            // First, update checkboxes and toggle visibility class
+            for (const cardId in cardVisibilityState) {
+                const cardElement = document.getElementById(cardId);
+                const checkbox = document.querySelector(`#display-menu-dropdown input[data-card-id="${cardId}"]`);
+
+                if (cardElement && checkbox) {
+                    const isVisible = cardVisibilityState[cardId];
+                    cardElement.classList.toggle('is-hidden', !isVisible);
+                    checkbox.checked = isVisible;
+                }
+            }
+            // Then, reflow the grid
+            reflowGrid();
+        }
+
+        function reflowGrid() {
+            let currentRow = 2;
+            const isVisible = (id) => cardVisibilityState[id];
+            const setStyle = (id, col, row) => {
+                const el = document.getElementById(id);
+                if (el) { Object.assign(el.style, { gridColumn: col, gridRow: row }); }
+            };
+
+            // Row 1: Map and Stats/Health
+            const mapVisible = isVisible('map-card');
+            const statsVisible = isVisible('stats-card');
+            const healthVisible = isVisible('health-card');
+            
+            if (mapVisible) {
+                setStyle('map-card', '1 / 8', '2 / 4');
+                if (statsVisible) setStyle('stats-card', '8 / 13', '2 / 3');
+                if (healthVisible) setStyle('health-card', '8 / 13', '3 / 4');
+                currentRow = 4;
+            } else {
+                if (statsVisible && healthVisible) {
+                    setStyle('stats-card', '1 / 7', '2 / 3');
+                    setStyle('health-card', '7 / 13', '2 / 3');
+                    currentRow = 3;
+                } else if (statsVisible) {
+                    setStyle('stats-card', '1 / -1', '2 / 3');
+                    currentRow = 3;
+                } else if (healthVisible) {
+                    setStyle('health-card', '1 / -1', '2 / 3');
+                    currentRow = 3;
+                }
+            }
+
+            // Row 2: Performance and Satellite
+            const perfVisible = isVisible('performance-card');
+            const satVisible = isVisible('satellite-card');
+            if (perfVisible && satVisible) {
+                setStyle('performance-card', '1 / 7', `${currentRow} / ${currentRow + 1}`);
+                setStyle('satellite-card', '7 / 13', `${currentRow} / ${currentRow + 1}`);
+                currentRow++;
+            } else if (perfVisible) {
+                setStyle('performance-card', '1 / -1', `${currentRow} / ${currentRow + 1}`);
+                currentRow++;
+            } else if (satVisible) {
+                setStyle('satellite-card', '1 / -1', `${currentRow} / ${currentRow + 1}`);
+                currentRow++;
+            }
+            
+            // Subsequent full-width cards
+            ['analysis-card', 'size-charts-card', 'hashstore-card'].forEach(cardId => {
+                if (isVisible(cardId)) {
+                    setStyle(cardId, '1 / -1', `${currentRow} / ${currentRow + 1}`);
+                    currentRow++;
+                }
+            });
+
+            // If map was shown, invalidate its size to fix rendering
+            if (mapVisible) {
+                setTimeout(() => map.invalidateSize(), 150);
+            }
+        }
 
 
         // --- Helper Functions ---
@@ -1251,6 +1433,7 @@
         document.addEventListener('DOMContentLoaded', () => {
             createPerformanceChart();
             connectionManager.connect();
+            initializeDisplayMenu();
         });
 
         // --- Dark Mode Chart Handler ---
