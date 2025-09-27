@@ -400,8 +400,7 @@ async def performance_calculator(app, node_name: str):
         node_state['last_perf_calc_time'] = now
         elapsed_seconds = now - last_run_time
 
-        # If the elapsed time is zero or negative, or unrealistically large, default to the interval to prevent errors.
-        if elapsed_seconds <= 0 or elapsed_seconds > (PERFORMANCE_INTERVAL_SECONDS * 5):
+        if elapsed_seconds <= 0.1:
             elapsed_seconds = PERFORMANCE_INTERVAL_SECONDS
 
         current_event_count = len(node_state['live_events'])
@@ -410,11 +409,6 @@ async def performance_calculator(app, node_name: str):
         node_state['last_perf_event_index'] = current_event_count
 
         ingress_bytes, egress_bytes, ingress_pieces, egress_pieces = 0, 0, 0, 0
-
-
-        # Concurrency is a snapshot, so it's calculated over a fixed recent window (e.g., last 1 sec)
-        concurrency_snapshot_time = time.time()
-        concurrency = sum(1 for event in reversed(node_state['live_events']) if event['ts_unix'] > concurrency_snapshot_time - 1)
 
         for event in new_events_to_process:
             if event['status'] == 'success':
@@ -425,11 +419,6 @@ async def performance_calculator(app, node_name: str):
                     ingress_bytes += event['size']
                     ingress_pieces += 1
 
-        # This calculation is now removed from the backend payload.
-        # ingress_mbps = (ingress_bytes * 8) / (elapsed_seconds * 1e6)
-        # egress_mbps = (egress_bytes * 8) / (elapsed_seconds * 1e6)
-
-        # --- FIX: Send raw data instead of pre-calculated rate ---
         payload = {
             "type": "performance_update",
             "node_name": node_name,
@@ -438,8 +427,8 @@ async def performance_calculator(app, node_name: str):
             "egress_bytes": egress_bytes,
             "ingress_pieces": ingress_pieces,
             "egress_pieces": egress_pieces,
-            "concurrency": concurrency,
-            "elapsed_seconds": elapsed_seconds # Send the actual time delta
+            "total_ops": len(new_events_to_process),
+            "elapsed_seconds": elapsed_seconds
         }
         await robust_broadcast(app_state['websockets'], payload, node_name=node_name)
 
@@ -728,203 +717,155 @@ async def periodic_stats_updater(app):
 
 async def handle_index(request): return web.FileResponse('./index.html')
 
+def _zero_fill_performance_data(sparse_data: List[Dict], start_unix: float, end_unix: float, interval_sec: int) -> List[Dict]:
+    """Fills in missing time buckets with zero values."""
+    start_bucket_unix = int(start_unix / interval_sec) * interval_sec
+    end_bucket_unix = int(end_unix / interval_sec) * interval_sec
+
+    results_map = {
+        int(datetime.datetime.fromisoformat(r['timestamp']).timestamp() / interval_sec) * interval_sec: r
+        for r in sparse_data
+    }
+
+    filled_results = []
+    current_bucket_unix = start_bucket_unix
+    while current_bucket_unix <= end_bucket_unix:
+        if current_bucket_unix in results_map:
+            filled_results.append(results_map[current_bucket_unix])
+        else:
+            filled_results.append({
+                "timestamp": datetime.datetime.fromtimestamp(current_bucket_unix, tz=datetime.UTC).isoformat(),
+                "ingress_mbps": 0, "egress_mbps": 0,
+                "ingress_bytes": 0, "egress_bytes": 0,
+                "ingress_pieces": 0, "egress_pieces": 0,
+                "concurrency": 0, "total_ops": 0,
+                "bin_duration_seconds": interval_sec
+            })
+        current_bucket_unix += interval_sec
+    return filled_results
+
+
 def blocking_get_historical_performance(events: List[Dict[str, Any]], points: int, interval_sec: int) -> List[Dict[str, Any]]:
-    """
-    Processes a list of in-memory events to generate binned performance data,
-    suitable for bootstrapping the live performance chart. This avoids querying the
-    database, ensuring data consistency with the live performance calculator.
-    """
     log.info(f"Processing {len(events)} in-memory events for historical performance graph generation.")
-    if not events:
-        return []
 
     now_unix = time.time()
     time_window_seconds = points * interval_sec
     cutoff_unix = now_unix - time_window_seconds
+
+    if not events:
+        return _zero_fill_performance_data([], cutoff_unix, now_unix, interval_sec)
+
     recent_events = [e for e in events if e.get('ts_unix', 0) >= cutoff_unix]
-    log.info(f"Filtered to {len(recent_events)} events within the last {time_window_seconds} seconds.")
+    if not recent_events:
+        return _zero_fill_performance_data([], cutoff_unix, now_unix, interval_sec)
 
     buckets: Dict[int, Dict[str, int]] = {}
-
     for event in recent_events:
-        if 'ts_unix' not in event:
-            continue
-
         ts_unix = event['ts_unix']
         bucket_start_unix = int(ts_unix / interval_sec) * interval_sec
-
         if bucket_start_unix not in buckets:
-            buckets[bucket_start_unix] = {
-                'ingress_bytes': 0, 'egress_bytes': 0,
-                'ingress_pieces': 0, 'egress_pieces': 0,
-                'total_ops': 0
-            }
+            buckets[bucket_start_unix] = {'ingress_bytes': 0, 'egress_bytes': 0, 'ingress_pieces': 0, 'egress_pieces': 0, 'total_ops': 0}
 
         bucket = buckets[bucket_start_unix]
         bucket['total_ops'] += 1
-
         if event.get('status') == 'success':
-            action = event.get('action', '')
-            size = event.get('size', 0)
-
+            action, size = event.get('action', ''), event.get('size', 0)
             if 'GET' in action and action != 'GET_AUDIT':
-                bucket['egress_bytes'] += size
-                bucket['egress_pieces'] += 1
+                bucket['egress_bytes'] += size; bucket['egress_pieces'] += 1
             elif 'PUT' in action:
-                bucket['ingress_bytes'] += size
-                bucket['ingress_pieces'] += 1
+                bucket['ingress_bytes'] += size; bucket['ingress_pieces'] += 1
 
-    results = []
-    for ts_unix, data in sorted(buckets.items()):
-        ingress_mbps = (data['ingress_bytes'] * 8) / (interval_sec * 1e6)
-        egress_mbps = (data['egress_bytes'] * 8) / (interval_sec * 1e6)
-
-        results.append({
+    sparse_results = []
+    for ts_unix, data in buckets.items():
+        sparse_results.append({
             "timestamp": datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat(),
-            "ingress_mbps": round(ingress_mbps, 2),
-            "egress_mbps": round(egress_mbps, 2),
-            "ingress_bytes": data['ingress_bytes'],
-            "egress_bytes": data['egress_bytes'],
-            "ingress_pieces": data['ingress_pieces'],
-            "egress_pieces": data['egress_pieces'],
-            "concurrency": data['total_ops']
+            "ingress_mbps": round((data['ingress_bytes'] * 8) / (interval_sec * 1e6), 2),
+            "egress_mbps": round((data['egress_bytes'] * 8) / (interval_sec * 1e6), 2),
+            "ingress_bytes": data['ingress_bytes'], "egress_bytes": data['egress_bytes'],
+            "ingress_pieces": data['ingress_pieces'], "egress_pieces": data['egress_pieces'],
+            "concurrency": round(data['total_ops'] / interval_sec, 2) if interval_sec > 0 else 0,
+            "total_ops": data['total_ops'], "bin_duration_seconds": interval_sec
         })
 
-    log.info(f"Returning {len(results)} historical performance data points from in-memory events.")
-    return results
+    filled_results = _zero_fill_performance_data(sparse_results, cutoff_unix, now_unix, interval_sec)
+    log.info(f"Returning {len(filled_results)} historical performance data points from in-memory events.")
+    return filled_results
 
 def blocking_get_aggregated_performance(node_name: str, time_window_hours: int) -> List[Dict[str, Any]]:
     log.info(f"Fetching AGGREGATED performance for node '{node_name}' (last {time_window_hours} hours).")
-    start_time = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=time_window_hours)
-    start_time_iso = start_time.isoformat()
-
-    # Determine the appropriate bin size for the time window
-    if time_window_hours <= 1:
-        bin_size_min = 2
-    elif time_window_hours <= 6:
-        bin_size_min = 10
-    else: # 24 hours
-        bin_size_min = 30
-
-    bin_sec = bin_size_min * 60
-    results = []
-
-    with sqlite3.connect(DATABASE_FILE, timeout=20, detect_types=0) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        # For longer ranges, we can leverage the pre-aggregated hourly table for speed
-        if time_window_hours > 6:
-             # Note: This query uses hourly data, so bin_sec will be effectively 3600
-            query = """
-                SELECT
-                    hour_timestamp as time_bucket_start_iso,
-                    total_upload_size as ingress_bytes,
-                    total_download_size as egress_bytes,
-                    ul_success as ingress_pieces,
-                    dl_success as egress_pieces,
-                    (dl_success + dl_fail + ul_success + ul_fail + audit_success + audit_fail) as total_ops
-                FROM hourly_stats
-                WHERE hour_timestamp >= ? AND node_name = ?
-                ORDER BY hour_timestamp ASC
-            """
-            params = [start_time_iso, node_name]
-            actual_bin_sec = 3600 # Override bin_sec since we are using hourly data
-        else:
-            query = f"""
-                SELECT
-                    (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start,
-                    SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes,
-                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes,
-                    SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces,
-                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces,
-                    COUNT(*) as total_ops
-                FROM events
-                WHERE timestamp >= ? AND node_name = ?
-                GROUP BY time_bucket_start ORDER BY time_bucket_start ASC
-            """
-            params = [bin_sec, bin_sec, start_time_iso, node_name]
-            actual_bin_sec = bin_sec
-
-        for row in cursor.execute(query, params).fetchall():
-            row_dict = dict(row)
-            ts_unix = row_dict.get('time_bucket_start')
-            iso_ts = row_dict.get('time_bucket_start_iso') or datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat()
-
-            results.append({
-                "timestamp": iso_ts,
-                "ingress_mbps": round((row_dict.get('ingress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
-                "egress_mbps": round((row_dict.get('egress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
-                "ingress_bytes": row_dict.get('ingress_bytes', 0),
-                "egress_bytes": row_dict.get('egress_bytes', 0),
-                "ingress_pieces": row_dict.get('ingress_pieces', 0),
-                "egress_pieces": row_dict.get('egress_pieces', 0),
-                "concurrency": row_dict.get('total_ops', 0)
-            })
-
-    log.info(f"Returning {len(results)} aggregated performance data points for node '{node_name}'.")
-    return results
-
-def blocking_get_aggregated_performance_for_all(time_window_hours: int) -> List[Dict[str, Any]]:
-    log.info(f"Fetching AGGREGATED performance for ALL NODES (last {time_window_hours} hours).")
-    start_time = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=time_window_hours)
+    now_dt = datetime.datetime.now(datetime.UTC)
+    start_time = now_dt - datetime.timedelta(hours=time_window_hours)
     start_time_iso = start_time.isoformat()
 
     if time_window_hours <= 1: bin_size_min = 2
     elif time_window_hours <= 6: bin_size_min = 10
     else: bin_size_min = 30
     bin_sec = bin_size_min * 60
-    results = []
 
+    sparse_results = []
     with sqlite3.connect(DATABASE_FILE, timeout=20, detect_types=0) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
+        conn.row_factory = sqlite3.Row; cursor = conn.cursor()
         if time_window_hours > 6:
-            query = """
-                SELECT
-                    hour_timestamp as time_bucket_start_iso,
-                    SUM(total_upload_size) as ingress_bytes,
-                    SUM(total_download_size) as egress_bytes,
-                    SUM(ul_success) as ingress_pieces,
-                    SUM(dl_success) as egress_pieces,
-                    SUM(dl_success + dl_fail + ul_success + ul_fail + audit_success + audit_fail) as total_ops
-                FROM hourly_stats WHERE hour_timestamp >= ?
-                GROUP BY hour_timestamp ORDER BY hour_timestamp ASC
-            """
-            params = [start_time_iso]
-            actual_bin_sec = 3600
+            query = """SELECT hour_timestamp as time_bucket_start_iso, total_upload_size as ingress_bytes, total_download_size as egress_bytes, ul_success as ingress_pieces, dl_success as egress_pieces, (dl_success + dl_fail + ul_success + ul_fail + audit_success + audit_fail) as total_ops FROM hourly_stats WHERE hour_timestamp >= ? AND node_name = ? ORDER BY hour_timestamp ASC"""
+            params = [start_time_iso, node_name]; actual_bin_sec = 3600
         else:
-            query = f"""
-                SELECT
-                    (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start,
-                    SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes,
-                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes,
-                    SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces,
-                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces,
-                    COUNT(*) as total_ops
-                FROM events WHERE timestamp >= ?
-                GROUP BY time_bucket_start ORDER BY time_bucket_start ASC
-            """
-            params = [bin_sec, bin_sec, start_time_iso]
-            actual_bin_sec = bin_sec
+            query = f"""SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes, SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces, SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces, COUNT(*) as total_ops FROM events WHERE timestamp >= ? AND node_name = ? GROUP BY time_bucket_start ORDER BY time_bucket_start ASC"""
+            params = [bin_sec, bin_sec, start_time_iso, node_name]; actual_bin_sec = bin_sec
 
         for row in cursor.execute(query, params).fetchall():
             row_dict = dict(row)
             ts_unix = row_dict.get('time_bucket_start')
             iso_ts = row_dict.get('time_bucket_start_iso') or datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat()
-            results.append({
+            sparse_results.append({
                 "timestamp": iso_ts,
-                "ingress_mbps": round((row_dict.get('ingress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
-                "egress_mbps": round((row_dict.get('egress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
-                "ingress_bytes": row_dict.get('ingress_bytes', 0),
-                "egress_bytes": row_dict.get('egress_bytes', 0),
-                "ingress_pieces": row_dict.get('ingress_pieces', 0),
-                "egress_pieces": row_dict.get('egress_pieces', 0),
-                "concurrency": row_dict.get('total_ops', 0)
+                "ingress_mbps": round((row_dict.get('ingress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2), "egress_mbps": round((row_dict.get('egress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
+                "ingress_bytes": row_dict.get('ingress_bytes', 0), "egress_bytes": row_dict.get('egress_bytes', 0),
+                "ingress_pieces": row_dict.get('ingress_pieces', 0), "egress_pieces": row_dict.get('egress_pieces', 0),
+                "concurrency": round(row_dict.get('total_ops', 0) / actual_bin_sec, 2) if actual_bin_sec > 0 else 0,
+                "total_ops": row_dict.get('total_ops', 0), "bin_duration_seconds": actual_bin_sec
             })
-    log.info(f"Returning {len(results)} aggregated performance data points for ALL NODES.")
-    return results
+
+    filled_results = _zero_fill_performance_data(sparse_results, start_time.timestamp(), now_dt.timestamp(), actual_bin_sec)
+    log.info(f"Returning {len(filled_results)} aggregated performance data points for node '{node_name}'.")
+    return filled_results
+
+def blocking_get_aggregated_performance_for_all(time_window_hours: int) -> List[Dict[str, Any]]:
+    log.info(f"Fetching AGGREGATED performance for ALL NODES (last {time_window_hours} hours).")
+    now_dt = datetime.datetime.now(datetime.UTC)
+    start_time = now_dt - datetime.timedelta(hours=time_window_hours)
+    start_time_iso = start_time.isoformat()
+
+    if time_window_hours <= 1: bin_size_min = 2
+    elif time_window_hours <= 6: bin_size_min = 10
+    else: bin_size_min = 30
+    bin_sec = bin_size_min * 60
+
+    sparse_results = []
+    with sqlite3.connect(DATABASE_FILE, timeout=20, detect_types=0) as conn:
+        conn.row_factory = sqlite3.Row; cursor = conn.cursor()
+        if time_window_hours > 6:
+            query = """SELECT hour_timestamp as time_bucket_start_iso, SUM(total_upload_size) as ingress_bytes, SUM(total_download_size) as egress_bytes, SUM(ul_success) as ingress_pieces, SUM(dl_success) as egress_pieces, SUM(dl_success + dl_fail + ul_success + ul_fail + audit_success + audit_fail) as total_ops FROM hourly_stats WHERE hour_timestamp >= ? GROUP BY hour_timestamp ORDER BY hour_timestamp ASC"""
+            params = [start_time_iso]; actual_bin_sec = 3600
+        else:
+            query = f"""SELECT (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? as time_bucket_start, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as ingress_bytes, SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as egress_bytes, SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ingress_pieces, SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as egress_pieces, COUNT(*) as total_ops FROM events WHERE timestamp >= ? GROUP BY time_bucket_start ORDER BY time_bucket_start ASC"""
+            params = [bin_sec, bin_sec, start_time_iso]; actual_bin_sec = bin_sec
+
+        for row in cursor.execute(query, params).fetchall():
+            row_dict = dict(row)
+            ts_unix = row_dict.get('time_bucket_start')
+            iso_ts = row_dict.get('time_bucket_start_iso') or datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat()
+            sparse_results.append({
+                "timestamp": iso_ts,
+                "ingress_mbps": round((row_dict.get('ingress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2), "egress_mbps": round((row_dict.get('egress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
+                "ingress_bytes": row_dict.get('ingress_bytes', 0), "egress_bytes": row_dict.get('egress_bytes', 0),
+                "ingress_pieces": row_dict.get('ingress_pieces', 0), "egress_pieces": row_dict.get('egress_pieces', 0),
+                "concurrency": round(row_dict.get('total_ops', 0) / actual_bin_sec, 2) if actual_bin_sec > 0 else 0,
+                "total_ops": row_dict.get('total_ops', 0), "bin_duration_seconds": actual_bin_sec
+            })
+
+    filled_results = _zero_fill_performance_data(sparse_results, start_time.timestamp(), now_dt.timestamp(), actual_bin_sec)
+    log.info(f"Returning {len(filled_results)} aggregated performance data points for ALL NODES.")
+    return filled_results
 
 async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=10)

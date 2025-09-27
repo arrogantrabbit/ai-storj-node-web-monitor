@@ -626,7 +626,6 @@
             agg: 'sum' // sum, avg
         };
         let livePerformanceData = {};
-        let aggregatedPerformanceData = {};
         let historicalPerformanceData = {};
         let currentNodeView = 'Aggregate';
         let availableNodes = [];
@@ -787,211 +786,162 @@
             return { rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] };
         }
 
-        function updatePerformanceChart() {
-            try {
-                const isLiveView = performanceState.range === '5m';
-                let dataToDisplay;
-
-                if (isLiveView) {
-                    dataToDisplay = (currentNodeView === 'Aggregate') ? aggregatedPerformanceData : livePerformanceData[currentNodeView];
-                } else {
-                    dataToDisplay = historicalPerformanceData;
-                }
-
-                if (!dataToDisplay) { return; }
-
-                if (isLiveView) { document.getElementById('performance-title').textContent = `Live Performance`; } else { document.getElementById('performance-title').textContent = `Performance History`; }
-                if (!performanceChartInstance) createPerformanceChart();
-                const viewName = currentNodeView === 'Aggregate' ? '' : ` (${currentNodeView})`;
-                const viewTitles = { rate: 'Rate (Mbps)', volume: 'Data Volume (MB)', pieces: 'Pieces', concurrency: 'Active Operations' };
-                const yAxisTitles = { rate: 'Mbps', volume: 'MB', pieces: 'Count', concurrency: 'Concurrent Ops' };
-                document.getElementById('performance-title').textContent = viewTitles[performanceState.view] + viewName;
-                document.getElementById('aggregation-toggles').style.display = (currentNodeView === 'Aggregate') ? 'block' : 'none';
-
-                let yAxisTitle = yAxisTitles[performanceState.view]; if(currentNodeView === 'Aggregate' && performanceState.agg === 'avg') { yAxisTitle = yAxisTitle.replace('Mbps', 'Avg. Mbps').replace('MB', 'Avg. MB'); } else if (currentNodeView === 'Aggregate' && performanceState.agg === 'sum') { yAxisTitle = yAxisTitle.replace('Mbps', 'Total Mbps').replace('MB', 'Total MB'); }
-                performanceChartInstance.options.scales.y.title.text = yAxisTitle;
-                const isConcurrency = performanceState.view === 'concurrency';
-                let datasetsToShow = [];
-                if (isConcurrency) { datasetsToShow.push({ label: 'Operations', data: dataToDisplay.concurrency ? dataToDisplay.concurrency[0] : [], borderColor: UPLOAD_COLOR, tension: 0.2, backgroundColor: UPLOAD_COLOR });
-                } else {
-                    datasetsToShow.push({ label: 'Ingress (Upload)', data: dataToDisplay[performanceState.view] ? dataToDisplay[performanceState.view][0] : [], borderColor: UPLOAD_COLOR, tension: 0.2, backgroundColor: UPLOAD_COLOR });
-                    datasetsToShow.push({ label: 'Egress (Download)', data: dataToDisplay[performanceState.view] ? dataToDisplay[performanceState.view][1] : [], borderColor: DOWNLOAD_COLOR, tension: 0.2, backgroundColor: DOWNLOAD_COLOR });
-                }
-                performanceChartInstance.data.datasets = datasetsToShow;
-                performanceChartInstance.update(isLiveView ? 'none' : undefined);
-            } catch (error) {
-                console.error("[updatePerformanceChart] CRITICAL: Failed to update performance chart.", error);
-            }
-        }
-        function initializePerformanceData(nodes) { nodes.forEach(node => { if (!livePerformanceData[node]) { livePerformanceData[node] = dataTemplate(); } if (!performanceHistoryLoaded[node]) { performanceHistoryLoaded[node] = false; } }); aggregatedPerformanceData = dataTemplate(); historicalPerformanceData = dataTemplate(); }
-
-        // This is the efficient function for live aggregate updates.
-        function updateAggregateData(timestamp, newMetrics) {
-            const individualNodes = availableNodes.filter(n => n !== 'Aggregate');
-            if (individualNodes.length === 0) return;
-
-            Object.keys(newMetrics).forEach(metric => {
-                const isConcurrency = metric === 'concurrency';
-                const numSeries = isConcurrency ? 1 : 2;
-
-                for (let i = 0; i < numSeries; i++) {
-                    let sum = 0;
-                    let count = 0;
-
-                    // Sum up the values from all nodes for the given timestamp
-                    individualNodes.forEach(node => {
-                        const nodeSeries = livePerformanceData[node]?.[metric]?.[i];
-                        if (nodeSeries) {
-                            // Find the last point, as it's the most likely one to match
-                            const lastPoint = nodeSeries[nodeSeries.length - 1];
-                            if (lastPoint && lastPoint.x.getTime() === timestamp.getTime()) {
-                                sum += lastPoint.y;
-                                count++;
-                            } else {
-                                // If not the last point, search for it (less common case)
-                                const point = nodeSeries.find(p => p.x.getTime() === timestamp.getTime());
-                                if (point) {
-                                    sum += point.y;
-                                    count++;
-                                }
-                            }
-                        }
-                    });
-
-                    if (count > 0) {
-                        const value = (performanceState.agg === 'avg' && !isConcurrency) ? sum / count : sum;
-                        const aggregateSeries = aggregatedPerformanceData[metric][i];
-                        const newPoint = { x: timestamp, y: value };
-
-                        // Use the same updateOrPush logic for the aggregate series
-                        const lastAggPoint = aggregateSeries.length > 0 ? aggregateSeries[aggregateSeries.length - 1] : null;
-                        if (lastAggPoint && lastAggPoint.x.getTime() === newPoint.x.getTime()) {
-                            lastAggPoint.y = newPoint.y; // Update existing point
-                        } else {
-                            aggregateSeries.push(newPoint); // Add new point
-                            if (aggregateSeries.length > MAX_PERF_POINTS) {
-                                aggregateSeries.shift();
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        // This function is for full rebuilds, used when changing aggregation type (sum/avg)
-        function rebuildAggregateData() {
-            const newAggData = dataTemplate();
-            const individualNodes = availableNodes.filter(n => n !== 'Aggregate');
-            if (individualNodes.length === 0) return;
-
-            const allTimestamps = new Set();
-            individualNodes.forEach(node => {
-                if(livePerformanceData[node]) {
-                    Object.values(livePerformanceData[node]).forEach(seriesPair => {
-                        seriesPair.forEach(series => {
-                            series.forEach(point => allTimestamps.add(point.x.getTime()));
-                        });
-                    });
-                }
-            });
-
-            const sortedTimestamps = Array.from(allTimestamps).sort((a,b) => a - b);
-            sortedTimestamps.forEach(ts => {
-                const timestamp = new Date(ts);
-                Object.keys(newAggData).forEach(metric => {
-                    const isConcurrency = metric === 'concurrency';
-                    const numSeries = isConcurrency ? 1 : 2;
-                    for (let i = 0; i < numSeries; i++) {
-                        let sum = 0;
-                        let count = 0;
-                        individualNodes.forEach(node => {
-                            const point = livePerformanceData[node]?.[metric]?.[i].find(p => p.x.getTime() === ts);
-                            if (point) {
-                                sum += point.y;
-                                count++;
-                            }
-                        });
-                        if (count > 0) {
-                            const value = (performanceState.agg === 'avg' && metric !== 'concurrency') ? sum / count : sum;
-                            newAggData[metric][i].push({ x: timestamp, y: value });
-                        }
-                    }
-                });
-            });
-            aggregatedPerformanceData = newAggData;
-        }
-
         // --- Event Listeners ---
         document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); satelliteViewIsBySize = !satelliteViewIsBySize; this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size'; updateSatelliteChart(lastSatelliteData); });
-
-        document.getElementById('size-view-toggles').addEventListener('click', function(e) {
-            e.preventDefault();
-            const target = e.target;
-            if (target.tagName === 'A' && !target.classList.contains('active')) {
-                sizeChartViewMode = target.getAttribute('data-view');
-                document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active'));
-                target.classList.add('active');
-                updateSizeBarChart(lastTransferSizes);
-            }
-        });
-
+        document.getElementById('size-view-toggles').addEventListener('click', function(e) { e.preventDefault(); const target = e.target; if (target.tagName === 'A' && !target.classList.contains('active')) { sizeChartViewMode = target.getAttribute('data-view'); document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active')); target.classList.add('active'); updateSizeBarChart(lastTransferSizes); } });
         document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.view = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); updatePerformanceChart(); } });
-        document.getElementById('time-range-toggles').addEventListener('click', function(e) {
-            e.preventDefault();
-            const newRange = e.target.getAttribute('data-range');
-            if (newRange === performanceState.range) return;
-            performanceState.range = newRange;
-
-            document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active'));
-            e.target.classList.add('active');
-
-            createPerformanceChart(); // Re-create chart for bar/line switch
-            if (newRange === '5m') {
-                updatePerformanceChart(); // Re-render with existing live data
-            } else {
-                const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange];
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours }));
-                }
-            }
-        });
-        document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.agg = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); rebuildAggregateData(); updatePerformanceChart(); } });
+        document.getElementById('time-range-toggles').addEventListener('click', function(e) { e.preventDefault(); const newRange = e.target.getAttribute('data-range'); if (newRange === performanceState.range) return; performanceState.range = newRange; document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); createPerformanceChart(); if (newRange === '5m') { updatePerformanceChart(); } else { const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange]; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours })); } } });
+        document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.agg = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); updatePerformanceChart(); } });
         function requestInitialPerformance(view) { if (ws && ws.readyState === WebSocket.OPEN && view !== 'Aggregate') { ws.send(JSON.stringify({ type: 'get_historical_performance', view: view, points: MAX_PERF_POINTS, interval_sec: PERFORMANCE_INTERVAL_MS / 1000 })); } }
-
-        document.getElementById('node-selector').addEventListener('click', function(e) {
-             e.preventDefault();
-             if (e.target.classList.contains('node-link')) {
-                 const newView = e.target.getAttribute('data-view');
-                 if (newView === currentNodeView) return;
-                 currentNodeView = newView;
-                 heatmap.clearData(); // Clear heatmap data on view change
-                 document.querySelectorAll('#node-selector .node-link').forEach(el => el.classList.remove('active'));
-                 e.target.classList.add('active');
-                 ws.send(JSON.stringify({ type: 'set_view', view: newView }));
-
-                 // Always reset to 5m live view when switching node or to Aggregate
-                 if (performanceState.range !== '5m') {
-                    document.querySelector('#time-range-toggles [data-range="5m"]').click();
-                 } else {
-                    // If already on 5m, just clear and refetch data for the new node
-                    if (newView !== 'Aggregate' && !performanceHistoryLoaded[newView]) {
-                        requestInitialPerformance(newView);
-                    } else {
-                         updatePerformanceChart();
-                    }
-                 }
-             }
-        });
+        document.getElementById('node-selector').addEventListener('click', function(e) { e.preventDefault(); if (e.target.classList.contains('node-link')) { const newView = e.target.getAttribute('data-view'); if (newView === currentNodeView) return; currentNodeView = newView; heatmap.clearData(); document.querySelectorAll('#node-selector .node-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); ws.send(JSON.stringify({ type: 'set_view', view: newView })); if (performanceState.range !== '5m') { document.querySelector('#time-range-toggles [data-range="5m"]').click(); } else { if (newView !== 'Aggregate' && !performanceHistoryLoaded[newView]) { requestInitialPerformance(newView); } else { updatePerformanceChart(); } } } });
         const mapCard = document.getElementById('map-card');
         const toggleMapSizeBtn = document.getElementById('toggle-map-size-btn');
         toggleMapSizeBtn.addEventListener('click', () => { const isMaximized = mapCard.classList.toggle('maximized'); document.body.classList.toggle('map-maximized', isMaximized); if (isMaximized) { toggleMapSizeBtn.innerHTML = '&#x2924;'; toggleMapSizeBtn.title = 'Restore Map Size'; } else { toggleMapSizeBtn.innerHTML = '&#x26F6;'; toggleMapSizeBtn.title = 'Maximize Map'; } setTimeout(() => { map.invalidateSize(); }, 150); });
 
-        // --- WebSocket Connection ---
-        let ws; const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); }; ws.onmessage = (event) => { const data = JSON.parse(event.data);
-            // Optimized console logging
-            if (data.type !== 'performance_update') {
-                console.log(`[WebSocket] Received message type: ${data.type}`);
+        // --- WebSocket Connection & Data Handling ---
+        let ws;
+        const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'performance_update') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
+
+        function initializePerformanceData(nodes) {
+            nodes.forEach(node => {
+                if (node !== 'Aggregate' && !livePerformanceData[node]) {
+                    livePerformanceData[node] = [];
+                }
+                if (!performanceHistoryLoaded[node]) {
+                    performanceHistoryLoaded[node] = false;
+                }
+            });
+            historicalPerformanceData = dataTemplate();
+        }
+
+        function updateOrPushPoint(series, point) {
+            const lastPoint = series.length > 0 ? series[series.length - 1] : null;
+
+            if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) {
+                if (lastPoint.fromHistory) {
+                    Object.assign(lastPoint, point);
+                    delete lastPoint.fromHistory;
+                } else {
+                    lastPoint.source.ingress_bytes += point.source.ingress_bytes;
+                    lastPoint.source.egress_bytes += point.source.egress_bytes;
+                    lastPoint.source.ingress_pieces += point.source.ingress_pieces;
+                    lastPoint.source.egress_pieces += point.source.egress_pieces;
+                    lastPoint.source.total_ops += point.source.total_ops;
+                    lastPoint.source.elapsed_seconds += point.source.elapsed_seconds;
+                }
+            } else {
+                series.push(point);
+                if (series.length > MAX_PERF_POINTS) {
+                    series.shift();
+                }
             }
+        }
+
+        function calculateAggregateData() {
+            const individualNodes = availableNodes.filter(n => n !== 'Aggregate');
+            if (individualNodes.length === 0) return [];
+
+            const allPointsByTimestamp = {};
+            individualNodes.forEach(node => {
+                if (livePerformanceData[node]) {
+                    livePerformanceData[node].forEach(point => {
+                        const ts = point.x.getTime();
+                        if (!allPointsByTimestamp[ts]) {
+                            allPointsByTimestamp[ts] = [];
+                        }
+                        allPointsByTimestamp[ts].push(point.source);
+                    });
+                }
+            });
+
+            const aggregatedPoints = [];
+            Object.keys(allPointsByTimestamp).sort().forEach(ts => {
+                const sourcesForTs = allPointsByTimestamp[ts];
+                const aggSource = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0, elapsed_seconds: 0 };
+
+                sourcesForTs.forEach(s => {
+                    aggSource.ingress_bytes += s.ingress_bytes;
+                    aggSource.egress_bytes += s.egress_bytes;
+                    aggSource.ingress_pieces += s.ingress_pieces;
+                    aggSource.egress_pieces += s.egress_pieces;
+                    aggSource.total_ops += s.total_ops;
+                    aggSource.elapsed_seconds = Math.max(aggSource.elapsed_seconds, s.elapsed_seconds);
+                });
+
+                const point = { x: new Date(parseInt(ts)), source: aggSource };
+                aggregatedPoints.push(point);
+            });
+
+            return aggregatedPoints;
+        }
+
+        function updatePerformanceChart() {
+            try {
+                const isLiveView = performanceState.range === '5m';
+                const view = performanceState.view;
+                let datasetsToShow = [];
+
+                if (!isLiveView) {
+                    const data = historicalPerformanceData[view];
+                    if (view === 'concurrency') {
+                        datasetsToShow.push({ label: 'Operations (per sec)', data: data[0] });
+                    } else {
+                        datasetsToShow.push({ label: 'Ingress (Upload)', data: data[0] });
+                        datasetsToShow.push({ label: 'Egress (Download)', data: data[1] });
+                    }
+                } else {
+                    let sourceData = [];
+                    if (currentNodeView === 'Aggregate') {
+                        sourceData = calculateAggregateData();
+                    } else {
+                        sourceData = livePerformanceData[currentNodeView] || [];
+                    }
+
+                    if (view === 'concurrency') {
+                        const chartData = sourceData.map(p => {
+                            const elapsed = p.source.elapsed_seconds || PERFORMANCE_INTERVAL_MS / 1000;
+                            const y = elapsed > 0 ? p.source.total_ops / elapsed : 0;
+                            return { x: p.x, y: y };
+                        });
+                        datasetsToShow.push({ label: 'Operations (per sec)', data: chartData });
+                    } else {
+                        const chartDataIngress = sourceData.map(p => {
+                            const elapsed = p.source.elapsed_seconds || PERFORMANCE_INTERVAL_MS / 1000;
+                            let y;
+                            if (view === 'rate') y = elapsed > 0 ? (p.source.ingress_bytes * 8) / (elapsed * 1e6) : 0;
+                            else if (view === 'volume') y = p.source.ingress_bytes / 1e6;
+                            else y = p.source.ingress_pieces;
+                            return { x: p.x, y: y };
+                        });
+                        const chartDataEgress = sourceData.map(p => {
+                            const elapsed = p.source.elapsed_seconds || PERFORMANCE_INTERVAL_MS / 1000;
+                            let y;
+                            if (view === 'rate') y = elapsed > 0 ? (p.source.egress_bytes * 8) / (elapsed * 1e6) : 0;
+                            else if (view === 'volume') y = p.source.egress_bytes / 1e6;
+                            else y = p.source.egress_pieces;
+                            return { x: p.x, y: y };
+                        });
+                        datasetsToShow.push({ label: 'Ingress (Upload)', data: chartDataIngress });
+                        datasetsToShow.push({ label: 'Egress (Download)', data: chartDataEgress });
+                    }
+                }
+
+                // Common styling
+                const baseStyle = { tension: 0.2 };
+                datasetsToShow[0] = {...datasetsToShow[0], ...baseStyle, borderColor: UPLOAD_COLOR, backgroundColor: UPLOAD_COLOR};
+                if (datasetsToShow.length > 1) {
+                    datasetsToShow[1] = {...datasetsToShow[1], ...baseStyle, borderColor: DOWNLOAD_COLOR, backgroundColor: DOWNLOAD_COLOR};
+                }
+
+                performanceChartInstance.data.datasets = datasetsToShow;
+                performanceChartInstance.update(isLiveView ? 'none' : undefined);
+            } catch (error) {
+                console.error("Error in updatePerformanceChart:", error);
+            }
+        }
+
+        // --- Data Processing on Message ---
+        function handleWebSocketMessage(data) {
             switch(data.type) {
                 case 'init':
                     availableNodes = data.nodes;
@@ -1006,54 +956,41 @@
                         heatmap.addDataPoint(data.location.lat, data.location.lon, data.size || 1000, data.action, data.action, data.timestamp);
                     }
                     break;
-                case 'performance_update':
+                case 'performance_update': {
                     const { node_name, ...metrics } = data;
-                    if (!livePerformanceData[node_name]) {
-                        console.warn(`[performance_update] Received update for uninitialized node: ${node_name}. Initializing now.`);
-                        initializePerformanceData([node_name]);
-                    }
-                    const nodePerf = livePerformanceData[node_name];
+                    if (!livePerformanceData[node_name]) { initializePerformanceData([node_name]); }
+
                     const binnedTimestamp = Math.floor(new Date(metrics.timestamp).getTime() / PERFORMANCE_INTERVAL_MS) * PERFORMANCE_INTERVAL_MS;
                     const binnedNow = new Date(binnedTimestamp);
 
-                    // --- FIX: Calculate rate on the frontend using actual elapsed time ---
-                    const elapsed = metrics.elapsed_seconds > 0 ? metrics.elapsed_seconds : (PERFORMANCE_INTERVAL_MS / 1000);
-                    const ingress_mbps = (metrics.ingress_bytes * 8) / (elapsed * 1e6);
-                    const egress_mbps = (metrics.egress_bytes * 8) / (elapsed * 1e6);
+                    const point = { x: binnedNow, source: { ...metrics } };
+                    updateOrPushPoint(livePerformanceData[node_name], point);
 
-                    const metricMap = {
-                        rate: [ingress_mbps, egress_mbps],
-                        volume: [metrics.ingress_bytes / 1e6, metrics.egress_bytes / 1e6],
-                        pieces: [metrics.ingress_pieces, metrics.egress_pieces],
-                        concurrency: [metrics.concurrency]
-                    };
-                    // --- END FIX ---
-
-                    const updateOrPushPoint = (series, point) => { const lastPoint = series.length > 0 ? series[series.length - 1] : null; if (lastPoint && lastPoint.x.getTime() === point.x.getTime()) { lastPoint.y = point.y; } else { series.push(point); if (series.length > MAX_PERF_POINTS) { series.shift(); } } };
-
-                    Object.keys(metricMap).forEach(metric => {
-                        const values = metricMap[metric];
-                        for (let i = 0; i < values.length; i++) {
-                            updateOrPushPoint(nodePerf[metric][i], { x: binnedNow, y: values[i] });
-                        }
-                    });
-
-                    updateAggregateData(binnedNow, metricMap);
-
-                    if (performanceState.range === '5m') {
-                        updatePerformanceChart();
-                    }
+                    if (performanceState.range === '5m') { updatePerformanceChart(); }
                     break;
-                case 'historical_performance_data':
+                }
+                case 'historical_performance_data': {
                     const nodeName = data.view;
                     if (!livePerformanceData[nodeName]) { initializePerformanceData([nodeName]); }
-                    const nodePerfData = livePerformanceData[nodeName];
-                    Object.keys(nodePerfData).forEach(key => { nodePerfData[key][0] = []; nodePerfData[key][1] = []; });
-                    data.performance_data.forEach(point => { const ts = new Date(point.timestamp); nodePerfData.rate[0].push({x:ts, y:point.ingress_mbps}); nodePerfData.rate[1].push({x:ts, y:point.egress_mbps}); nodePerfData.volume[0].push({x:ts, y:point.ingress_bytes / 1e6}); nodePerfData.volume[1].push({x:ts, y:point.egress_bytes / 1e6}); nodePerfData.pieces[0].push({x:ts, y:point.ingress_pieces}); nodePerfData.pieces[1].push({x:ts, y:point.egress_pieces}); nodePerfData.concurrency[0].push({x:ts, y:point.concurrency}); });
+                    livePerformanceData[nodeName] = [];
+
+                    data.performance_data.forEach(p => {
+                        const point = {
+                            x: new Date(p.timestamp),
+                            source: {
+                                ingress_bytes: p.ingress_bytes, egress_bytes: p.egress_bytes,
+                                ingress_pieces: p.ingress_pieces, egress_pieces: p.egress_pieces,
+                                total_ops: p.total_ops, elapsed_seconds: p.bin_duration_seconds
+                            },
+                            fromHistory: true
+                        };
+                        livePerformanceData[nodeName].push(point);
+                    });
+
                     performanceHistoryLoaded[nodeName] = true;
-                    rebuildAggregateData(); // Rebuild aggregate once after history is loaded
                     if (currentNodeView === nodeName && performanceState.range === '5m') { updatePerformanceChart(); }
                     break;
+                }
                 case 'aggregated_performance_data':
                     historicalPerformanceData = dataTemplate();
                     data.performance_data.forEach(point => { const ts = new Date(point.timestamp); historicalPerformanceData.rate[0].push({x:ts, y:point.ingress_mbps}); historicalPerformanceData.rate[1].push({x:ts, y:point.egress_mbps}); historicalPerformanceData.volume[0].push({x:ts, y:point.ingress_bytes / 1e6}); historicalPerformanceData.volume[1].push({x:ts, y:point.egress_bytes / 1e6}); historicalPerformanceData.pieces[0].push({x:ts, y:point.ingress_pieces}); historicalPerformanceData.pieces[1].push({x:ts, y:point.egress_pieces}); historicalPerformanceData.concurrency[0].push({x:ts, y:point.concurrency}); });
@@ -1063,7 +1000,7 @@
                     updateAllVisuals(data);
                     break;
             }
-        }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
+        }
 
         document.addEventListener('DOMContentLoaded', () => {
             createPerformanceChart();
