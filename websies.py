@@ -404,9 +404,6 @@ async def performance_calculator(app, node_name: str):
         if elapsed_seconds <= 0 or elapsed_seconds > (PERFORMANCE_INTERVAL_SECONDS * 5):
             elapsed_seconds = PERFORMANCE_INTERVAL_SECONDS
 
-        # Added for debugging, as requested. This will show the variability.
-        log.info(f"[PERF_CALC:{node_name}] Elapsed seconds: {elapsed_seconds:.4f}")
-
         current_event_count = len(node_state['live_events'])
         start_index = node_state['last_perf_event_index']
         new_events_to_process = [node_state['live_events'][i] for i in range(start_index, current_event_count)]
