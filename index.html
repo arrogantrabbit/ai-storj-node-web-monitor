@@ -220,8 +220,11 @@
         <div id="size-charts-card" class="card">
             <div class="chart-header">
                 <h3 id="size-chart-title" class="card-title">Data Transfer Size Distribution</h3>
-                <div>
-                    <a href="#" id="toggle-size-view" class="toggle-link">Show Success Rate</a>
+                <div id="size-view-toggles">
+                    <small>Show:</small>
+                    <a href="#" class="toggle-link active" data-view="counts">Counts</a> |
+                    <a href="#" class="toggle-link" data-view="percentages">Percentages</a> |
+                    <a href="#" class="toggle-link" data-view="rates">Success Rate</a>
                 </div>
             </div>
             <div class="card-content"><canvas id="sizeBarChart"></canvas></div>
@@ -685,8 +688,8 @@
         }
         const satelliteChart = new Chart(document.getElementById('satelliteChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Downloads/Audits', data: [], backgroundColor: DOWNLOAD_COLOR }] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true, title: { display: true, text: 'Pieces' } }, y: { stacked: true } }, plugins: { tooltip: { callbacks: { footer: function(tooltipItems) { const context = tooltipItems[0]; if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return ''; const satData = lastSatelliteData[context.dataIndex]; const lines = []; const totalDl = satData.downloads; if (totalDl > 0) lines.push(`DL Success: ${(satData.dl_success/totalDl*100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); const totalUl = satData.uploads; if (totalUl > 0) lines.push(`UL Success: ${(satData.ul_success/totalUl*100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); const totalAudit = satData.audits; if (totalAudit > 0) lines.push(`Audit Success: ${(satData.audit_success/totalAudit*100).toFixed(2)}% (${satData.audit_success}/${totalAudit})`); return lines; } } } } } });
         const sizeBarChart = new Chart(document.getElementById('sizeBarChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' }, { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Size Bucket' }, stacked: true }, y: { title: { display: true, text: 'Count' }, stacked: true } }, plugins: { legend: { position: 'top' }, tooltip: { callbacks: { footer: function(tooltipItems) { const item = tooltipItems[0]; const datasetLabels = ['successful downloads', 'successful uploads', 'failed downloads', 'failed uploads']; return `${item.parsed.y} ${datasetLabels[item.datasetIndex]} in this size range`; } } } } } });
-        sizeBarChart.isRateView = false; // Add state to the chart instance
-        let sizeViewIsPercentage = false;
+        sizeBarChart.currentViewMode = 'counts'; // Add state to the chart instance
+        let sizeChartViewMode = 'counts'; // counts, percentages, rates
 
         // --- UI Update Functions ---
         function updateAllVisuals(data) { updateOverallStats(data.overall); updateSatelliteChart(data.satellites); updateSizeBarChart(data.transfer_sizes); updateTitles(data.first_event_iso, data.last_event_iso); updateHistoricalTable(data.historical_stats); updateAnalysisTables(data); updateHashstorePanel(data.hashstore_stats); }
@@ -709,66 +712,69 @@
                 };
             });
 
-            // --- Pre-calculate data for both views ---
-            const downloadSuccessRate = processedData.map(d => { const total = d.dl_s + d.dl_f; return total > 0 ? (d.dl_s / total * 100) : 0; });
-            const uploadSuccessRate = processedData.map(d => { const total = d.ul_s + d.ul_f; return total > 0 ? (d.ul_s / total * 100) : 0; });
+            const viewChanged = (sizeChartViewMode !== sizeBarChart.currentViewMode);
 
-            // --- Reconfigure the chart object only if the view mode has changed ---
-            if (sizeViewIsPercentage !== sizeBarChart.isRateView) {
-                if (sizeViewIsPercentage) {
-                    // --- RECONFIGURE FOR SUCCESS RATE VIEW (Grouped) ---
-                    sizeBarChart.options.scales.x.stacked = false;
-                    sizeBarChart.options.scales.y.stacked = false;
-                    sizeBarChart.options.scales.y.title.text = 'Success Rate (%)';
-                    sizeBarChart.options.scales.y.max = 100;
-                    sizeBarChart.data.datasets = [
-                        { label: 'Download Success Rate', data: [], backgroundColor: DOWNLOAD_COLOR },
-                        { label: 'Upload Success Rate', data: [], backgroundColor: UPLOAD_COLOR }
-                    ];
-                    sizeBarChart.options.plugins.tooltip.callbacks.footer = function(tooltipItems) {
-                        const item = tooltipItems[0];
-                        const data = processedData[item.dataIndex];
-                        if (item.datasetIndex === 0) return `Raw Count: ${data.dl_s} / ${data.dl_s + data.dl_f}`;
-                        else return `Raw Count: ${data.ul_s} / ${data.ul_s + data.ul_f}`;
-                    };
-                } else {
-                    // --- RECONFIGURE FOR COUNT VIEW (Stacked) ---
-                    sizeBarChart.options.scales.x.stacked = true;
-                    sizeBarChart.options.scales.y.stacked = true;
-                    sizeBarChart.options.scales.y.title.text = 'Count';
-                    delete sizeBarChart.options.scales.y.min;
-                    delete sizeBarChart.options.scales.y.max;
-                    sizeBarChart.data.datasets = [
-                        { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
-                        { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
-                        { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' },
-                        { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
-                    ];
-                    sizeBarChart.options.plugins.tooltip.callbacks.footer = function(tooltipItems) {
-                        const item = tooltipItems[0];
-                        const datasetLabels = ['successful downloads', 'successful uploads', 'failed downloads', 'failed uploads'];
-                        return `${item.parsed.y} ${datasetLabels[item.datasetIndex]} in this size range`;
-                    };
+            if (viewChanged) {
+                // --- FULL RECONFIGURATION (only on view mode change) ---
+                switch (sizeChartViewMode) {
+                    case 'counts':
+                        Object.assign(sizeBarChart.options.scales.x, { stacked: true });
+                        Object.assign(sizeBarChart.options.scales.y, { stacked: true, title: { text: 'Count' }, min: undefined, max: undefined });
+                        sizeBarChart.data.datasets = [
+                            { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
+                            { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' }, { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
+                        ];
+                        sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => `${items[0].parsed.y} transfers`;
+                        break;
+                    case 'percentages':
+                        Object.assign(sizeBarChart.options.scales.x, { stacked: true });
+                        Object.assign(sizeBarChart.options.scales.y, { stacked: true, title: { text: 'Percentage (%)' }, min: 0, max: 100 });
+                        sizeBarChart.data.datasets = [
+                             { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
+                             { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' }, { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
+                        ];
+                        sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => {
+                             const item = items[0]; const total = processedData.reduce((sum, d) => sum + d.dl_s + d.dl_f + d.ul_s + d.ul_f, 0);
+                             const bucketData = processedData[item.dataIndex];
+                             const counts = [bucketData.dl_s, bucketData.ul_s, bucketData.dl_f, bucketData.ul_f];
+                             return `${item.parsed.y.toFixed(2)}% (${counts[item.datasetIndex]} transfers)`;
+                        };
+                        break;
+                    case 'rates':
+                        Object.assign(sizeBarChart.options.scales.x, { stacked: false });
+                        Object.assign(sizeBarChart.options.scales.y, { stacked: false, title: { text: 'Success Rate (%)' }, max: 100 });
+                        sizeBarChart.data.datasets = [
+                            { label: 'Download Success Rate', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Upload Success Rate', data: [], backgroundColor: UPLOAD_COLOR }
+                        ];
+                        sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => {
+                            const item = items[0]; const data = processedData[item.dataIndex];
+                            return item.datasetIndex === 0 ? `Raw: ${data.dl_s}/${data.dl_s + data.dl_f}` : `Raw: ${data.ul_s}/${data.ul_s + data.ul_f}`;
+                        };
+                        break;
                 }
-                sizeBarChart.isRateView = sizeViewIsPercentage;
+                sizeBarChart.currentViewMode = sizeChartViewMode;
             }
 
             // --- ALWAYS UPDATE DATA & DYNAMIC OPTIONS ---
-            if (sizeViewIsPercentage) {
-                // Dynamically calculate the Y-axis minimum to ensure all data is visible
-                const allRates = downloadSuccessRate.concat(uploadSuccessRate).filter(r => r > 0);
-                const minRate = allRates.length > 0 ? Math.min(...allRates) : 95;
-
-                // The fix: Set the axis minimum. Give it a bit of padding if it's below 95.
-                sizeBarChart.options.scales.y.min = Math.floor(Math.min(95, minRate < 95 ? minRate - 1 : 95));
-
-                sizeBarChart.data.datasets[0].data = downloadSuccessRate;
-                sizeBarChart.data.datasets[1].data = uploadSuccessRate;
-            } else {
-                sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s);
-                sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s);
-                sizeBarChart.data.datasets[2].data = processedData.map(d => d.dl_f);
-                sizeBarChart.data.datasets[3].data = processedData.map(d => d.ul_f);
+            switch (sizeChartViewMode) {
+                case 'counts':
+                    sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s); sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s);
+                    sizeBarChart.data.datasets[2].data = processedData.map(d => d.dl_f); sizeBarChart.data.datasets[3].data = processedData.map(d => d.ul_f);
+                    break;
+                case 'percentages':
+                    const total = processedData.reduce((sum, d) => sum + d.dl_s + d.dl_f + d.ul_s + d.ul_f, 0);
+                    if (total > 0) {
+                        sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s / total * 100); sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s / total * 100);
+                        sizeBarChart.data.datasets[2].data = processedData.map(d => d.dl_f / total * 100); sizeBarChart.data.datasets[3].data = processedData.map(d => d.ul_f / total * 100);
+                    }
+                    break;
+                case 'rates':
+                    const dlRates = processedData.map(d => { const total = d.dl_s + d.dl_f; return total > 0 ? (d.dl_s / total * 100) : 0; });
+                    const ulRates = processedData.map(d => { const total = d.ul_s + d.ul_f; return total > 0 ? (d.ul_s / total * 100) : 0; });
+                    const minRate = Math.min(...dlRates.filter(r => r > 0), ...ulRates.filter(r => r > 0), 95);
+                    sizeBarChart.options.scales.y.min = Math.floor(Math.min(95, minRate < 95 ? minRate - 1 : 95));
+                    sizeBarChart.data.datasets[0].data = dlRates; sizeBarChart.data.datasets[1].data = ulRates;
+                    break;
             }
             sizeBarChart.update();
         }
@@ -917,7 +923,18 @@
 
         // --- Event Listeners ---
         document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); satelliteViewIsBySize = !satelliteViewIsBySize; this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size'; updateSatelliteChart(lastSatelliteData); });
-        document.getElementById('toggle-size-view').addEventListener('click', function(e) { e.preventDefault(); sizeViewIsPercentage = !sizeViewIsPercentage; this.textContent = sizeViewIsPercentage ? 'Show Counts' : 'Show Success Rate'; updateSizeBarChart(lastTransferSizes); });
+
+        document.getElementById('size-view-toggles').addEventListener('click', function(e) {
+            e.preventDefault();
+            const target = e.target;
+            if (target.tagName === 'A' && !target.classList.contains('active')) {
+                sizeChartViewMode = target.getAttribute('data-view');
+                document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active'));
+                target.classList.add('active');
+                updateSizeBarChart(lastTransferSizes);
+            }
+        });
+
         document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.view = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); updatePerformanceChart(); } });
         document.getElementById('time-range-toggles').addEventListener('click', function(e) {
             e.preventDefault();
