@@ -716,7 +716,7 @@
             }
             performanceChartInstance = new Chart(ctx, { type: chartType, data: { datasets: [] }, options: options });
         }
-        const satelliteChart = new Chart(document.getElementById('satelliteChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Downloads/Audits', data: [], backgroundColor: DOWNLOAD_COLOR }] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true, title: { display: true, text: 'Pieces' } }, y: { stacked: true } }, plugins: { tooltip: { callbacks: { footer: function(tooltipItems) { const context = tooltipItems[0]; if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return ''; const satData = lastSatelliteData[context.dataIndex]; const lines = []; const totalDl = satData.downloads; if (totalDl > 0) lines.push(`DL Success: ${(satData.dl_success/totalDl*100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); const totalUl = satData.uploads; if (totalUl > 0) lines.push(`UL Success: ${(satData.ul_success/totalUl*100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); const totalAudit = satData.audits; if (totalAudit > 0) lines.push(`Audit Success: ${(satData.audit_success/totalAudit*100).toFixed(2)}% (${satData.audit_success}/${totalAudit})`); return lines; } } } } } });
+        const satelliteChart = new Chart(document.getElementById('satelliteChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Downloads/Audits', data: [], backgroundColor: DOWNLOAD_COLOR }] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true, title: { display: true, text: 'Pieces' } }, y: { stacked: true } }, plugins: { tooltip: { callbacks: { footer: function(tooltipItems) { const context = tooltipItems[0]; if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return ''; const satData = lastSatelliteData[context.dataIndex]; const lines = []; const totalDl = satData.downloads + satData.audits; if (totalDl > 0) lines.push(`DL Success: ${(satData.dl_success/totalDl*100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); const totalUl = satData.uploads; if (totalUl > 0) lines.push(`UL Success: ${(satData.ul_success/totalUl*100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); return lines; } } } } } });
         const sizeBarChart = new Chart(document.getElementById('sizeBarChart').getContext('2d'), { type: 'bar', data: { labels: [], datasets: [{ label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' }, { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Size Bucket' }, stacked: true }, y: { title: { display: true, text: 'Count' }, stacked: true } }, plugins: { legend: { position: 'top' }, tooltip: { callbacks: { footer: function(tooltipItems) { const item = tooltipItems[0]; const datasetLabels = ['successful downloads', 'successful uploads', 'failed downloads', 'failed uploads']; return `${item.parsed.y} ${datasetLabels[item.datasetIndex]} in this size range`; } } } } } });
         sizeBarChart.currentViewMode = 'counts'; // Add state to the chart instance
         let sizeChartViewMode = 'counts'; // counts, percentages, rates
@@ -1258,9 +1258,22 @@
         function handleThemeChange(isDarkMode) {
             const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
             const textColor = isDarkMode ? '#e0e0e0' : '#333';
-            Chart.defaults.color = textColor; Chart.defaults.borderColor = gridColor;
+            const tooltipBackgroundColor = isDarkMode ? 'rgba(30, 30, 30, 0.9)' : 'rgba(255, 255, 255, 0.95)';
+            const tooltipBorderColor = isDarkMode ? '#555' : '#ccc';
+
+            Chart.defaults.color = textColor;
+            Chart.defaults.borderColor = gridColor;
+
             Object.values(Chart.instances).forEach(chart => {
-                if(chart.options.plugins.tooltip) { chart.options.plugins.tooltip.titleColor = textColor; chart.options.plugins.tooltip.bodyColor = textColor; chart.options.plugins.tooltip.footerColor = textColor; }
+                if(chart.options.plugins && chart.options.plugins.tooltip) {
+                    const tooltip = chart.options.plugins.tooltip;
+                    tooltip.backgroundColor = tooltipBackgroundColor;
+                    tooltip.borderColor = tooltipBorderColor;
+                    tooltip.borderWidth = 1;
+                    tooltip.titleColor = textColor;
+                    tooltip.bodyColor = textColor;
+                    tooltip.footerColor = textColor;
+                }
                 chart.update();
             });
         }
