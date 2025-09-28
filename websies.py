@@ -60,6 +60,7 @@ app_state: Dict[str, Any] = {
     'geoip_cache': {},
     'db_write_lock': asyncio.Lock(),  # Lock to serialize DB write operations
     'db_write_queue': asyncio.Queue(maxsize=DB_QUEUE_MAX_SIZE),
+    'stats_cache': {}, # New: Cache for pre-computed stats payloads
 }
 
 # --- New Helper Function for Parsing Size Strings ---
@@ -581,12 +582,11 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
             "historical_stats": [], "error_categories": [], "top_pieces": [], "top_countries_dl": [], "top_countries_ul": []
         }
 
-    first_event_iso, last_event_iso = min(e['timestamp'] for e in events_copy).isoformat(), max(e['timestamp'] for e in events_copy).isoformat()
-
     dl_s, dl_f, ul_s, ul_f, a_s, a_f = 0, 0, 0, 0, 0, 0
     total_dl_size, total_ul_size = 0, 0
     sats, cdl, cul, error_agg = {}, Counter(), Counter(), {}
     hp = {}
+    min_ts, max_ts = None, None
 
     dls_success, dls_failed = Counter(), Counter()
     uls_success, uls_failed = Counter(), Counter()
@@ -595,8 +595,15 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
 
     def aggregate_error(reason):
         if not reason: return
-        tokens = TOKEN_REGEX.findall(reason)
-        template = TOKEN_REGEX.sub('#', reason)
+
+        # --- OPTIMIZATION: Use a single re.sub with a callback ---
+        tokens = []
+        def repl(match):
+            tokens.append(match.group(0))
+            return '#'
+        template = TOKEN_REGEX.sub(repl, reason)
+        # --- END OPTIMIZATION ---
+
         if template not in error_agg:
             placeholders = []
             for token in tokens:
@@ -625,6 +632,14 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
                         except ValueError: pass
 
     for e in events_copy:
+        # --- OPTIMIZATION: Combine min/max search with main loop ---
+        timestamp = e['timestamp']
+        if min_ts is None or timestamp < min_ts:
+            min_ts = timestamp
+        if max_ts is None or timestamp > max_ts:
+            max_ts = timestamp
+        # --- END OPTIMIZATION ---
+
         action, status, sat_id, size, country, piece_id, error_reason = e['action'], e['status'], e['satellite_id'], e['size'], e['location']['country'], e['piece_id'], e['error_reason']
         if sat_id not in sats: sats[sat_id] = {'uploads': 0, 'downloads': 0, 'audits': 0, 'ul_success': 0, 'dl_success': 0, 'audit_success': 0, 'total_upload_size': 0, 'total_download_size': 0}
         if action == 'GET_AUDIT':
@@ -652,6 +667,9 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
                 total_ul_size += size; uls_success[size_bucket] += 1
             else:
                 ul_f += 1; aggregate_error(error_reason); uls_failed[size_bucket] += 1
+
+    first_event_iso = min_ts.isoformat() if min_ts else None
+    last_event_iso = max_ts.isoformat() if max_ts else None
 
     hist_stats = []
     with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
@@ -722,25 +740,61 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
         "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(10) if k],
     }
 
-async def send_stats_for_view(app, ws, view):
-    loop = asyncio.get_running_loop()
-    payload = await loop.run_in_executor(app['db_executor'], blocking_prepare_stats, view, app_state['nodes'])
-    if payload:
-        try:
-            await ws.send_json(payload)
-        except (ConnectionResetError, asyncio.CancelledError):
-            pass
-
-async def periodic_stats_updater(app):
-    log.info("Periodic stats updater task started.")
+async def stats_baker_and_broadcaster_task(app):
+    """
+    This task replaces the old periodic_stats_updater. It computes stats only
+    once per unique client view, caches the result, and then broadcasts it
+    to all relevant clients. This is far more efficient.
+    """
+    log.info("Stats baker and broadcaster task started.")
     while True:
         await asyncio.sleep(STATS_INTERVAL_SECONDS)
         try:
-            tasks = [send_stats_for_view(app, ws, ws_state['view']) for ws, ws_state in app_state['websockets'].items()]
-            if tasks:
-                await asyncio.gather(*tasks)
+            websockets_by_view = {}
+            # Group websockets by their current view
+            for ws, state in app_state['websockets'].items():
+                # Use a tuple for the view so it's hashable and can be a dict key
+                view_tuple = tuple(state.get('view', ['Aggregate']))
+                if view_tuple not in websockets_by_view:
+                    websockets_by_view[view_tuple] = []
+                websockets_by_view[view_tuple].append(ws)
+
+            if not websockets_by_view:
+                continue
+
+            unique_views = list(websockets_by_view.keys())
+            loop = asyncio.get_running_loop()
+
+            # Prepare all parallel computation tasks
+            computation_tasks = []
+            for view_tuple in unique_views:
+                view_list = list(view_tuple)
+                task = loop.run_in_executor(app['db_executor'], blocking_prepare_stats, view_list, app_state['nodes'])
+                computation_tasks.append(task)
+
+            # Execute all stat preparations in parallel in the thread pool
+            results = await asyncio.gather(*computation_tasks)
+
+            # Now we have all the results. Cache them and prepare broadcast tasks.
+            broadcast_tasks = []
+            for i, view_tuple in enumerate(unique_views):
+                payload = results[i]
+                if payload:
+                    # Cache the fresh result
+                    app_state['stats_cache'][view_tuple] = payload
+
+                    # Broadcast to all websockets subscribed to this view
+                    for ws in websockets_by_view[view_tuple]:
+                        try:
+                            broadcast_tasks.append(asyncio.create_task(ws.send_json(payload)))
+                        except (ConnectionResetError, asyncio.CancelledError):
+                            pass # Client disconnected, will be cleaned up on next msg
+
+            if broadcast_tasks:
+                await asyncio.gather(*broadcast_tasks, return_exceptions=True)
+
         except Exception:
-            log.error("Error in periodic_stats_updater:", exc_info=True)
+            log.error("Error in stats_baker_and_broadcaster_task:", exc_info=True)
 
 
 async def performance_aggregator_task(app):
@@ -965,6 +1019,35 @@ def blocking_get_hashstore_stats(filters: Dict[str, Any]) -> List[Dict[str, Any]
     log.info(f"Found {len(results)} hashstore events matching filters.")
     return results
 
+async def send_initial_stats(app, ws, view: List[str]):
+    """
+    Sends stats to a client upon connection or view change. It first tries
+    to find a fresh payload in the cache, and if not found, computes it
+    on-demand to provide immediate feedback to the user.
+    """
+    view_tuple = tuple(view)
+
+    # Try to send from cache first
+    if view_tuple in app_state['stats_cache']:
+        try:
+            await ws.send_json(app_state['stats_cache'][view_tuple])
+            return
+        except (ConnectionResetError, asyncio.CancelledError):
+            return # Client disconnected
+
+    # If not in cache, compute it now for this one client
+    log.info(f"Cache miss for view {view}. Computing stats on-demand.")
+    loop = asyncio.get_running_loop()
+    try:
+        payload = await loop.run_in_executor(app['db_executor'], blocking_prepare_stats, view, app_state['nodes'])
+        if payload:
+            app_state['stats_cache'][view_tuple] = payload
+            await ws.send_json(payload)
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass # Client disconnected during computation
+    except Exception:
+        log.error(f"Error computing initial stats for view {view}:", exc_info=True)
+
 async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=10)
     await ws.prepare(request)
@@ -975,7 +1058,7 @@ async def websocket_handler(request):
 
     node_names = list(app['nodes'].keys())
     await ws.send_json({"type": "init", "nodes": node_names})
-    await send_stats_for_view(app, ws, ["Aggregate"])
+    await send_initial_stats(app, ws, ["Aggregate"])
 
     try:
         async for msg in ws:
@@ -994,7 +1077,7 @@ async def websocket_handler(request):
                             if is_aggregate or are_nodes_valid:
                                 app_state['websockets'][ws]['view'] = new_view
                                 log.info(f"Client switched view to: {new_view}")
-                                await send_stats_for_view(app, ws, new_view)
+                                await send_initial_stats(app, ws, new_view)
 
                     elif msg_type == 'get_historical_performance':
                         view = data.get('view') # This is now a list
@@ -1172,7 +1255,7 @@ async def start_background_tasks(app):
 
     app['tasks'].extend([
         asyncio.create_task(prune_live_events_task(app)),
-        asyncio.create_task(periodic_stats_updater(app)),
+        asyncio.create_task(stats_baker_and_broadcaster_task(app)),
         asyncio.create_task(performance_aggregator_task(app)),
         asyncio.create_task(debug_logger_task(app)),
         asyncio.create_task(database_writer_task(app)),
@@ -1228,4 +1311,3 @@ if __name__ == "__main__":
     log.info(f"Server starting on http://{SERVER_HOST}:{SERVER_PORT}")
     log.info(f"Monitoring nodes: {list(app['nodes'].keys())}")
     web.run_app(app, host=SERVER_HOST, port=SERVER_PORT)
-
