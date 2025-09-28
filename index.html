@@ -344,6 +344,7 @@
                 this.particleSystem = [];
                 this.lastRenderTime = Date.now();
                 this.gridSize = 0.5; // Degrees for heatmap grid
+                this.isPaused = false;
 
                 this.setupCanvas();
                 this.startAnimation();
@@ -643,16 +644,34 @@
 
             startAnimation() {
                 const animate = () => {
+                    if (this.isPaused) {
+                        this.animationFrame = null; // Let the loop die
+                        return;
+                    }
                     const now = Date.now();
                     this.dataPoints.forEach(p => { if (p.isNew && now - p.timestamp > 500) p.isNew = false; });
                     if (this.particleSystem.length > 0 || this.dataPoints.some(p => p.isNew)) { this.canvasLayer.needRedraw(); }
                     this.animationFrame = requestAnimationFrame(animate);
                 };
-                animate();
+                if (!this.animationFrame) { // Prevent multiple loops
+                    this.animationFrame = requestAnimationFrame(animate);
+                }
+            }
+
+            pause() {
+                this.isPaused = true;
+            }
+
+            resume() {
+                if (this.isPaused) {
+                    this.isPaused = false;
+                    this.startAnimation(); // Restart loop if it died
+                    this.canvasLayer.needRedraw(); // Force a redraw on resume
+                }
             }
 
             destroy() {
-                if (this.animationFrame) cancelAnimationFrame(this.animationFrame);
+                this.isPaused = true; // This will stop the animation loop
                 if (this.canvasLayer) this.map.removeLayer(this.canvasLayer);
             }
         }
@@ -723,6 +742,11 @@
         let hashstoreSort = { column: 'last_run_iso', direction: 'desc' };
 
         // --- Card Visibility & Layout ---
+        function isCardVisible(cardId) {
+            // Default to visible if the state hasn't been explicitly set to false
+            return cardVisibilityState[cardId] !== false;
+        }
+
         function initializeDisplayMenu() {
             const container = document.getElementById('display-menu-container');
             const btn = document.getElementById('display-menu-btn');
@@ -790,6 +814,15 @@
                     const isVisible = cardVisibilityState[cardId];
                     cardElement.classList.toggle('is-hidden', !isVisible);
                     checkbox.checked = isVisible;
+
+                    // Pause/resume the heatmap based on visibility
+                    if (cardId === 'map-card') {
+                        if (isVisible) {
+                            heatmap.resume();
+                        } else {
+                            heatmap.pause();
+                        }
+                    }
                 }
             }
             // Then, reflow the grid
@@ -996,7 +1029,14 @@
         let sizeChartViewMode = 'counts'; // counts, percentages, rates
 
         // --- UI Update Functions ---
-        function updateAllVisuals(data) { updateOverallStats(data.overall); updateSatelliteChart(data.satellites); updateSizeBarChart(data.transfer_sizes); updateTitles(data.first_event_iso, data.last_event_iso); updateHistoricalTable(data.historical_stats); updateAnalysisTables(data); }
+        function updateAllVisuals(data) {
+            if (isCardVisible('stats-card')) updateOverallStats(data.overall);
+            if (isCardVisible('satellite-card')) updateSatelliteChart(data.satellites);
+            if (isCardVisible('size-charts-card')) updateSizeBarChart(data.transfer_sizes);
+            updateTitles(data.first_event_iso, data.last_event_iso);
+            if (isCardVisible('health-card')) updateHistoricalTable(data.historical_stats);
+            if (isCardVisible('analysis-card')) updateAnalysisTables(data);
+        }
         function updateOverallStats(stats) { if (!stats || Object.keys(stats).length === 0) return; const totalDownloads = stats.dl_success + stats.dl_fail; const totalUploads = stats.ul_success + stats.ul_fail; const totalAudits = stats.audit_success + stats.audit_fail; const dlRate = totalDownloads > 0 ? (stats.dl_success / totalDownloads * 100).toFixed(2) : '100.00'; const ulRate = totalUploads > 0 ? (stats.ul_success / totalUploads * 100).toFixed(2) : '100.00'; const auditRate = totalAudits > 0 ? (stats.audit_success / totalAudits * 100).toFixed(2) : '100.00'; document.getElementById('dl-rate').textContent = `${dlRate}%`; document.getElementById('dl-rate').className = `stat-value ${getRateClass(parseFloat(dlRate))}`; document.getElementById('dl-success').textContent = stats.dl_success; document.getElementById('dl-total').textContent = totalDownloads; document.getElementById('ul-rate').textContent = `${ulRate}%`; document.getElementById('ul-rate').className = `stat-value ${getRateClass(parseFloat(ulRate))}`; document.getElementById('ul-success').textContent = stats.ul_success; document.getElementById('ul-total').textContent = totalUploads; document.getElementById('dl-speed').textContent = `${(stats.avg_egress_mbps||0).toFixed(2)} Mbps`; document.getElementById('ul-speed').textContent = `${(stats.avg_ingress_mbps||0).toFixed(2)} Mbps`; document.getElementById('audit-rate').textContent = `${auditRate}%`; document.getElementById('audit-rate').className = `stat-value ${getRateClass(parseFloat(auditRate))}`; document.getElementById('audit-success').textContent = stats.audit_success; document.getElementById('audit-total').textContent = totalAudits; }
         function updateSatelliteChart(satStats) {
             if (!satStats) return;
@@ -1121,15 +1161,24 @@
             const viewName = getFriendlyViewName();
             const viewNameForTitle = viewName === 'Aggregate' ? '' : ` (${viewName})`;
 
-            document.getElementById('stats-title').textContent = `Overall Success Rates & Speed${viewNameForTitle} ${timeWindowStr}`;
-            document.getElementById('satellite-title').textContent = `Traffic by Satellite${viewNameForTitle} ${timeWindowStr}`;
-            document.getElementById('size-chart-title').textContent = `Data Transfer Size Distribution${viewNameForTitle} ${timeWindowStr}`;
-            document.getElementById('hashstore-chart-title').textContent = `Hashstore Compaction Trends${viewNameForTitle}`;
-            document.getElementById('hashstore-title').textContent = `Hashstore Compaction Details${viewNameForTitle}`;
-
-            const isAggregateView = currentNodeView.length > 1 || (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate');
-            document.getElementById('dl-speed-label').textContent = isAggregateView ? 'Total Download Speed' : 'Download Speed';
-            document.getElementById('ul-speed-label').textContent = isAggregateView ? 'Total Upload Speed' : 'Upload Speed';
+            if (isCardVisible('stats-card')) {
+                document.getElementById('stats-title').textContent = `Overall Success Rates & Speed${viewNameForTitle} ${timeWindowStr}`;
+                const isAggregateView = currentNodeView.length > 1 || (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate');
+                document.getElementById('dl-speed-label').textContent = isAggregateView ? 'Total Download Speed' : 'Download Speed';
+                document.getElementById('ul-speed-label').textContent = isAggregateView ? 'Total Upload Speed' : 'Upload Speed';
+            }
+             if (isCardVisible('satellite-card')) {
+                document.getElementById('satellite-title').textContent = `Traffic by Satellite${viewNameForTitle} ${timeWindowStr}`;
+            }
+            if (isCardVisible('size-charts-card')) {
+                document.getElementById('size-chart-title').textContent = `Data Transfer Size Distribution${viewNameForTitle} ${timeWindowStr}`;
+            }
+            if (isCardVisible('hashstore-chart-card')) {
+                document.getElementById('hashstore-chart-title').textContent = `Hashstore Compaction Trends${viewNameForTitle}`;
+            }
+            if (isCardVisible('hashstore-card')) {
+                document.getElementById('hashstore-title').textContent = `Hashstore Compaction Details${viewNameForTitle}`;
+            }
         }
         function updateHistoricalTable(history) { const tbody = document.getElementById('history-body'); tbody.innerHTML = ''; if (!history || history.length === 0) { tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No historical data yet.</td></tr>'; return; } for (const hour of history) { const totalDl = hour.dl_success + hour.dl_fail, dlRate = totalDl > 0 ? (hour.dl_success / totalDl * 100) : 100; const totalUl = hour.ul_success + hour.ul_fail, ulRate = totalUl > 0 ? (hour.ul_success / totalUl * 100) : 100; const totalAudit = hour.audit_success + hour.audit_fail, auditRate = totalAudit > 0 ? (hour.audit_success / totalAudit * 100) : 100; const dlSpeed = hour.dl_mbps !== undefined ? hour.dl_mbps.toFixed(2) : '...'; const ulSpeed = hour.ul_mbps !== undefined ? hour.ul_mbps.toFixed(2) : '...'; const row = tbody.insertRow(); row.innerHTML = `<td>${new Date(hour.hour_timestamp).toLocaleTimeString([],{hour:'numeric'})}</td><td class="numeric ${getRateClass(dlRate)}">${dlRate.toFixed(2)}%</td><td class="numeric ${getRateClass(ulRate)}">${ulRate.toFixed(2)}%</td><td class="numeric ${getRateClass(auditRate)}">${auditRate.toFixed(2)}%</td><td class="numeric">${dlSpeed} Mbps</td><td class="numeric">${ulSpeed} Mbps</td>`; } }
         function updateAnalysisTables(data) { const errorBody = document.getElementById('error-body'); errorBody.innerHTML = ''; if (data.error_categories && data.error_categories.length > 0) { data.error_categories.forEach(e => { errorBody.innerHTML += `<tr><td class="reason-cell">${e.reason}</td><td class="numeric">${e.count}</td></tr>`; }); } else { errorBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No errors in this time window.</td></tr>'; } const piecesBody = document.getElementById('pieces-body'); piecesBody.innerHTML = ''; if (data.top_pieces && data.top_pieces.length > 0) { data.top_pieces.forEach(p => { piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,25)}...</td><td class="numeric">${p.count}</td><td class="numeric">${formatBytes(p.size)}</td></tr>`; }); } else { piecesBody.innerHTML = '<tr><td colspan="3" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesDlBody = document.getElementById('countries-dl-body'); countriesDlBody.innerHTML = ''; if (data.top_countries_dl && data.top_countries_dl.length > 0) { data.top_countries_dl.forEach(c => countriesDlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesDlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesUlBody = document.getElementById('countries-ul-body'); countriesUlBody.innerHTML = ''; if (data.top_countries_ul && data.top_countries_ul.length > 0) { data.top_countries_ul.forEach(c => countriesUlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesUlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } }
@@ -1218,7 +1267,9 @@
 
         function renderHashstoreView() {
             // 1. Update Chart with date-sorted data
-            updateHashstoreChart(hashstoreMasterData);
+            if (isCardVisible('hashstore-chart-card')) {
+                updateHashstoreChart(hashstoreMasterData);
+            }
 
             // 2. Pre-process data for table: create a copy and add derived metrics
             let tableData = hashstoreMasterData.map(item => {
@@ -1248,7 +1299,9 @@
             });
 
             // 4. Render table
-            renderHashstoreTable(tableData);
+            if (isCardVisible('hashstore-card')) {
+                renderHashstoreTable(tableData);
+            }
         }
 
         function renderHashstoreTable(data) {
@@ -1399,8 +1452,8 @@
         }
 
         // --- Event Listeners ---
-        document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); satelliteViewIsBySize = !satelliteViewIsBySize; this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size'; updateSatelliteChart(lastSatelliteData); });
-        document.getElementById('size-view-toggles').addEventListener('click', function(e) { e.preventDefault(); const target = e.target; if (target.tagName === 'A' && !target.classList.contains('active')) { sizeChartViewMode = target.getAttribute('data-view'); document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active')); target.classList.add('active'); updateSizeBarChart(lastTransferSizes); } });
+        document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); satelliteViewIsBySize = !satelliteViewIsBySize; this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size'; if(isCardVisible('satellite-card')) updateSatelliteChart(lastSatelliteData); });
+        document.getElementById('size-view-toggles').addEventListener('click', function(e) { e.preventDefault(); const target = e.target; if (target.tagName === 'A' && !target.classList.contains('active')) { sizeChartViewMode = target.getAttribute('data-view'); document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active')); target.classList.add('active'); if(isCardVisible('size-charts-card')) updateSizeBarChart(lastTransferSizes); } });
         document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.view = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); updatePerformanceChart(); } });
         document.getElementById('time-range-toggles').addEventListener('click', function(e) { e.preventDefault(); const newRange = e.target.getAttribute('data-range'); if (newRange === performanceState.range) return; performanceState.range = newRange; document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); createPerformanceChart(); if (newRange === '5m') { updatePerformanceChart(); } else { const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange]; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours })); } } });
         document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.agg = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); updatePerformanceChart(); } });
@@ -1461,6 +1514,7 @@
         }
 
         function updatePerformanceChart() {
+            if (!isCardVisible('performance-card')) return;
             try {
                 const isLiveView = performanceState.range === '5m';
                 const view = performanceState.view;
@@ -1537,7 +1591,7 @@
                     }
                     break;
                 case 'log_entry':
-                    if (data.location && data.location.lat) {
+                    if (isCardVisible('map-card') && data.location && data.location.lat) {
                         heatmap.addDataPoint(data.location.lat, data.location.lon, data.size || 1000, data.action, data.action, data.timestamp);
                     }
                     break;
@@ -1563,7 +1617,7 @@
                     updateNodeBins(node_name);
                     updateNodeBins('Aggregate');
 
-                    if (performanceState.range === '5m') {
+                    if (isCardVisible('performance-card') && performanceState.range === '5m') {
                         // New logic: Update the specific view's bins
                         const viewKey = currentNodeView.join(',');
                         if (currentNodeView.includes(node_name) || (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate')) {
@@ -1595,7 +1649,7 @@
                     });
                     livePerformanceBins[viewKey] = bins;
 
-                    if (viewKey === currentNodeView.join(',') && performanceState.range === '5m') {
+                    if (isCardVisible('performance-card') && viewKey === currentNodeView.join(',') && performanceState.range === '5m') {
                         updatePerformanceChart();
                     }
                     break;
@@ -1603,7 +1657,9 @@
                 case 'aggregated_performance_data':
                     historicalPerformanceData = dataTemplate();
                     data.performance_data.forEach(point => { const ts = new Date(point.timestamp); historicalPerformanceData.rate[0].push({x:ts, y:point.ingress_mbps}); historicalPerformanceData.rate[1].push({x:ts, y:point.egress_mbps}); historicalPerformanceData.volume[0].push({x:ts, y:point.ingress_bytes / 1e6}); historicalPerformanceData.volume[1].push({x:ts, y:point.egress_bytes / 1e6}); historicalPerformanceData.pieces[0].push({x:ts, y:point.ingress_pieces}); historicalPerformanceData.pieces[1].push({x:ts, y:point.egress_pieces}); historicalPerformanceData.concurrency[0].push({x:ts, y:point.concurrency}); });
-                    updatePerformanceChart();
+                    if (isCardVisible('performance-card')) {
+                        updatePerformanceChart();
+                    }
                     break;
                 case 'stats_update':
                     updateAllVisuals(data);
