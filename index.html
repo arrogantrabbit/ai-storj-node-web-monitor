@@ -732,6 +732,9 @@
         // Each node's data is an object where keys are binned timestamps.
         let livePerformanceBins = {};
         let historicalPerformanceData = {};
+        let maxHistoricalTimestampByView = {};
+        let livePerformanceBuffer = [];
+        let isHistoricalDataLoaded = false;
         let currentNodeView = ['Aggregate'];
         let availableNodes = [];
         let performanceChartInstance = null;
@@ -1485,10 +1488,20 @@
         document.getElementById('node-selector').addEventListener('click', function(e) {
             e.preventDefault();
             if (!e.target.hasAttribute('data-view')) return;
+
             const clickedView = e.target.getAttribute('data-view');
+
+            // Reset state for the new view BEFORE changing currentNodeView
+            initializePerformanceDataStateForView(clickedView === 'Aggregate' ? ['Aggregate'] : [clickedView]);
+
+
             const isAggregate = clickedView === 'Aggregate';
             if (isAggregate) { currentNodeView = ['Aggregate']; } else { if (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate') { currentNodeView = [clickedView]; } else { const index = currentNodeView.indexOf(clickedView); if (index > -1) { currentNodeView.splice(index, 1); } else { currentNodeView.push(clickedView); } } }
             if (!isAggregate) { if (currentNodeView.length === 0) { currentNodeView = ['Aggregate']; } else if (currentNodeView.length === availableNodes.length) { currentNodeView = ['Aggregate']; } }
+
+            initializePerformanceDataStateForView(currentNodeView);
+
+
             renderNodeSelector();
             heatmap.clearData();
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1505,12 +1518,22 @@
         let ws;
         const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
 
+        function initializePerformanceDataStateForView(view) {
+             const viewKey = Array.isArray(view) ? view.join(',') : view;
+             livePerformanceBins[viewKey] = {};
+             maxHistoricalTimestampByView[viewKey] = 0;
+             isHistoricalDataLoaded = false;
+             livePerformanceBuffer = [];
+        }
+
         function initializePerformanceData(nodes) {
             livePerformanceBins = {}; // Reset all data
-            nodes.forEach(node => {
-                livePerformanceBins[node] = {};
-            });
+            maxHistoricalTimestampByView = {};
             historicalPerformanceData = dataTemplate(); // For non-live views
+            initializePerformanceDataStateForView(['Aggregate']);
+            nodes.forEach(node => {
+                initializePerformanceDataStateForView([node]);
+            });
         }
 
         function updatePerformanceChart() {
@@ -1580,6 +1603,49 @@
         }
 
         // --- Data Processing on Message ---
+
+        function processLivePerformanceUpdate(data) {
+            const { node_name, bins } = data;
+            const updateNodeBins = (targetNodeName) => {
+                const maxTs = maxHistoricalTimestampByView[targetNodeName] || 0;
+                if (!livePerformanceBins[targetNodeName]) {
+                    livePerformanceBins[targetNodeName] = {};
+                }
+                const targetBins = livePerformanceBins[targetNodeName];
+                for (const ts in bins) {
+                    if (parseInt(ts, 10) <= maxTs) continue;
+
+                    if (!targetBins[ts]) {
+                        targetBins[ts] = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0 };
+                    }
+                    const binData = bins[ts];
+                    targetBins[ts].ingress_bytes += binData.ingress_bytes || 0;
+                    targetBins[ts].egress_bytes += binData.egress_bytes || 0;
+                    targetBins[ts].ingress_pieces += binData.ingress_pieces || 0;
+                    targetBins[ts].egress_pieces += binData.egress_pieces || 0;
+                    targetBins[ts].total_ops += binData.total_ops || 0;
+                }
+                const cutoff = Date.now() - (5 * 60 * 1000 + 5000);
+                for (const ts in targetBins) {
+                    if (parseInt(ts, 10) < cutoff) {
+                        delete targetBins[ts];
+                    }
+                }
+            };
+            updateNodeBins(node_name);
+            updateNodeBins('Aggregate');
+
+            if (isCardVisible('performance-card') && performanceState.range === '5m') {
+                const viewKey = currentNodeView.join(',');
+                if (currentNodeView.length > 1 && currentNodeView.includes(node_name)) {
+                    updateNodeBins(viewKey);
+                }
+                clearTimeout(chartUpdateTimer);
+                chartUpdateTimer = setTimeout(updatePerformanceChart, 250);
+            }
+        }
+
+
         function handleWebSocketMessage(data) {
             switch(data.type) {
                 case 'init':
@@ -1596,58 +1662,50 @@
                     }
                     break;
                 case 'performance_batch_update': {
-                    const { node_name, bins } = data;
-                    const updateNodeBins = (targetNodeName) => {
-                        if (!livePerformanceBins[targetNodeName]) {
-                            livePerformanceBins[targetNodeName] = {};
-                        }
-                        const targetBins = livePerformanceBins[targetNodeName];
-                        for (const ts in bins) {
-                            if (!targetBins[ts]) {
-                                targetBins[ts] = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0 };
-                            }
-                            const binData = bins[ts];
-                            targetBins[ts].ingress_bytes += binData.ingress_bytes || 0;
-                            targetBins[ts].egress_bytes += binData.egress_bytes || 0;
-                            targetBins[ts].ingress_pieces += binData.ingress_pieces || 0;
-                            targetBins[ts].egress_pieces += binData.egress_pieces || 0;
-                            targetBins[ts].total_ops += binData.total_ops || 0;
-                        }
-                    };
-                    updateNodeBins(node_name);
-                    updateNodeBins('Aggregate');
-
-                    if (isCardVisible('performance-card') && performanceState.range === '5m') {
-                        // New logic: Update the specific view's bins
-                        const viewKey = currentNodeView.join(',');
-                        if (currentNodeView.includes(node_name) || (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate')) {
-                             if (!livePerformanceBins[viewKey]) livePerformanceBins[viewKey] = {};
-                             const targetBins = livePerformanceBins[viewKey];
-                             for (const ts in bins) {
-                                 if (!targetBins[ts]) targetBins[ts] = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0 };
-                                 Object.keys(bins[ts]).forEach(k => targetBins[ts][k] = (targetBins[ts][k] || 0) + bins[ts][k]);
-                             }
-                        }
-                        clearTimeout(chartUpdateTimer);
-                        chartUpdateTimer = setTimeout(updatePerformanceChart, 250);
+                    if (!isHistoricalDataLoaded) {
+                        livePerformanceBuffer.push(data);
+                    } else {
+                        processLivePerformanceUpdate(data);
                     }
                     break;
                 }
                 case 'historical_performance_data': {
                     const viewKey = Array.isArray(data.view) ? data.view.join(',') : data.view;
-                    const bins = {};
+                    const historicalBins = {};
                     const binSize = PERFORMANCE_INTERVAL_MS;
+                    let maxHistoricalTimestamp = 0;
 
                     data.performance_data.forEach(p => {
                         const ts = new Date(p.timestamp).getTime();
                         const binnedTimestamp = Math.floor(ts / binSize) * binSize;
-                        bins[binnedTimestamp] = {
+                        historicalBins[binnedTimestamp] = {
                             ingress_bytes: p.ingress_bytes, egress_bytes: p.egress_bytes,
                             ingress_pieces: p.ingress_pieces, egress_pieces: p.egress_pieces,
                             total_ops: p.total_ops
                         };
+                        if(binnedTimestamp > maxHistoricalTimestamp) {
+                            maxHistoricalTimestamp = binnedTimestamp;
+                        }
                     });
-                    livePerformanceBins[viewKey] = bins;
+
+                    maxHistoricalTimestampByView[viewKey] = maxHistoricalTimestamp;
+
+                    const existingBins = livePerformanceBins[viewKey] || {};
+
+                    for (const ts in existingBins) {
+                        if (parseInt(ts, 10) > maxHistoricalTimestamp) {
+                            historicalBins[ts] = existingBins[ts];
+                        }
+                    }
+
+                    livePerformanceBins[viewKey] = historicalBins;
+                    isHistoricalDataLoaded = true;
+
+                    const bufferToProcess = [...livePerformanceBuffer];
+                    livePerformanceBuffer = [];
+                    for (const bufferedData of bufferToProcess) {
+                        processLivePerformanceUpdate(bufferedData);
+                    }
 
                     if (isCardVisible('performance-card') && viewKey === currentNodeView.join(',') && performanceState.range === '5m') {
                         updatePerformanceChart();

@@ -881,12 +881,18 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
     time_window_seconds = points * interval_sec
     cutoff_unix = now_unix - time_window_seconds
 
-    if not events:
-        return _zero_fill_performance_data([], cutoff_unix, now_unix, interval_sec)
+    # To prevent a race condition where the historical data includes a partial, final bin,
+    # we will only process data up to the last *full* bin. The live data stream will provide
+    # the subsequent bin, ensuring a clean handoff.
+    last_full_bin_unix = (int(now_unix / interval_sec) - 1) * interval_sec
 
-    recent_events = [e for e in events if e.get('ts_unix', 0) >= cutoff_unix]
+    if not events:
+        return _zero_fill_performance_data([], cutoff_unix, last_full_bin_unix, interval_sec)
+
+    # Filter events to only include those that fall within the full bins we are considering.
+    recent_events = [e for e in events if e.get('ts_unix', 0) >= cutoff_unix and e.get('ts_unix', 0) < last_full_bin_unix + interval_sec]
     if not recent_events:
-        return _zero_fill_performance_data([], cutoff_unix, now_unix, interval_sec)
+        return _zero_fill_performance_data([], cutoff_unix, last_full_bin_unix, interval_sec)
 
     buckets: Dict[int, Dict[str, int]] = {}
     for event in recent_events:
@@ -916,7 +922,7 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
             "total_ops": data['total_ops'], "bin_duration_seconds": interval_sec
         })
 
-    filled_results = _zero_fill_performance_data(sparse_results, cutoff_unix, now_unix, interval_sec)
+    filled_results = _zero_fill_performance_data(sparse_results, cutoff_unix, last_full_bin_unix, interval_sec)
     log.info(f"Returning {len(filled_results)} historical performance data points from in-memory events.")
     return filled_results
 
