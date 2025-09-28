@@ -7,9 +7,9 @@
     <title>Storagenode Pro Monitor</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color 0.3s, color 0.3s; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color: 0.3s, color: 0.3s; }
         .container { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; max-width: 1800px; margin: auto; }
-        .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s, grid-column 0.3s ease, grid-row 0.3s ease; }
+        .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color: 0.3s, grid-column 0.3s ease, grid-row 0.3s ease; }
         .header-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 0; flex-wrap: wrap; gap: 20px; }
         h1 { margin: 0; font-size: 1.8em; color: #1c1e21; }
 
@@ -227,7 +227,8 @@
         </div>
 
         <div id="satellite-card" class="card">
-            <div class="chart-header">
+
+      <div class="chart-header">
                 <h3 id="satellite-title" class="card-title">Traffic by Satellite</h3>
                 <a href="#" id="toggle-satellite-view" class="toggle-link">Show by Size</a>
             </div>
@@ -281,12 +282,21 @@
             <div class="card-content"><canvas id="sizeBarChart"></canvas></div>
         </div>
 
-        <div id="hashstore-card" class="card">
+        <div id="hashstore-chart-card" class="card">
             <div class="card-header-flex">
-                <h3 id="hashstore-title" class="card-title">Hashstore Compaction Stats</h3>
+                <h3 id="hashstore-chart-title" class="card-title">Hashstore Compaction Trends</h3>
                 <div id="hashstore-filters" style="display: flex; gap: 15px; align-items: center; font-size: 0.9em;">
                     <!-- JS populates this -->
                 </div>
+            </div>
+            <div class="card-content" style="position: relative; height:300px;">
+                <canvas id="hashstoreChart"></canvas>
+            </div>
+        </div>
+
+        <div id="hashstore-card" class="card">
+            <div class="card-header-flex">
+                <h3 id="hashstore-title" class="card-title">Hashstore Compaction Details</h3>
             </div>
             <div class="card-content table-container">
                 <table class="info-table">
@@ -694,7 +704,8 @@
             'satellite-card': 'Traffic by Satellite',
             'analysis-card': 'Network & Error Analysis',
             'size-charts-card': 'Data Transfer Size Distribution',
-            'hashstore-card': 'Hashstore Compaction Stats'
+            'hashstore-chart-card': 'Hashstore Compaction Trends',
+            'hashstore-card': 'Hashstore Compaction Details'
         };
         let cardVisibilityState = {};
         const VISIBILITY_STORAGE_KEY = 'storj-pro-monitor-card-visibility';
@@ -707,7 +718,8 @@
         let performanceChartInstance = null;
         let chartUpdateTimer = null; // For debouncing live updates
         let hashstoreMasterData = []; // This holds the raw data from the server
-        let hashstoreFilters = { node_name: 'all', satellite: 'all', store: 'all' };
+        let hashstoreChartInstance = null;
+        let hashstoreFilters = { satellite: 'all', store: 'all' };
         let hashstoreSort = { column: 'last_run_iso', direction: 'desc' };
 
         // --- Card Visibility & Layout ---
@@ -728,6 +740,7 @@
                 `;
             }
             dropdown.innerHTML = dropdownHTML;
+
 
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -831,7 +844,7 @@
             }
 
             // Subsequent full-width cards
-            ['analysis-card', 'size-charts-card', 'hashstore-card'].forEach(cardId => {
+            ['analysis-card', 'size-charts-card', 'hashstore-chart-card', 'hashstore-card'].forEach(cardId => {
                 if (isVisible(cardId)) {
                     setStyle(cardId, '1 / -1', `${currentRow} / ${currentRow + 1}`);
                     currentRow++;
@@ -851,6 +864,85 @@
         const SATELLITE_NAMES = { '121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1', '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1', '12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs': 'eu1', '1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE': 'saltlake' };
 
         // --- Chart Initialization ---
+        function createHashstoreChart() {
+            if (hashstoreChartInstance) {
+                hashstoreChartInstance.destroy();
+            }
+            const ctx = document.getElementById('hashstoreChart').getContext('2d');
+            hashstoreChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'Compaction Date' }
+                        },
+                        'y-data': {
+                            type: 'linear',
+                            position: 'left',
+                            title: { display: true, text: 'Data Size' },
+                            stacked: true,
+                            ticks: {
+                                callback: function(value) { return formatBytes(value); }
+                            }
+                        },
+                        'y-duration': {
+                            type: 'linear',
+                            position: 'right',
+                            title: { display: true, text: 'Duration (s)' },
+                            grid: { drawOnChartArea: false } // only draw grid for left axis
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                beforeBody: function(tooltipItems) {
+                                    const item = tooltipItems[0];
+                                    if (!item) return [];
+
+                                    const chart = item.chart;
+                                    const sortedData = chart.sortedData;
+                                    const dataPoint = sortedData && sortedData[item.dataIndex];
+
+                                    if (!dataPoint) return [];
+
+                                    const satelliteName = SATELLITE_NAMES[dataPoint.satellite] || dataPoint.satellite.substring(0, 12);
+
+                                    return [
+                                        `Node: ${dataPoint.node_name}`,
+                                        `Satellite: ${satelliteName}`,
+                                        `Store: ${dataPoint.store}`,
+                                        '' // Spacer
+                                    ];
+                                },
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) { label += ': '; }
+                                    if (context.parsed.y !== null) {
+                                        if (context.dataset.yAxisID === 'y-data') {
+                                            label += formatBytes(context.parsed.y);
+                                        } else {
+                                            label += `${context.parsed.y.toFixed(1)}s`;
+                                        }
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         function createPerformanceChart() {
             if (performanceChartInstance) {
                 performanceChartInstance.destroy();
@@ -904,7 +996,7 @@
         let sizeChartViewMode = 'counts'; // counts, percentages, rates
 
         // --- UI Update Functions ---
-        function updateAllVisuals(data) { updateOverallStats(data.overall); updateSatelliteChart(data.satellites); updateSizeBarChart(data.transfer_sizes); updateTitles(data.first_event_iso, data.last_event_iso); updateHistoricalTable(data.historical_stats); updateAnalysisTables(data); updateHashstorePanel(data.hashstore_stats); }
+        function updateAllVisuals(data) { updateOverallStats(data.overall); updateSatelliteChart(data.satellites); updateSizeBarChart(data.transfer_sizes); updateTitles(data.first_event_iso, data.last_event_iso); updateHistoricalTable(data.historical_stats); updateAnalysisTables(data); }
         function updateOverallStats(stats) { if (!stats || Object.keys(stats).length === 0) return; const totalDownloads = stats.dl_success + stats.dl_fail; const totalUploads = stats.ul_success + stats.ul_fail; const totalAudits = stats.audit_success + stats.audit_fail; const dlRate = totalDownloads > 0 ? (stats.dl_success / totalDownloads * 100).toFixed(2) : '100.00'; const ulRate = totalUploads > 0 ? (stats.ul_success / totalUploads * 100).toFixed(2) : '100.00'; const auditRate = totalAudits > 0 ? (stats.audit_success / totalAudits * 100).toFixed(2) : '100.00'; document.getElementById('dl-rate').textContent = `${dlRate}%`; document.getElementById('dl-rate').className = `stat-value ${getRateClass(parseFloat(dlRate))}`; document.getElementById('dl-success').textContent = stats.dl_success; document.getElementById('dl-total').textContent = totalDownloads; document.getElementById('ul-rate').textContent = `${ulRate}%`; document.getElementById('ul-rate').className = `stat-value ${getRateClass(parseFloat(ulRate))}`; document.getElementById('ul-success').textContent = stats.ul_success; document.getElementById('ul-total').textContent = totalUploads; document.getElementById('dl-speed').textContent = `${(stats.avg_egress_mbps||0).toFixed(2)} Mbps`; document.getElementById('ul-speed').textContent = `${(stats.avg_ingress_mbps||0).toFixed(2)} Mbps`; document.getElementById('audit-rate').textContent = `${auditRate}%`; document.getElementById('audit-rate').className = `stat-value ${getRateClass(parseFloat(auditRate))}`; document.getElementById('audit-success').textContent = stats.audit_success; document.getElementById('audit-total').textContent = totalAudits; }
         function updateSatelliteChart(satStats) {
             if (!satStats) return;
@@ -1014,14 +1106,39 @@
             }
             sizeBarChart.update();
         }
-        function updateTitles(firstIso, lastIso) { const formatTime = date => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); let timeWindowStr = "(Last 60 Mins)"; if (firstIso && lastIso) { timeWindowStr = `(${formatTime(new Date(firstIso))} - ${formatTime(new Date(lastIso))})`; } const getFriendlyViewName = () => { if (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate') return 'Aggregate'; if (currentNodeView.length === 1) return currentNodeView[0]; if (currentNodeView.length > 3) return `${currentNodeView.length} nodes`; return currentNodeView.join(', '); }; const viewName = getFriendlyViewName(); const viewNameForTitle = viewName === 'Aggregate' ? '' : ` (${viewName})`; document.getElementById('stats-title').textContent = `Overall Success Rates & Speed${viewNameForTitle} ${timeWindowStr}`; document.getElementById('satellite-title').textContent = `Traffic by Satellite${viewNameForTitle} ${timeWindowStr}`; document.getElementById('size-chart-title').textContent = `Data Transfer Size Distribution${viewNameForTitle} ${timeWindowStr}`; document.getElementById('hashstore-title').textContent = `Hashstore Compaction Stats${viewNameForTitle}`; const isAggregateView = currentNodeView.length > 1 || (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate'); document.getElementById('dl-speed-label').textContent = isAggregateView ? 'Total Download Speed' : 'Download Speed'; document.getElementById('ul-speed-label').textContent = isAggregateView ? 'Total Upload Speed' : 'Upload Speed'; }
+        function updateTitles(firstIso, lastIso) {
+            const formatTime = date => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            let timeWindowStr = "(Last 60 Mins)";
+            if (firstIso && lastIso) {
+                timeWindowStr = `(${formatTime(new Date(firstIso))} - ${formatTime(new Date(lastIso))})`;
+            }
+            const getFriendlyViewName = () => {
+                if (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate') return 'Aggregate';
+                if (currentNodeView.length === 1) return currentNodeView[0];
+                if (currentNodeView.length > 3) return `${currentNodeView.length} nodes`;
+                return currentNodeView.join(', ');
+            };
+            const viewName = getFriendlyViewName();
+            const viewNameForTitle = viewName === 'Aggregate' ? '' : ` (${viewName})`;
+
+            document.getElementById('stats-title').textContent = `Overall Success Rates & Speed${viewNameForTitle} ${timeWindowStr}`;
+            document.getElementById('satellite-title').textContent = `Traffic by Satellite${viewNameForTitle} ${timeWindowStr}`;
+            document.getElementById('size-chart-title').textContent = `Data Transfer Size Distribution${viewNameForTitle} ${timeWindowStr}`;
+            document.getElementById('hashstore-chart-title').textContent = `Hashstore Compaction Trends${viewNameForTitle}`;
+            document.getElementById('hashstore-title').textContent = `Hashstore Compaction Details${viewNameForTitle}`;
+
+            const isAggregateView = currentNodeView.length > 1 || (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate');
+            document.getElementById('dl-speed-label').textContent = isAggregateView ? 'Total Download Speed' : 'Download Speed';
+            document.getElementById('ul-speed-label').textContent = isAggregateView ? 'Total Upload Speed' : 'Upload Speed';
+        }
         function updateHistoricalTable(history) { const tbody = document.getElementById('history-body'); tbody.innerHTML = ''; if (!history || history.length === 0) { tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No historical data yet.</td></tr>'; return; } for (const hour of history) { const totalDl = hour.dl_success + hour.dl_fail, dlRate = totalDl > 0 ? (hour.dl_success / totalDl * 100) : 100; const totalUl = hour.ul_success + hour.ul_fail, ulRate = totalUl > 0 ? (hour.ul_success / totalUl * 100) : 100; const totalAudit = hour.audit_success + hour.audit_fail, auditRate = totalAudit > 0 ? (hour.audit_success / totalAudit * 100) : 100; const dlSpeed = hour.dl_mbps !== undefined ? hour.dl_mbps.toFixed(2) : '...'; const ulSpeed = hour.ul_mbps !== undefined ? hour.ul_mbps.toFixed(2) : '...'; const row = tbody.insertRow(); row.innerHTML = `<td>${new Date(hour.hour_timestamp).toLocaleTimeString([],{hour:'numeric'})}</td><td class="numeric ${getRateClass(dlRate)}">${dlRate.toFixed(2)}%</td><td class="numeric ${getRateClass(ulRate)}">${ulRate.toFixed(2)}%</td><td class="numeric ${getRateClass(auditRate)}">${auditRate.toFixed(2)}%</td><td class="numeric">${dlSpeed} Mbps</td><td class="numeric">${ulSpeed} Mbps</td>`; } }
         function updateAnalysisTables(data) { const errorBody = document.getElementById('error-body'); errorBody.innerHTML = ''; if (data.error_categories && data.error_categories.length > 0) { data.error_categories.forEach(e => { errorBody.innerHTML += `<tr><td class="reason-cell">${e.reason}</td><td class="numeric">${e.count}</td></tr>`; }); } else { errorBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No errors in this time window.</td></tr>'; } const piecesBody = document.getElementById('pieces-body'); piecesBody.innerHTML = ''; if (data.top_pieces && data.top_pieces.length > 0) { data.top_pieces.forEach(p => { piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,25)}...</td><td class="numeric">${p.count}</td><td class="numeric">${formatBytes(p.size)}</td></tr>`; }); } else { piecesBody.innerHTML = '<tr><td colspan="3" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesDlBody = document.getElementById('countries-dl-body'); countriesDlBody.innerHTML = ''; if (data.top_countries_dl && data.top_countries_dl.length > 0) { data.top_countries_dl.forEach(c => countriesDlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesDlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesUlBody = document.getElementById('countries-ul-body'); countriesUlBody.innerHTML = ''; if (data.top_countries_ul && data.top_countries_ul.length > 0) { data.top_countries_ul.forEach(c => countriesUlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesUlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } }
 
         // --- START: Hashstore Panel Interactive Logic ---
         function updateHashstorePanel(stats) {
             hashstoreMasterData = stats || [];
-            if (document.getElementById('hashstore-filters').innerHTML === "<!-- JS populates this -->") {
+            // Filters are only populated once, when the first batch of data arrives.
+            if (document.getElementById('hashstore-filters').innerHTML.trim() === "<!-- JS populates this -->") {
                 populateHashstoreFilters();
             }
             renderHashstoreView();
@@ -1031,20 +1148,11 @@
             const filtersContainer = document.getElementById('hashstore-filters');
             if (!filtersContainer) return;
 
-            const nodes = [...new Set(hashstoreMasterData.map(item => item.node_name))];
-            const satellites = [...new Set(hashstoreMasterData.map(item => SATELLITE_NAMES[item.satellite] || item.satellite))];
-            const stores = [...new Set(hashstoreMasterData.map(item => item.store))];
+            // Use a Set to get unique values, then sort them. Populate from ALL possible data.
+            const satellites = [...new Set(hashstoreMasterData.map(item => SATELLITE_NAMES[item.satellite] || item.satellite))].sort();
+            const stores = [...new Set(hashstoreMasterData.map(item => item.store))].sort();
 
-            let filtersHTML = '';
-            // Show Node filter if viewing aggregate of all, or a custom selection of multiple nodes.
-            if (currentNodeView.length > 1 || (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate')) {
-                filtersHTML += `
-                    <label>Node: <select data-filter="node_name">
-                        <option value="all">All</option>
-                        ${nodes.map(n => `<option value="${n}">${n}</option>`).join('')}
-                    </select></label>`;
-            }
-            filtersHTML += `
+            let filtersHTML = `
                 <label>Satellite: <select data-filter="satellite">
                     <option value="all">All</option>
                     ${satellites.map(s => `<option value="${s}">${s}</option>`).join('')}
@@ -1058,35 +1166,71 @@
             filtersContainer.querySelectorAll('select').forEach(sel => {
                 sel.addEventListener('change', (e) => {
                     hashstoreFilters[e.target.dataset.filter] = e.target.value;
-                    renderHashstoreView();
+                    requestHashstoreData();
                 });
             });
         }
 
+        function updateHashstoreChart(data) {
+            if (!hashstoreChartInstance) createHashstoreChart();
+
+            // Data for chart should be sorted ascending by date
+            const sortedData = [...data].sort((a, b) => new Date(a.last_run_iso) - new Date(b.last_run_iso));
+
+            // Store this for tooltip access
+            hashstoreChartInstance.sortedData = sortedData;
+
+            const labels = sortedData.map(item => new Date(item.last_run_iso).toLocaleString());
+            const durationData = sortedData.map(item => item.duration);
+            const reclaimedData = sortedData.map(item => item.data_reclaimed_bytes);
+            const rewrittenData = sortedData.map(item => item.data_rewritten_bytes);
+
+            hashstoreChartInstance.data.labels = labels;
+            hashstoreChartInstance.data.datasets = [
+                {
+                    type: 'line',
+                    label: 'Duration',
+                    data: durationData,
+                    borderColor: '#f59e0b', // rate-ok color
+                    backgroundColor: '#f59e0b',
+                    yAxisID: 'y-duration',
+                    tension: 0.2,
+                },
+                {
+                    type: 'bar',
+                    label: 'Data Reclaimed',
+                    data: reclaimedData,
+                    backgroundColor: UPLOAD_COLOR,
+                    yAxisID: 'y-data',
+                    stack: 'data',
+                },
+                {
+                    type: 'bar',
+                    label: 'Data Rewritten',
+                    data: rewrittenData,
+                    backgroundColor: DOWNLOAD_COLOR,
+                    yAxisID: 'y-data',
+                    stack: 'data',
+                }
+            ];
+            hashstoreChartInstance.update('none');
+        }
+
         function renderHashstoreView() {
-            // 1. Pre-process data: create a copy and add derived metrics
-            let dataToRender = hashstoreMasterData.map(item => {
+            // 1. Update Chart with date-sorted data
+            updateHashstoreChart(hashstoreMasterData);
+
+            // 2. Pre-process data for table: create a copy and add derived metrics
+            let tableData = hashstoreMasterData.map(item => {
                 const newItem = {...item}; // Create a copy
                 newItem.reclaim_efficiency = newItem.data_rewritten_bytes > 0 ? newItem.data_reclaimed_bytes / newItem.data_rewritten_bytes : Infinity;
                 newItem.throughput = newItem.duration > 0.01 ? (newItem.data_reclaimed_bytes + newItem.data_rewritten_bytes) / newItem.duration : 0;
                 return newItem;
             });
 
-            // 2. Filter
-            Object.keys(hashstoreFilters).forEach(key => {
-                if (hashstoreFilters[key] !== 'all') {
-                    dataToRender = dataToRender.filter(item => {
-                        if (key === 'satellite') {
-                            return (SATELLITE_NAMES[item.satellite] || item.satellite) === hashstoreFilters[key];
-                        }
-                        return item[key] === hashstoreFilters[key];
-                    });
-                }
-            });
-
-            // 3. Sort
+            // 3. Sort table data
             const { column, direction } = hashstoreSort;
-            dataToRender.sort((a, b) => {
+            tableData.sort((a, b) => {
                 let valA = a[column];
                 let valB = b[column];
 
@@ -1103,8 +1247,8 @@
                 return direction === 'asc' ? strA.localeCompare(strB) : strB.localeCompare(strA);
             });
 
-            // 4. Render
-            renderHashstoreTable(dataToRender);
+            // 4. Render table
+            renderHashstoreTable(tableData);
         }
 
         function renderHashstoreTable(data) {
@@ -1242,6 +1386,18 @@
             return { rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] };
         }
 
+        function requestHashstoreData() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                let filters_to_send = { ...hashstoreFilters }; // copy to avoid mutation
+                if (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate') {
+                    filters_to_send.node_name = 'all';
+                } else {
+                    filters_to_send.node_name = currentNodeView; // Send the array of node names
+                }
+                ws.send(JSON.stringify({ type: 'get_hashstore_stats', filters: filters_to_send }));
+            }
+        }
+
         // --- Event Listeners ---
         document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); satelliteViewIsBySize = !satelliteViewIsBySize; this.textContent = satelliteViewIsBySize ? 'Show by Pieces' : 'Show by Size'; updateSatelliteChart(lastSatelliteData); });
         document.getElementById('size-view-toggles').addEventListener('click', function(e) { e.preventDefault(); const target = e.target; if (target.tagName === 'A' && !target.classList.contains('active')) { sizeChartViewMode = target.getAttribute('data-view'); document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active')); target.classList.add('active'); updateSizeBarChart(lastTransferSizes); } });
@@ -1285,6 +1441,7 @@
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView }));
                 if (performanceState.range !== '5m') { document.querySelector('#time-range-toggles [data-range="5m"]').click(); } else { ws.send(JSON.stringify({ type: 'get_historical_performance', view: currentNodeView, points: MAX_PERF_POINTS, interval_sec: PERFORMANCE_INTERVAL_MS / 1000 })); }
+                requestHashstoreData(); // Request new hashstore data for the new view
             }
         });
         const mapCard = document.getElementById('map-card');
@@ -1293,7 +1450,7 @@
 
         // --- WebSocket Connection & Data Handling ---
         let ws;
-        const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
+        const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
 
         function initializePerformanceData(nodes) {
             livePerformanceBins = {}; // Reset all data
@@ -1451,11 +1608,19 @@
                 case 'stats_update':
                     updateAllVisuals(data);
                     break;
+                case 'hashstore_updated':
+                    console.log("[WebSocket] Hashstore data updated on server. Requesting new data.");
+                    requestHashstoreData();
+                    break;
+                case 'hashstore_stats_data':
+                    updateHashstorePanel(data.data);
+                    break;
             }
         }
 
         document.addEventListener('DOMContentLoaded', () => {
             createPerformanceChart();
+            createHashstoreChart();
             connectionManager.connect();
             initializeDisplayMenu();
         });

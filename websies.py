@@ -46,6 +46,10 @@ HOURLY_AGG_INTERVAL_MINUTES = 10
 DB_EVENTS_RETENTION_DAYS = 2 # New: How many days of event data to keep
 DB_PRUNE_INTERVAL_HOURS = 6  # New: How often to run the pruner
 
+# --- Global Constants ---
+SATELLITE_NAMES = { '121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1', '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1', '12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs': 'eu1', '1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE': 'saltlake' }
+
+
 # Custom type for a node's state
 NodeState = Dict[str, Any]
 
@@ -109,6 +113,22 @@ def init_db():
 
     log.info("Performing one-time database schema validation and upgrades. This may take a long time on large databases...")
 
+    # --- Hashstore Compaction History Table ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hashstore_compaction_history (
+            node_name TEXT NOT NULL,
+            satellite TEXT NOT NULL,
+            store TEXT NOT NULL,
+            last_run_iso TEXT NOT NULL,
+            duration REAL,
+            data_reclaimed_bytes INTEGER,
+            data_rewritten_bytes INTEGER,
+            table_load REAL,
+            trash_percent REAL,
+            PRIMARY KEY (node_name, satellite, store, last_run_iso)
+        )
+    ''')
+
     # --- Schema migration for events table ---
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='events';")
     if cursor.fetchone():
@@ -158,6 +178,37 @@ def init_db():
         log.info("Creating composite index for performance. This may take a very long time on large databases. Please wait...")
         cursor.execute('CREATE INDEX idx_events_node_name_timestamp ON events (node_name, timestamp);')
         log.info("Index creation complete.")
+
+    # --- One-time migration of old hashstore stats ---
+    cursor.execute("SELECT key, value FROM app_persistent_state WHERE key LIKE 'hashstore_stats_%'")
+    old_stats_entries = cursor.fetchall()
+    if old_stats_entries:
+        log.info(f"Found {len(old_stats_entries)} old hashstore stat entries. Migrating to new table...")
+        migrated_count = 0
+        for key, value in old_stats_entries:
+            try:
+                node_name = key.replace('hashstore_stats_', '')
+                stats_dict = json.loads(value)
+                for compaction_key, stats in stats_dict.items():
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO hashstore_compaction_history
+                        (node_name, satellite, store, last_run_iso, duration, data_reclaimed_bytes, data_rewritten_bytes, table_load, trash_percent)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        node_name, stats.get('satellite'), stats.get('store'),
+                        stats.get('last_run_iso'), stats.get('duration'), stats.get('data_reclaimed_bytes'),
+                        stats.get('data_rewritten_bytes'), stats.get('table_load'), stats.get('trash_percent')
+                    ))
+                    migrated_count += 1
+                # Delete old key after successful migration of its contents
+                cursor.execute("DELETE FROM app_persistent_state WHERE key = ?", (key,))
+                log.info(f"Successfully migrated and deleted old state for key '{key}'.")
+            except Exception:
+                log.error(f"Failed to migrate hashstore stats for key {key}:", exc_info=True)
+
+        if migrated_count > 0:
+            log.info(f"Migration complete. {migrated_count} compaction records moved to the new historical table.")
+
 
     conn.commit()
     conn.close()
@@ -237,6 +288,23 @@ def blocking_save_state(db_path: str, key: str, value: Any):
     except Exception:
         log.error(f"Failed to persist state for key '{key}':", exc_info=True)
 
+def blocking_write_hashstore_log(db_path, stats_dict) -> bool:
+    """Writes a single hashstore compaction event to the database. Returns True on success."""
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO hashstore_compaction_history
+                (node_name, satellite, store, last_run_iso, duration, data_reclaimed_bytes, data_rewritten_bytes, table_load, trash_percent)
+                VALUES (:node_name, :satellite, :store, :last_run_iso, :duration, :data_reclaimed_bytes, :data_rewritten_bytes, :table_load, :trash_percent)
+            ''', stats_dict)
+            conn.commit()
+        log.info(f"Successfully wrote hashstore log for {stats_dict['node_name']}:{stats_dict['satellite']}:{stats_dict['store']}.")
+        return True
+    except Exception:
+        log.error("Failed to write hashstore log to DB:", exc_info=True)
+        return False
+
 
 async def log_tailer_task(app, node_name: str, log_path: str):
     loop = asyncio.get_running_loop()
@@ -290,27 +358,28 @@ async def log_tailer_task(app, node_name: str, log_path: str):
 
                             stats = log_data.get("stats", {})
                             table_stats = stats.get("Table", {})
-                            node_state['hashstore_stats'][compaction_key] = {
+
+                            compaction_stats = {
+                                "node_name": node_name,
                                 "satellite": satellite,
                                 "store": store,
                                 "last_run_iso": timestamp_obj.isoformat(),
                                 "duration": round(duration_seconds, 2),
                                 "data_reclaimed_bytes": parse_size_to_bytes(stats.get("DataReclaimed", "0 B")),
                                 "data_rewritten_bytes": parse_size_to_bytes(stats.get("DataRewritten", "0 B")),
-                                "table_load": table_stats.get("Load", 0) * 100,
+                                "table_load": (table_stats.get("Load") or 0) * 100,
                                 "trash_percent": stats.get("TrashPercent", 0) * 100,
                             }
-                            state_key = f"hashstore_stats_{node_name}"
-                            stats_to_save = node_state['hashstore_stats'].copy()
-                            asyncio.create_task(
-                                loop.run_in_executor(
-                                    app['db_executor'],
-                                    blocking_save_state,
-                                    DATABASE_FILE,
-                                    state_key,
-                                    stats_to_save
-                                )
+
+                            was_written = await loop.run_in_executor(
+                                app['db_executor'],
+                                blocking_write_hashstore_log,
+                                DATABASE_FILE,
+                                compaction_stats
                             )
+                            if was_written:
+                                await robust_broadcast(app_state['websockets'], {"type": "hashstore_updated"})
+
                     continue
 
                 # --- Original Traffic Log Processing ---
@@ -499,31 +568,18 @@ async def database_pruner_task(app):
 
 def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState]):
     events_copy = []
-    hashstore_stats = []
-
-    nodes_to_process = view
-    if view == ['Aggregate']:
-        nodes_to_process = list(all_nodes_state.keys())
-
+    nodes_to_process = view if view != ['Aggregate'] else list(all_nodes_state.keys())
     for node_name in nodes_to_process:
         if node_name in all_nodes_state:
-            node_state = all_nodes_state[node_name]
-            events_copy.extend(list(node_state['live_events']))
-
-            for key, stats in node_state['hashstore_stats'].items():
-                stat_copy = stats.copy()
-                stat_copy['node_name'] = node_name  # Always add node_name for multi-node views
-                hashstore_stats.append(stat_copy)
+            # Create a copy of the deque to prevent mutation during iteration
+            events_copy.extend(list(all_nodes_state[node_name]['live_events']))
 
     if not events_copy:
-        if hashstore_stats:
-            return {
-                "type": "stats_update",
-                "hashstore_stats": sorted(hashstore_stats, key=lambda x: x['last_run_iso'], reverse=True),
-                "first_event_iso": None, "last_event_iso": None, "overall": {}, "satellites": [], "transfer_sizes": [],
-                "historical_stats": [], "error_categories": [], "top_pieces": [], "top_countries_dl": [], "top_countries_ul": []
-            }
-        return None
+        return {
+            "type": "stats_update",
+            "first_event_iso": None, "last_event_iso": None, "overall": {}, "satellites": [], "transfer_sizes": [],
+            "historical_stats": [], "error_categories": [], "top_pieces": [], "top_countries_dl": [], "top_countries_ul": []
+        }
 
     first_event_iso, last_event_iso = min(e['timestamp'] for e in events_copy).isoformat(), max(e['timestamp'] for e in events_copy).isoformat()
 
@@ -664,7 +720,6 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
         "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in sorted(hp.items(), key=lambda x: x[1]['count'], reverse=True)[:10]],
         "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(10) if k],
         "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(10) if k],
-        "hashstore_stats": sorted(hashstore_stats, key=lambda x: x['last_run_iso'], reverse=True),
     }
 
 async def send_stats_for_view(app, ws, view):
@@ -869,6 +924,47 @@ def blocking_get_aggregated_performance(node_names: List[str], time_window_hours
     log.info(f"Returning {len(filled_results)} aggregated performance data points for nodes {node_names}.")
     return filled_results
 
+def blocking_get_hashstore_stats(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    log.info(f"Fetching hashstore stats with filters: {filters}")
+
+    where_clauses = []
+    params = []
+
+    node_filter = filters.get('node_name')
+    if node_filter and node_filter != 'all':
+        if isinstance(node_filter, list):
+            if node_filter:
+                placeholders = ','.join('?' for _ in node_filter)
+                where_clauses.append(f"node_name IN ({placeholders})")
+                params.extend(node_filter)
+            else: # handle empty list case to return no results
+                 where_clauses.append("1 = 0")
+        else: # It's a single string
+            where_clauses.append("node_name = ?")
+            params.append(node_filter)
+
+    if filters.get('satellite') and filters['satellite'] != 'all':
+        sat_ids = [k for k, v in SATELLITE_NAMES.items() if v == filters['satellite']]
+        if sat_ids:
+            where_clauses.append("satellite = ?")
+            params.append(sat_ids[0])
+
+    if filters.get('store') and filters['store'] != 'all':
+        where_clauses.append("store = ?")
+        params.append(filters['store'])
+
+    query = "SELECT * FROM hashstore_compaction_history"
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+    query += " ORDER BY last_run_iso DESC"
+
+    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
+        conn.row_factory = sqlite3.Row
+        results = [dict(row) for row in conn.execute(query, params).fetchall()]
+
+    log.info(f"Found {len(results)} hashstore events matching filters.")
+    return results
+
 async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=10)
     await ws.prepare(request)
@@ -906,15 +1002,12 @@ async def websocket_handler(request):
                         interval = data.get('interval_sec', PERFORMANCE_INTERVAL_SECONDS)
                         loop = asyncio.get_running_loop()
 
-                        # Collect events from the correct in-memory source to ensure consistency
                         events_to_process = []
                         nodes_to_query = view if view != ['Aggregate'] else list(app_state['nodes'].keys())
-
                         for node_name in nodes_to_query:
                             if node_name in app_state['nodes']:
                                 events_to_process.extend(list(app_state['nodes'][node_name]['live_events']))
 
-                        # Call the modified blocking function with the in-memory event data
                         historical_data = await loop.run_in_executor(
                             app['db_executor'], blocking_get_historical_performance,
                             events_to_process, points, interval
@@ -936,6 +1029,16 @@ async def websocket_handler(request):
 
                         payload = {"type": "aggregated_performance_data", "view": view, "performance_data": aggregated_data}
                         await ws.send_json(payload)
+
+                    elif msg_type == 'get_hashstore_stats':
+                        filters = data.get('filters', {})
+                        loop = asyncio.get_running_loop()
+                        hashstore_data = await loop.run_in_executor(
+                            app['db_executor'], blocking_get_hashstore_stats, filters
+                        )
+                        payload = {"type": "hashstore_stats_data", "data": hashstore_data}
+                        await ws.send_json(payload)
+
 
                 except Exception:
                     log.error("Could not parse websocket message:", exc_info=True)
@@ -961,7 +1064,6 @@ def load_initial_state_from_db(nodes_config: Dict[str, str]):
             node_state = {
                 'live_events': deque(),
                 'active_compactions': {},
-                'hashstore_stats': {},
                 'unprocessed_performance_events': []
             }
             log.info(f"Re-hydrating live events for node '{node_name}' since {cutoff_datetime.isoformat()}")
@@ -986,18 +1088,6 @@ def load_initial_state_from_db(nodes_config: Dict[str, str]):
                 except Exception:
                     log.error(f"Failed to process a database row for re-hydration.", exc_info=True)
 
-            if rehydrated_events > 0:
-                log.info(f"Successfully re-hydrated {rehydrated_events} live events for node '{node_name}'.")
-
-            state_key = f"hashstore_stats_{node_name}"
-            cursor.execute("SELECT value FROM app_persistent_state WHERE key = ?", (state_key,))
-            result = cursor.fetchone()
-            if result:
-                try:
-                    node_state['hashstore_stats'] = json.loads(result['value'])
-                    log.info(f"Successfully loaded persisted hashstore stats for node '{node_name}'.")
-                except json.JSONDecodeError:
-                    log.error(f"Failed to parse persisted hashstore stats for node '{node_name}'.")
 
             initial_state[node_name] = node_state
     return initial_state
@@ -1076,7 +1166,6 @@ async def start_background_tasks(app):
              app_state['nodes'][node_name] = {
                 'live_events': deque(),
                 'active_compactions': {},
-                'hashstore_stats': {},
                 'unprocessed_performance_events': []
             }
         app['tasks'].append(asyncio.create_task(log_tailer_task(app, node_name, log_path)))
@@ -1139,3 +1228,4 @@ if __name__ == "__main__":
     log.info(f"Server starting on http://{SERVER_HOST}:{SERVER_PORT}")
     log.info(f"Monitoring nodes: {list(app['nodes'].keys())}")
     web.run_app(app, host=SERVER_HOST, port=SERVER_PORT)
+
