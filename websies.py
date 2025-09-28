@@ -238,9 +238,18 @@ def blocking_log_reader(log_path):
                     if not line:
                         time.sleep(0.1)
                         try:
+                            # Check for inode change (rename/move rotation)
                             if os.stat(log_path).st_ino != current_inode:
                                 log.warning(f"Log rotation detected for '{log_path}'.")
-                                break
+                                break # Re-opens the file
+
+                            # Check for file truncation (copytruncate rotation)
+                            current_pos = f.tell()
+                            file_size = os.fstat(f.fileno()).st_size
+                            if current_pos > file_size:
+                                log.warning(f"Log truncation detected for '{log_path}'. Seeking to start.")
+                                f.seek(0)
+
                         except FileNotFoundError:
                             log.warning(f"Log file not found at '{log_path}'. Waiting...")
                             break
@@ -309,16 +318,24 @@ def blocking_write_hashstore_log(db_path, stats_dict) -> bool:
 
 async def log_tailer_task(app, node_name: str, log_path: str):
     loop = asyncio.get_running_loop()
-    geoip_reader = geoip2.database.Reader(GEOIP_DATABASE_PATH)
+    geoip_reader = app['geoip_reader']
     geoip_cache = app_state['geoip_cache']
     log_generator = blocking_log_reader(log_path)
     log.info(f"Log tailer task started for node: {node_name}")
     node_state = app_state['nodes'][node_name]
+    # --- PERFORMANCE: Pre-compile regex for finding JSON in log lines ---
+    JSON_RE = re.compile(r'\{.*\}')
 
     while True:
         try:
             line = await loop.run_in_executor(app['log_executor'], next, log_generator)
             try:
+                # --- PERFORMANCE: Quick filter for relevant log components ---
+                # Most traffic and compaction logs contain one of these keywords.
+                # This avoids expensive regex/JSON parsing on irrelevant lines.
+                if 'piecestore' not in line and 'hashstore' not in line:
+                    continue
+
                 # --- General Log Parsing ---
                 log_level_part = "INFO" if "INFO" in line else "ERROR" if "ERROR" in line else None
                 if not log_level_part: continue
@@ -332,7 +349,7 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                 timestamp_obj = datetime.datetime.fromisoformat(timestamp_str).astimezone().astimezone(datetime.timezone.utc)
                 # --- END DEFINITIVE TIMEZONE FIX ---
 
-                json_match = re.search(r'\{.*\}', line)
+                json_match = JSON_RE.search(line)
                 if not json_match: continue
                 log_data = json.loads(json_match.group(0))
 
@@ -1234,6 +1251,18 @@ def blocking_backfill_hourly_stats(node_names: List[str]):
 
 async def start_background_tasks(app):
     log.info("Starting background tasks...")
+
+    log.info("Loading GeoIP database into memory...")
+    try:
+        app['geoip_reader'] = geoip2.database.Reader(GEOIP_DATABASE_PATH)
+        log.info("GeoIP database loaded successfully.")
+    except FileNotFoundError:
+        log.critical(f"GeoIP database not found at '{GEOIP_DATABASE_PATH}'. Please download it. Exiting.")
+        sys.exit(1)
+    except Exception as e:
+        log.critical(f"Failed to load GeoIP database: {e}", exc_info=True)
+        sys.exit(1)
+
     app['db_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=5)
     app['log_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=len(app['nodes']) + 1)
     app['tasks'] = []
@@ -1274,6 +1303,9 @@ async def cleanup_background_tasks(app):
     for task in app.get('tasks', []): task.cancel()
     if 'tasks' in app: await asyncio.gather(*app['tasks'], return_exceptions=True)
     log.info("Background tasks cancelled.")
+    if 'geoip_reader' in app and hasattr(app['geoip_reader'], 'close'):
+        app['geoip_reader'].close()
+        log.info("GeoIP database reader closed.")
     for executor_name in ['db_executor', 'log_executor']:
         if executor_name in app and app[executor_name]: app[executor_name].shutdown(wait=True)
     log.info("Executors shut down.")
@@ -1317,3 +1349,4 @@ if __name__ == "__main__":
     log.info(f"Server starting on http://{SERVER_HOST}:{SERVER_PORT}")
     log.info(f"Monitoring nodes: {list(app['nodes'].keys())}")
     web.run_app(app, host=SERVER_HOST, port=SERVER_PORT)
+
