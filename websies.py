@@ -27,6 +27,7 @@ from typing import Deque, Dict, Any, List, Set, Optional
 import threading
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+import heapq
 
 
 # --- Centralized Logging Configuration ---
@@ -687,12 +688,18 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
     def aggregate_error(reason):
         if not reason: return
 
-        # --- OPTIMIZATION: Use a single re.sub with a callback ---
+        # --- PERFORMANCE OPTIMIZATION: Use re.finditer for faster tokenization ---
+        template_parts = []
         tokens = []
-        def repl(match):
+        last_end = 0
+        for match in TOKEN_REGEX.finditer(reason):
+            start = match.start()
+            template_parts.append(reason[last_end:start])
+            template_parts.append('#')
             tokens.append(match.group(0))
-            return '#'
-        template = TOKEN_REGEX.sub(repl, reason)
+            last_end = match.end()
+        template_parts.append(reason[last_end:])
+        template = "".join(template_parts)
         # --- END OPTIMIZATION ---
 
         if template not in error_agg:
@@ -828,7 +835,7 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
         "transfer_sizes": transfer_sizes,
         "historical_stats": hist_stats,
         "error_categories": final_errors,
-        "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in sorted(hp.items(), key=lambda x: x[1]['count'], reverse=True)[:10]],
+        "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in heapq.nlargest(10, hp.items(), key=lambda x: x[1]['count'])],
         "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(10) if k],
         "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(10) if k],
     }
