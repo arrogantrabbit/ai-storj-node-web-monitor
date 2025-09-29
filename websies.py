@@ -42,6 +42,8 @@ SERVER_PORT = 8765
 STATS_WINDOW_MINUTES = 60
 STATS_INTERVAL_SECONDS = 5
 PERFORMANCE_INTERVAL_SECONDS = 2
+WEBSOCKET_BATCH_INTERVAL_MS = 25   # Batch websocket events every 25ms (very frequent, small batches)
+WEBSOCKET_BATCH_SIZE = 10  # Maximum events per batch (small batches for continuous flow)
 DB_WRITE_BATCH_INTERVAL_SECONDS = 10
 DB_QUEUE_MAX_SIZE = 30000
 EXPECTED_DB_COLUMNS = 13 # Increased for node_name
@@ -66,6 +68,8 @@ app_state: Dict[str, Any] = {
     'db_write_lock': asyncio.Lock(),  # Lock to serialize DB write operations
     'db_write_queue': asyncio.Queue(maxsize=DB_QUEUE_MAX_SIZE),
     'stats_cache': {}, # New: Cache for pre-computed stats payloads
+    'websocket_event_queue': [],  # New: Queue for batching websocket events
+    'websocket_queue_lock': asyncio.Lock(),  # Lock for websocket queue operations
 }
 
 # --- New Helper Function for Parsing Size Strings ---
@@ -505,12 +509,39 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                         'size': size
                     })
 
-                event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason, "node_name": node_name, "category": category}
+                # Add arrival time to augment timestamp resolution within seconds
+                arrival_time = time.time()
+                
+                # Create event with both original timestamp and arrival time
+                event = {
+                    "ts_unix": timestamp_obj.timestamp(),
+                    "timestamp": timestamp_obj,
+                    "action": action,
+                    "status": status,
+                    "size": size,
+                    "piece_id": piece_id,
+                    "satellite_id": sat_id,
+                    "remote_ip": remote_ip,
+                    "location": location,
+                    "error_reason": error_reason,
+                    "node_name": node_name,
+                    "category": category,
+                    "arrival_time": arrival_time  # NEW: Track when event arrived for sub-second resolution
+                }
                 node_state['live_events'].append(event)
 
-                # OPTIMIZATION: Send a smaller payload for high-frequency map updates
-                broadcast_payload = {"type": "log_entry", "action": action, "size": size, "location": location, "timestamp": timestamp_obj.isoformat(), "node_name": node_name}
-                await robust_broadcast(app_state['websockets'], broadcast_payload, node_name=node_name)
+                # Queue websocket event for batched sending instead of immediate broadcast
+                websocket_event = {
+                    "type": "log_entry",
+                    "action": action,
+                    "size": size,
+                    "location": location,
+                    "timestamp": timestamp_obj.isoformat(),
+                    "node_name": node_name,
+                    "arrival_time": arrival_time  # Include arrival time for progressive display
+                }
+                async with app_state['websocket_queue_lock']:
+                    app_state['websocket_event_queue'].append(websocket_event)
 
                 if app_state['db_write_queue'].full():
                     log.warning(f"Database write queue is full. Pausing log tailing to allow DB to catch up.")
@@ -957,6 +988,65 @@ async def performance_aggregator_task(app):
 
         except Exception:
             log.error("Error in performance_aggregator_task:", exc_info=True)
+
+
+async def websocket_batch_broadcaster_task(app):
+    """
+    Batches websocket events and sends them at regular intervals to reduce traffic.
+    Also staggers events within the same second using arrival time for progressive display.
+    """
+    log.info("Websocket batch broadcaster task started.")
+    
+    while True:
+        await asyncio.sleep(WEBSOCKET_BATCH_INTERVAL_MS / 1000.0)  # Convert ms to seconds
+        
+        try:
+            # Atomically get and clear the event queue
+            async with app_state['websocket_queue_lock']:
+                events_to_send = app_state['websocket_event_queue'][:WEBSOCKET_BATCH_SIZE]
+                app_state['websocket_event_queue'] = app_state['websocket_event_queue'][WEBSOCKET_BATCH_SIZE:]
+            
+            if not events_to_send:
+                continue
+            
+            # Group events by the same log timestamp to enable progressive display
+            events_by_timestamp = {}
+            for event in events_to_send:
+                timestamp_key = event['timestamp']  # Original log timestamp (to the second)
+                if timestamp_key not in events_by_timestamp:
+                    events_by_timestamp[timestamp_key] = []
+                events_by_timestamp[timestamp_key].append(event)
+            
+            # Sort events within each timestamp group by arrival time and add display delays
+            for timestamp_key, timestamp_events in events_by_timestamp.items():
+                # Sort by arrival time
+                timestamp_events.sort(key=lambda e: e['arrival_time'])
+                
+                # Add progressive display delays based on arrival order within the same second
+                base_arrival_time = timestamp_events[0]['arrival_time']
+                for i, event in enumerate(timestamp_events):
+                    # Add small progressive delays (10ms increments) for events in the same second
+                    event['display_delay_ms'] = i * 10
+                    # Calculate time since first event in this timestamp group
+                    event['arrival_offset_ms'] = int((event['arrival_time'] - base_arrival_time) * 1000)
+            
+            # Create batched payload
+            if len(events_to_send) == 1:
+                # Send single event as before for backward compatibility
+                payload = events_to_send[0]
+            else:
+                # Send as batch
+                payload = {
+                    "type": "log_entry_batch",
+                    "events": events_to_send,
+                    "count": len(events_to_send)
+                }
+            
+            # Broadcast to all relevant websockets
+            await robust_broadcast(app_state['websockets'], payload)
+            
+        except Exception:
+            log.error("Error in websocket_batch_broadcaster_task:", exc_info=True)
 
 
 async def handle_index(request): return web.FileResponse('./index.html')
@@ -1418,6 +1508,7 @@ async def start_background_tasks(app):
         asyncio.create_task(prune_live_events_task(app)),
         asyncio.create_task(stats_baker_and_broadcaster_task(app)),
         asyncio.create_task(performance_aggregator_task(app)),
+        asyncio.create_task(websocket_batch_broadcaster_task(app)),  # NEW: Batch websocket events
         asyncio.create_task(debug_logger_task(app)),
         asyncio.create_task(database_writer_task(app)),
         asyncio.create_task(hourly_aggregator_task(app)),
