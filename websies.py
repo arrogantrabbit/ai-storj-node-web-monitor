@@ -1199,54 +1199,80 @@ def load_initial_state_from_db(nodes_config: Dict[str, str]):
     return initial_state
 
 def blocking_backfill_hourly_stats(node_names: List[str]):
-    log.info("[BACKFILL] Starting one-time backfill of hourly statistics.")
+    log.info("[BACKFILL] Starting smart backfill of hourly statistics.")
     with sqlite3.connect(DATABASE_FILE, timeout=30, detect_types=0) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # Find the earliest and latest event timestamps
-        cursor.execute("SELECT MIN(timestamp), MAX(timestamp) FROM events")
+        # Find the last hour we have stats for.
+        cursor.execute("SELECT MAX(hour_timestamp) FROM hourly_stats")
         result = cursor.fetchone()
-        if not result or not result[0]:
-            log.info("[BACKFILL] No events found in the database. Skipping backfill.")
+        last_aggregated_hour = result[0] if result and result[0] else None
+
+        start_from_iso = None
+
+        if last_aggregated_hour:
+            # Re-aggregate the last saved hour to catch any events that arrived after the last run.
+            start_from_iso = last_aggregated_hour
+            log.info(f"[BACKFILL] Last aggregated hour found: {start_from_iso}. Backfilling from this point.")
+        else:
+            # No stats yet, find the earliest event to start from.
+            cursor.execute("SELECT MIN(timestamp) FROM events")
+            result = cursor.fetchone()
+            if not result or not result[0]:
+                log.info("[BACKFILL] No events found in the database. Skipping backfill.")
+                return
+
+            # Truncate to the beginning of the hour for the very first run.
+            first_event_dt = datetime.datetime.fromisoformat(result[0])
+            start_from_dt = first_event_dt.replace(minute=0, second=0, microsecond=0)
+            start_from_iso = start_from_dt.isoformat()
+            log.info(f"[BACKFILL] No existing hourly stats. Backfilling from earliest event hour: {start_from_iso}")
+
+        # This single aggregation query is much more efficient than iterating in Python.
+        aggregation_query = """
+            SELECT
+                strftime('%Y-%m-%dT%H:00:00.000Z', timestamp) as hour_timestamp,
+                node_name,
+                SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_s,
+                SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_f,
+                SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s,
+                SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f,
+                SUM(CASE WHEN action = 'GET_AUDIT' AND status = 'success' THEN 1 ELSE 0 END) as audit_s,
+                SUM(CASE WHEN action = 'GET_AUDIT' AND status != 'success' THEN 1 ELSE 0 END) as audit_f,
+                SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as total_dl_size,
+                SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as total_ul_size
+            FROM events
+            WHERE timestamp >= ?
+            GROUP BY hour_timestamp, node_name
+        """
+        log.info(f"[BACKFILL] Running aggregation query for events since {start_from_iso}...")
+        cursor.execute(aggregation_query, (start_from_iso,))
+
+        rows = cursor.fetchall()
+        log.info(f"[BACKFILL] Aggregation query produced {len(rows)} hourly records to process.")
+
+        if not rows:
+            log.info("[BACKFILL] No new events to aggregate. Backfill complete.")
             return
 
-        start_ts_str, end_ts_str = result
-        start_dt = datetime.datetime.fromisoformat(start_ts_str).replace(minute=0, second=0, microsecond=0)
-        end_dt = datetime.datetime.fromisoformat(end_ts_str)
+        stats_to_insert = [
+            (
+                stats['hour_timestamp'], stats['node_name'],
+                stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f'],
+                stats['audit_s'], stats['audit_f'],
+                stats['total_dl_size'], stats['total_ul_size']
+            )
+            for stats in rows if stats['dl_s'] is not None
+        ]
 
-        log.info(f"[BACKFILL] Found events ranging from {start_dt.isoformat()} to {end_dt.isoformat()}.")
+        if stats_to_insert:
+            cursor.executemany("""
+                INSERT OR REPLACE INTO hourly_stats (hour_timestamp, node_name, dl_success, dl_fail, ul_success, ul_fail, audit_success, audit_fail, total_download_size, total_upload_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, stats_to_insert)
+            log.info(f"[BACKFILL] Wrote/updated {cursor.rowcount} hourly stat records in the database.")
 
-        current_hour_start = start_dt
-        while current_hour_start <= end_dt:
-            hour_start_iso = current_hour_start.isoformat()
-            next_hour_start_iso = (current_hour_start + datetime.timedelta(hours=1)).isoformat()
-
-            for node_name in node_names:
-                query = """
-                    SELECT
-                        SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_s,
-                        SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) as dl_f,
-                        SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) as ul_s,
-                        SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) as ul_f,
-                        SUM(CASE WHEN action = 'GET_AUDIT' AND status = 'success' THEN 1 ELSE 0 END) as audit_s,
-                        SUM(CASE WHEN action = 'GET_AUDIT' AND status != 'success' THEN 1 ELSE 0 END) as audit_f,
-                        SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN size ELSE 0 END) as total_dl_size,
-                        SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN size ELSE 0 END) as total_ul_size
-                    FROM events WHERE node_name = ? AND timestamp >= ? AND timestamp < ?
-                """
-                stats = cursor.execute(query, (node_name, hour_start_iso, next_hour_start_iso)).fetchone()
-
-                if stats and stats['dl_s'] is not None:
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO hourly_stats (hour_timestamp, node_name, dl_success, dl_fail, ul_success, ul_fail, audit_success, audit_fail, total_download_size, total_upload_size)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (hour_start_iso, node_name, stats['dl_s'], stats['dl_f'], stats['ul_s'], stats['ul_f'], stats['audit_s'], stats['audit_f'], stats['total_dl_size'], stats['total_ul_size']))
-
-            log.info(f"[BACKFILL] Processed and saved stats for hour starting {hour_start_iso}.")
-            current_hour_start += datetime.timedelta(hours=1)
-
-        conn.commit()
     log.info("[BACKFILL] Hourly statistics backfill complete.")
 
 async def start_background_tasks(app):
@@ -1349,4 +1375,3 @@ if __name__ == "__main__":
     log.info(f"Server starting on http://{SERVER_HOST}:{SERVER_PORT}")
     log.info(f"Monitoring nodes: {list(app['nodes'].keys())}")
     web.run_app(app, host=SERVER_HOST, port=SERVER_PORT)
-
