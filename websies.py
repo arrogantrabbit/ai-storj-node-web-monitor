@@ -222,13 +222,12 @@ def init_db():
 
 def get_size_bucket(size_in_bytes):
     if size_in_bytes < 1024: return "< 1 KB"
-    kb = size_in_bytes / 1024
-    if kb < 4: return "1-4 KB"
-    elif kb < 16: return "4-16 KB"
-    elif kb < 64: return "16-64 KB"
-    elif kb < 256: return "64-256 KB"
-    elif kb < 1024: return "256 KB - 1 MB"
-    else: return "> 1 MB"
+    if size_in_bytes < 4096: return "1-4 KB"
+    if size_in_bytes < 16384: return "4-16 KB"
+    if size_in_bytes < 65536: return "16-64 KB"
+    if size_in_bytes < 262144: return "64-256 KB"
+    if size_in_bytes < 1048576: return "256 KB - 1 MB"
+    return "> 1 MB"
 
 def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queue: asyncio.Queue, shutdown_event: threading.Event):
     """
@@ -675,6 +674,11 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
     hp = {}
     min_ts, max_ts = None, None
 
+    # --- OPTIMIZATION: Prepare variables for in-loop calculation ---
+    one_min_ago = time.time() - 60
+    live_dl_bytes, live_ul_bytes = 0, 0
+    # --- END OPTIMIZATION ---
+
     dls_success, dls_failed = Counter(), Counter()
     uls_success, uls_failed = Counter(), Counter()
 
@@ -719,39 +723,42 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
                         except ValueError: pass
 
     for e in events_copy:
-        # --- OPTIMIZATION: Combine min/max search with main loop ---
         timestamp = e['timestamp']
-        if min_ts is None or timestamp < min_ts:
-            min_ts = timestamp
-        if max_ts is None or timestamp > max_ts:
-            max_ts = timestamp
-        # --- END OPTIMIZATION ---
+        if min_ts is None or timestamp < min_ts: min_ts = timestamp
+        if max_ts is None or timestamp > max_ts: max_ts = timestamp
 
         action, status, sat_id, size, country, piece_id, error_reason = e['action'], e['status'], e['satellite_id'], e['size'], e['location']['country'], e['piece_id'], e['error_reason']
+        is_success = status == 'success'
+
         if sat_id not in sats: sats[sat_id] = {'uploads': 0, 'downloads': 0, 'audits': 0, 'ul_success': 0, 'dl_success': 0, 'audit_success': 0, 'total_upload_size': 0, 'total_download_size': 0}
         if action == 'GET_AUDIT':
             sats[sat_id]['audits'] += 1
-            if status == 'success': a_s += 1; sats[sat_id]['audit_success'] += 1
+            if is_success: a_s += 1; sats[sat_id]['audit_success'] += 1
             else: a_f += 1; aggregate_error(error_reason)
         elif 'GET' in action:
             size_bucket = get_size_bucket(size)
             sats[sat_id]['downloads'] += 1
             if piece_id not in hp: hp[piece_id] = {'count': 0, 'size': 0}
-            hp[piece_id]['count'] += 1
-            hp[piece_id]['size'] += size
+            hp[piece_id]['count'] += 1; hp[piece_id]['size'] += size
             if country: cdl[country] += size
-            if status == 'success':
+            if is_success:
                 dl_s += 1; sats[sat_id]['dl_success'] += 1; sats[sat_id]['total_download_size'] += size
                 total_dl_size += size; dls_success[size_bucket] += 1
+                # --- OPTIMIZATION: Calculate live speed inside the main loop ---
+                if e['ts_unix'] > one_min_ago: live_dl_bytes += size
+                # --- END OPTIMIZATION ---
             else:
                 dl_f += 1; aggregate_error(error_reason); dls_failed[size_bucket] += 1
         elif 'PUT' in action:
             size_bucket = get_size_bucket(size)
             sats[sat_id]['uploads'] += 1
             if country: cul[country] += size
-            if status == 'success':
+            if is_success:
                 ul_s += 1; sats[sat_id]['ul_success'] += 1; sats[sat_id]['total_upload_size'] += size
                 total_ul_size += size; uls_success[size_bucket] += 1
+                # --- OPTIMIZATION: Calculate live speed inside the main loop ---
+                if e['ts_unix'] > one_min_ago: live_ul_bytes += size
+                # --- END OPTIMIZATION ---
             else:
                 ul_f += 1; aggregate_error(error_reason); uls_failed[size_bucket] += 1
 
@@ -786,11 +793,10 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
             d_row['ul_mbps'] = ((d_row.get('total_upload_size', 0) or 0) * 8) / (3600 * 1000000)
             hist_stats.append(d_row)
 
-    one_min_ago = time.time() - 60
-    live_dl_bytes = sum(e['size'] for e in events_copy if 'GET' in e['action'] and e['status'] == 'success' and e['ts_unix'] > one_min_ago)
-    live_ul_bytes = sum(e['size'] for e in events_copy if 'PUT' in e['action'] and e['status'] == 'success' and e['ts_unix'] > one_min_ago)
+    # --- OPTIMIZATION: Redundant loops removed. Calculate speed directly. ---
     avg_egress_mbps = (live_dl_bytes * 8) / (60 * 1e6)
     avg_ingress_mbps = (live_ul_bytes * 8) / (60 * 1e6)
+    # --- END OPTIMIZATION ---
 
     all_buckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]
     transfer_sizes = [{'bucket': b, 'downloads_success': dls_success[b], 'downloads_failed': dls_failed[b], 'uploads_success': uls_success[b], 'uploads_failed': uls_failed[b]} for b in all_buckets]
