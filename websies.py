@@ -230,6 +230,16 @@ def get_size_bucket(size_in_bytes):
     if size_in_bytes < 1048576: return "256 KB - 1 MB"
     return "> 1 MB"
 
+def categorize_action(action: str) -> str:
+    """Efficiently categorizes a log action string."""
+    if action == 'GET_AUDIT':
+        return 'audit'
+    if 'GET' in action:
+        return 'get'
+    if 'PUT' in action:
+        return 'put'
+    return 'other'
+
 def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queue: asyncio.Queue, shutdown_event: threading.Event):
     """
     An efficient, event-driven log reader that runs in a separate thread.
@@ -485,18 +495,21 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                     if len(geoip_cache) > MAX_GEOIP_CACHE_SIZE: geoip_cache.pop(next(iter(geoip_cache)))
                     geoip_cache[remote_ip] = location
 
-                # BUG FIX: Use broader, consistent logic to capture all GET/PUT variants (e.g., GET_REPAIR).
-                if 'GET' in action or 'PUT' in action:
+                # OPTIMIZATION: Pre-categorize event for faster processing in stats loop
+                category = categorize_action(action)
+                if category != 'other':
                     node_state['unprocessed_performance_events'].append({
                         'ts_unix': timestamp_obj.timestamp(),
-                        'action': action,
+                        'category': category,
                         'status': status,
                         'size': size
                     })
 
-                event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason, "node_name": node_name}
+                event = {"ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action, "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id, "remote_ip": remote_ip, "location": location, "error_reason": error_reason, "node_name": node_name, "category": category}
                 node_state['live_events'].append(event)
-                broadcast_payload = {"type": "log_entry", "action": action, "status": status, "size": size, "location": location, "error_reason": error_reason, "timestamp": timestamp_obj.isoformat(), "node_name": node_name}
+
+                # OPTIMIZATION: Send a smaller payload for high-frequency map updates
+                broadcast_payload = {"type": "log_entry", "action": action, "size": size, "location": location, "timestamp": timestamp_obj.isoformat(), "node_name": node_name}
                 await robust_broadcast(app_state['websockets'], broadcast_payload, node_name=node_name)
 
                 if app_state['db_write_queue'].full():
@@ -734,15 +747,18 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
         if min_ts is None or timestamp < min_ts: min_ts = timestamp
         if max_ts is None or timestamp > max_ts: max_ts = timestamp
 
-        action, status, sat_id, size, country, piece_id, error_reason = e['action'], e['status'], e['satellite_id'], e['size'], e['location']['country'], e['piece_id'], e['error_reason']
+        # OPTIMIZATION: Use pre-computed category
+        category = e['category']
+        status, sat_id, size, country, piece_id, error_reason = e['status'], e['satellite_id'], e['size'], e['location']['country'], e['piece_id'], e['error_reason']
         is_success = status == 'success'
 
         if sat_id not in sats: sats[sat_id] = {'uploads': 0, 'downloads': 0, 'audits': 0, 'ul_success': 0, 'dl_success': 0, 'audit_success': 0, 'total_upload_size': 0, 'total_download_size': 0}
-        if action == 'GET_AUDIT':
+
+        if category == 'audit':
             sats[sat_id]['audits'] += 1
             if is_success: a_s += 1; sats[sat_id]['audit_success'] += 1
             else: a_f += 1; aggregate_error(error_reason)
-        elif 'GET' in action:
+        elif category == 'get':
             size_bucket = get_size_bucket(size)
             sats[sat_id]['downloads'] += 1
             if piece_id not in hp: hp[piece_id] = {'count': 0, 'size': 0}
@@ -751,21 +767,17 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
             if is_success:
                 dl_s += 1; sats[sat_id]['dl_success'] += 1; sats[sat_id]['total_download_size'] += size
                 total_dl_size += size; dls_success[size_bucket] += 1
-                # --- OPTIMIZATION: Calculate live speed inside the main loop ---
                 if e['ts_unix'] > one_min_ago: live_dl_bytes += size
-                # --- END OPTIMIZATION ---
             else:
                 dl_f += 1; aggregate_error(error_reason); dls_failed[size_bucket] += 1
-        elif 'PUT' in action:
+        elif category == 'put':
             size_bucket = get_size_bucket(size)
             sats[sat_id]['uploads'] += 1
             if country: cul[country] += size
             if is_success:
                 ul_s += 1; sats[sat_id]['ul_success'] += 1; sats[sat_id]['total_upload_size'] += size
                 total_ul_size += size; uls_success[size_bucket] += 1
-                # --- OPTIMIZATION: Calculate live speed inside the main loop ---
                 if e['ts_unix'] > one_min_ago: live_ul_bytes += size
-                # --- END OPTIMIZATION ---
             else:
                 ul_f += 1; aggregate_error(error_reason); uls_failed[size_bucket] += 1
 
@@ -824,6 +836,9 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
                     final_msg = final_msg.replace('#', range_str, 1)
         final_errors.append({'reason': final_msg, 'count': data['count']})
 
+    # PERFORMANCE OPTIMIZATION: Use heapq.nlargest for efficient top-k selection instead of sorting the whole dict.
+    top_pieces = [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in heapq.nlargest(10, hp.items(), key=lambda item: item[1]['count'])]
+
     return {
         "type": "stats_update",
         "first_event_iso": first_event_iso, "last_event_iso": last_event_iso,
@@ -835,7 +850,7 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
         "transfer_sizes": transfer_sizes,
         "historical_stats": hist_stats,
         "error_categories": final_errors,
-        "top_pieces": [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in heapq.nlargest(10, hp.items(), key=lambda x: x[1]['count'])],
+        "top_pieces": top_pieces,
         "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(10) if k],
         "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(10) if k],
     }
@@ -926,12 +941,12 @@ async def performance_aggregator_task(app):
                     bin_data['total_ops'] += 1
 
                     if event['status'] == 'success':
-                        action = event['action']
+                        category = event['category']
                         size = event['size']
-                        if 'GET' in action and action != 'GET_AUDIT':
+                        if category == 'get':
                             bin_data['egress_bytes'] += size
                             bin_data['egress_pieces'] += 1
-                        elif 'PUT' in action:
+                        elif category == 'put':
                             bin_data['ingress_bytes'] += size
                             bin_data['ingress_pieces'] += 1
 
@@ -1004,10 +1019,10 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
         bucket = buckets[bucket_start_unix]
         bucket['total_ops'] += 1
         if event.get('status') == 'success':
-            action, size = event.get('action', ''), event.get('size', 0)
-            if 'GET' in action and action != 'GET_AUDIT':
+            category, size = event.get('category'), event.get('size', 0)
+            if category == 'get':
                 bucket['egress_bytes'] += size; bucket['egress_pieces'] += 1
-            elif 'PUT' in action:
+            elif category == 'put':
                 bucket['ingress_bytes'] += size; bucket['ingress_pieces'] += 1
 
     sparse_results = []
@@ -1263,14 +1278,16 @@ def load_initial_state_from_db(nodes_config: Dict[str, str]):
             rehydrated_events = 0
             for row in cursor.fetchall():
                 try:
+                    action = row['action']
                     timestamp_obj = datetime.datetime.fromisoformat(row['timestamp'])
                     event = {
                         "ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj,
-                        "action": row['action'], "status": row['status'], "size": row['size'],
+                        "action": action, "status": row['status'], "size": row['size'],
                         "piece_id": row['piece_id'], "satellite_id": row['satellite_id'],
                         "remote_ip": row['remote_ip'],
                         "location": {"lat": row['latitude'], "lon": row['longitude'], "country": row['country']},
-                        "error_reason": row['error_reason'], "node_name": row['node_name']
+                        "error_reason": row['error_reason'], "node_name": row['node_name'],
+                        "category": categorize_action(action)
                     }
                     node_state['live_events'].append(event)
                     rehydrated_events += 1
