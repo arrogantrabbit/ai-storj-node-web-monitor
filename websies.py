@@ -2,6 +2,7 @@
 # dependencies = [
 #   "aiohttp",
 #   "geoip2",
+#   "watchdog",
 # ]
 # requires-python = ">=3.11"
 # ///
@@ -23,6 +24,9 @@ import logging
 import sys
 import argparse
 from typing import Deque, Dict, Any, List, Set, Optional
+import threading
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 
 # --- Centralized Logging Configuration ---
@@ -226,41 +230,89 @@ def get_size_bucket(size_in_bytes):
     elif kb < 1024: return "256 KB - 1 MB"
     else: return "> 1 MB"
 
-def blocking_log_reader(log_path):
-    while True:
-        try:
-            with open(log_path, 'r') as f:
-                current_inode = os.fstat(f.fileno()).st_ino
-                log.info(f"Tailing log file '{log_path}' with inode {current_inode}")
-                f.seek(0, os.SEEK_END)
-                while True:
-                    line = f.readline()
-                    if not line:
-                        time.sleep(0.1)
-                        try:
-                            # Check for inode change (rename/move rotation)
-                            if os.stat(log_path).st_ino != current_inode:
-                                log.warning(f"Log rotation detected for '{log_path}'.")
-                                break # Re-opens the file
+def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queue: asyncio.Queue, shutdown_event: threading.Event):
+    """
+    An efficient, event-driven log reader that runs in a separate thread.
+    Uses watchdog for file system notifications and falls back to polling.
+    Handles log rotation and truncation gracefully.
+    """
+    log.info(f"Starting event-driven log reader for {log_path}")
+    file_changed_event = threading.Event()
+    directory = os.path.dirname(log_path)
 
-                            # Check for file truncation (copytruncate rotation)
-                            current_pos = f.tell()
-                            file_size = os.fstat(f.fileno()).st_size
-                            if current_pos > file_size:
-                                log.warning(f"Log truncation detected for '{log_path}'. Seeking to start.")
-                                f.seek(0)
+    class ChangeHandler(FileSystemEventHandler):
+        def on_any_event(self, event):
+            # A simple and robust way is to trigger on any event in the directory
+            # and let the main loop figure out if our file of interest was affected.
+            # This handles file modification, creation, and move/rename rotations.
+            file_changed_event.set()
 
-                        except FileNotFoundError:
-                            log.warning(f"Log file not found at '{log_path}'. Waiting...")
-                            break
-                        continue
-                    yield line
-        except FileNotFoundError:
-            log.error(f"Log file not found at {log_path}. Retrying in 5 seconds...")
-            time.sleep(5)
-        except Exception:
-            log.error(f"Critical error in blocking_log_reader for '{log_path}':", exc_info=True)
-            time.sleep(15)
+    observer = Observer()
+    handler = ChangeHandler()
+
+    if not os.path.isdir(directory):
+        log.error(f"Cannot watch log file: directory '{directory}' does not exist. Reader thread for this log will exit.")
+        return
+
+    observer.schedule(handler, directory, recursive=False)
+    observer.start()
+
+    f = None
+    current_inode = None
+    try:
+        while not shutdown_event.is_set():
+            if f is None:
+                try:
+                    f = open(log_path, 'r')
+                    current_inode = os.fstat(f.fileno()).st_ino
+                    log.info(f"Tailing log file '{log_path}' with inode {current_inode}")
+                    f.seek(0, os.SEEK_END)
+                except FileNotFoundError:
+                    # File doesn't exist, wait for a creation event.
+                    shutdown_event.wait(5.0)
+                    continue
+                except Exception as e:
+                    log.error(f"Error opening log file '{log_path}': {e}. Retrying in 5s.")
+                    shutdown_event.wait(5.0)
+                    continue
+
+            line = f.readline()
+            if line:
+                loop.call_soon_threadsafe(aio_queue.put_nowait, line)
+                continue
+
+            # No line, so we wait for changes. The timeout serves as a fallback poll on
+            # filesystems that don't propagate events reliably (e.g., some network shares).
+            file_changed_event.clear()
+            file_changed_event.wait(timeout=5.0)
+            if shutdown_event.is_set(): break
+
+            # After waking up, check for rotation or truncation which might require re-opening the file.
+            try:
+                st = os.stat(log_path)
+                if st.st_ino != current_inode:
+                    log.warning(f"Log rotation by inode change detected for '{log_path}'. Re-opening.")
+                    f.close()
+                    f = None
+                    continue
+
+                if f.tell() > st.st_size:
+                    log.warning(f"Log truncation detected for '{log_path}'. Seeking to start.")
+                    f.seek(0)
+            except FileNotFoundError:
+                log.warning(f"Log file '{log_path}' disappeared. Will attempt to re-open.")
+                f.close()
+                f = None
+            except Exception as e:
+                log.error(f"Error checking log status for '{log_path}': {e}. Re-opening.", exc_info=True)
+                f.close()
+                f = None
+                shutdown_event.wait(5)
+    finally:
+        observer.stop()
+        observer.join()
+        if f: f.close()
+        log.info(f"Log reader for {log_path} has stopped.")
 
 async def robust_broadcast(websockets_dict, payload, node_name: Optional[str] = None):
     tasks = []
@@ -320,15 +372,26 @@ async def log_tailer_task(app, node_name: str, log_path: str):
     loop = asyncio.get_running_loop()
     geoip_reader = app['geoip_reader']
     geoip_cache = app_state['geoip_cache']
-    log_generator = blocking_log_reader(log_path)
+
+    line_queue = asyncio.Queue(maxsize=5000)
+    shutdown_event = threading.Event()
+
+    reader_future = loop.run_in_executor(
+        app['log_executor'],
+        blocking_log_reader,
+        log_path,
+        loop,
+        line_queue,
+        shutdown_event
+    )
+
     log.info(f"Log tailer task started for node: {node_name}")
     node_state = app_state['nodes'][node_name]
-    # --- PERFORMANCE: Pre-compile regex for finding JSON in log lines ---
     JSON_RE = re.compile(r'\{.*\}')
 
-    while True:
-        try:
-            line = await loop.run_in_executor(app['log_executor'], next, log_generator)
+    try:
+        while True:
+            line = await line_queue.get()
             try:
                 # --- PERFORMANCE: Quick filter for relevant log components ---
                 # Most traffic and compaction logs contain one of these keywords.
@@ -444,10 +507,17 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                 continue
             except Exception:
                 log.error(f"Unexpected error processing a log line for {node_name}:", exc_info=True)
-
-        except Exception:
-            log.error(f"Critical error in log_tailer_task main loop for {node_name}:", exc_info=True)
-            await asyncio.sleep(5)
+    except asyncio.CancelledError:
+        log.warning(f"Log tailer task for '{node_name}' is cancelled.")
+        raise
+    except Exception:
+        log.error(f"Critical error in log_tailer_task main loop for {node_name}:", exc_info=True)
+        await asyncio.sleep(5)
+    finally:
+        if not shutdown_event.is_set():
+            log.info(f"Signaling log reader for '{node_name}' to shut down.")
+            shutdown_event.set()
+            # The executor shutdown in cleanup_background_tasks will wait for the thread.
 
 def blocking_db_batch_write(db_path, events):
     if not events: return
