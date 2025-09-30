@@ -83,7 +83,7 @@ load_rc_config ${name}
 
 pidfile="${storj_forwarder_pidfile}"
 command="/usr/sbin/daemon"
-command_args="-f -p ${pidfile} -u ${storj_forwarder_user} \
+command_args="-f -P ${pidfile} -u ${storj_forwarder_user} \
     -o ${storj_forwarder_output_log} \
     ${storj_forwarder_pyexec} ${storj_forwarder_path} \
     --log-file ${storj_forwarder_logfile} \
