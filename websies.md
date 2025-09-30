@@ -68,7 +68,7 @@ load_rc_config ${name}
 pidfile="${storj_monitor_pidfile}"
 command="/usr/sbin/daemon"
 # We wrap the actual command in "sh -c" to ensure it runs from the correct directory.
-command_args="-f -p ${pidfile} -u ${storj_monitor_user} \
+command_args="-f -P ${pidfile} -u ${storj_monitor_user} \
     -o ${storj_monitor_output_log} \
     /bin/sh -c 'cd ${storj_monitor_chdir} && ${storj_monitor_pyexec} ${storj_monitor_path} ${storj_monitor_nodes}'"
 
