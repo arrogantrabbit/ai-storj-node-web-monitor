@@ -57,8 +57,8 @@ Create the file `/usr/local/etc/rc.d/storj_forwarder`.
 # storj_forwarder_enable="YES"
 #
 # Optional variables:
-# storj_forwarder_user="storj"
-# storj_forwarder_pyexec="/usr/local/bin/uv run"
+# storj_forwarder_child_user="storj"
+# storj_forwarder_pyexec="/usr/local/bin/uv run --cache-dir /tmp"
 # storj_forwarder_logfile="/var/log/storagenode.log"
 # storj_forwarder_port="9999"
 #
@@ -71,10 +71,10 @@ rcvar="${name}_enable"
 load_rc_config ${name}
 
 : ${storj_forwarder_enable:="NO"}
-: ${storj_forwarder_user:="storj"}
-: ${storj_forwarder_group:="${storj_forwarder_user}"}
+: ${storj_forwarder_child_user:="storagenode"}
+: ${storj_forwarder_child_group:="${storj_forwarder_user}"}
 : ${storj_forwarder_path:="/usr/local/storj_monitor/log_forwarder.py"}
-: ${storj_forwarder_pyexec:="/usr/local/bin/uv run"}
+: ${storj_forwarder_pyexec:="/usr/local/bin/uv run --cache-dir /tmp"}
 : ${storj_forwarder_logfile:="/var/log/storagenode.log"} # Important: Check this path!
 : ${storj_forwarder_host:="0.0.0.0"}
 : ${storj_forwarder_port:="9999"}
@@ -83,7 +83,7 @@ load_rc_config ${name}
 
 pidfile="${storj_forwarder_pidfile}"
 command="/usr/sbin/daemon"
-command_args="-f -P ${pidfile} -u ${storj_forwarder_user} \
+command_args="-f -P ${pidfile} -u ${storj_forwarder_child_user} \
     -o ${storj_forwarder_output_log} \
     ${storj_forwarder_pyexec} ${storj_forwarder_path} \
     --log-file ${storj_forwarder_logfile} \
@@ -93,7 +93,7 @@ command_args="-f -P ${pidfile} -u ${storj_forwarder_user} \
 start_precmd()
 {
     # Ensure the user running the service can read the log file
-    if ! su -m "${storj_forwarder_user}" -c "test -r ${storj_forwarder_logfile}"; then
+    if ! su -m "${storj_forwarder_child_user}" -c "test -r ${storj_forwarder_logfile}"; then
         echo "Error: User '${storj_forwarder_user}' cannot read the log file:"
         echo "${storj_forwarder_logfile}"
         echo "Please check file permissions."
