@@ -38,10 +38,10 @@ Create the file `/usr/local/etc/rc.d/storj_monitor`.
 # storj_monitor_nodes="--node Node1:/path/log --node Node2:host:port"
 #
 # Optional variables:
-# storj_monitor_user="storj"
-# storj_monitor_group="storj"
+# storj_monitor_child_user="storagenode"
+# storj_monitor_child_group="storagenode"
 # storj_monitor_chdir="/usr/local/storj_monitor"  # Working directory
-# storj_monitor_pyexec="/usr/local/bin/uv run"    # Python runner
+# storj_monitor_pyexec="/usr/local/bin/uv run --cache-dir /tmp"    # Python runner
 # storj_monitor_path="websies.py"               # Script name (relative to chdir)
 # storj_monitor_pidfile="/var/run/storj_monitor.pid"
 # storj_monitor_output_log="/var/log/storj_monitor.log"
@@ -56,10 +56,10 @@ load_rc_config ${name}
 
 # Set defaults for optional variables
 : ${storj_monitor_enable:="NO"}
-: ${storj_monitor_user:="storj"}
-: ${storj_monitor_group:="storj"}
+: ${storj_monitor_child_user:="storagenode"}
+: ${storj_monitor_child_group:="storagenode"}
 : ${storj_monitor_chdir:="/usr/local/storj_monitor"}
-: ${storj_monitor_pyexec:="/usr/local/bin/uv run"}
+: ${storj_monitor_pyexec:="/usr/local/bin/uv run --cache-dir /tmp"}
 : ${storj_monitor_path:="websies.py"}
 : ${storj_monitor_nodes:=""} # This MUST be set in rc.conf
 : ${storj_monitor_pidfile:="/var/run/${name}.pid"}
@@ -68,7 +68,7 @@ load_rc_config ${name}
 pidfile="${storj_monitor_pidfile}"
 command="/usr/sbin/daemon"
 # We wrap the actual command in "sh -c" to ensure it runs from the correct directory.
-command_args="-f -P ${pidfile} -u ${storj_monitor_user} \
+command_args="-f -P ${pidfile} -u ${storj_monitor_child_user} \
     -o ${storj_monitor_output_log} \
     /bin/sh -c 'cd ${storj_monitor_chdir} && ${storj_monitor_pyexec} ${storj_monitor_path} ${storj_monitor_nodes}'"
 
