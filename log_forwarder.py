@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # /// script
-# dependencies = ["watchdog"]
+# # No external dependencies needed anymore, watchdog is removed.
 # requires-python = ">=3.11"
 # ///
 
@@ -10,11 +10,8 @@ import argparse
 import logging
 import os
 import sys
-import threading
 import time
-from typing import Set
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from typing import Set, Optional
 import functools
 
 # --- Centralized Logging ---
@@ -23,101 +20,68 @@ log = logging.getLogger("StorjLogForwarder")
 # --- Global State ---
 LOG_QUEUE = asyncio.Queue(maxsize=10000)
 CONNECTED_CLIENTS: Set[asyncio.StreamWriter] = set()
-client_present_event = threading.Event()
-# A separate event for file changes, which we can also use to wake the thread
-file_changed_event = threading.Event()
+# We now manage an asyncio Task and Process, not a thread.
+TAIL_TASK: Optional[asyncio.Task] = None
+TAIL_PROCESS: Optional[asyncio.subprocess.Process] = None
 
-def file_tailer_thread(log_path: str, loop: asyncio.AbstractEventLoop, shutdown_event: threading.Event, client_event: threading.Event, f_event: threading.Event):
+async def tail_log_file(log_path: str):
     """
-    A purely event-driven log reader. It only starts watchdog when a client is
-    present and uses blocking waits to consume 0% CPU when the log file is idle.
+    Starts a 'tail -F' subprocess and forwards its stdout to the LOG_QUEUE.
+    This coroutine is designed to be cancelled when no clients are connected.
     """
-    log.info(f"File tailer thread started for {log_path}. Waiting for client.")
-
-    def read_all_new_lines(f):
-        """Reads all available lines from the current file position."""
-        while True:
-            line = f.readline()
-            if not line:
-                break
-            try:
-                loop.call_soon_threadsafe(LOG_QUEUE.put_nowait, (time.time(), line.strip()))
-            except asyncio.QueueFull:
-                pass # Drop if consumer is slow
-
-    observer = None
+    global TAIL_PROCESS
+    log.info(f"Starting 'tail -F' on {log_path}")
     try:
-        while not shutdown_event.is_set():
-            # STATE 1: IDLE (No clients) - Zero CPU usage
-            # The thread sleeps here until the main loop sets the event.
-            client_event.wait()
-            if shutdown_event.is_set(): break
+        # -F: Follow by filename, handles log rotation.
+        # -n 0: Start from the end of the file.
+        TAIL_PROCESS = await asyncio.create_subprocess_exec(
+            'tail', '-F', '-n', '0', log_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
 
-            # STATE 2: ACTIVE (Clients are present) - Start monitoring
-            log.info("Client connected, starting file observation.")
-            directory = os.path.dirname(log_path) or '.'
+        # Process stdout
+        async for line in TAIL_PROCESS.stdout:
+            # The timestamp is generated the moment we read the line from the pipe.
+            # This is highly accurate and avoids any artificial delays.
+            await LOG_QUEUE.put((time.time(), line.decode('utf-8', errors='replace').strip()))
 
-            class ChangeHandler(FileSystemEventHandler):
-                def on_any_event(self, event):
-                    f_event.set() # Signal that something happened
+        # If we exit the loop, check for errors from tail's stderr
+        stderr_output = await TAIL_PROCESS.stderr.read()
+        if stderr_output:
+            log.error(f"'tail' process exited with error: {stderr_output.decode('utf-8', errors='replace').strip()}")
 
-            if not os.path.isdir(directory):
-                log.error(f"Log directory '{directory}' does not exist. Pausing.")
-                client_event.clear() # Go back to idle state
-                continue
-
-            observer = Observer()
-            observer.schedule(ChangeHandler(), directory, recursive=False)
-            observer.start()
-
-            try:
-                with open(log_path, 'r', encoding='utf-8') as f:
-                    f.seek(0, os.SEEK_END)
-                    current_inode = os.fstat(f.fileno()).st_ino
-                    # Initial read in case the file was written to between open and now
-                    read_all_new_lines(f)
-
-                    # Inner loop: main active state
-                    while client_event.is_set() and not shutdown_event.is_set():
-                        # STATE 3: WAITING (Clients connected, log idle) - Zero CPU usage
-                        # The thread sleeps here until watchdog OR the disconnect handler sets the event.
-                        f_event.wait()
-                        f_event.clear()
-
-                        # If we were woken up but clients are now gone, break to cleanup.
-                        if not client_event.is_set() or shutdown_event.is_set():
-                            break
-
-                        # Check for log rotation. If it happened, break inner loop to reopen.
-                        try:
-                            if os.stat(log_path).st_ino != current_inode:
-                                log.info("Log rotation detected. Re-opening file.")
-                                break
-                        except FileNotFoundError:
-                            log.warning("Log file disappeared during check. Re-opening.")
-                            break
-
-                        read_all_new_lines(f)
-            except FileNotFoundError:
-                log.warning(f"Log file '{log_path}' not found. Will retry after a delay.")
-                time.sleep(2) # Don't spin if the file is missing
-            except Exception as e:
-                log.error(f"Error during file tailing: {e}. Retrying after delay.", exc_info=True)
-                time.sleep(5)
-            finally:
-                # STATE 4: CLEANUP (Client disconnected) - Stop observer
-                log.info("Client disconnected or file error. Stopping file observation.")
-                if observer and observer.is_alive():
-                    observer.stop()
-                    observer.join()
-                observer = None
-
+    except FileNotFoundError:
+        log.critical(f"Fatal: 'tail' command not found. Please ensure it is installed and in your PATH.")
+        # In a real-world scenario, you might want to trigger a more graceful shutdown.
+        # For simplicity, we'll let the exception propagate to the main loop.
+        raise
+    except asyncio.CancelledError:
+        log.info("'tail' task is being cancelled.")
+    except Exception:
+        log.error("An unexpected error occurred in the tail task.", exc_info=True)
     finally:
-        log.info("File tailer thread has shut down.")
-        if observer and observer.is_alive():
-            observer.stop()
-            observer.join()
+        if TAIL_PROCESS and TAIL_PROCESS.returncode is None:
+            log.info("Terminating 'tail' process.")
+            try:
+                TAIL_PROCESS.terminate()
+                await TAIL_PROCESS.wait()
+            except ProcessLookupError:
+                pass # Process already finished
+        TAIL_PROCESS = None
+        log.info("'tail' process stopped.")
 
+async def stop_tailing_if_needed():
+    """Cancels the tailing task if no clients remain."""
+    global TAIL_TASK
+    if not CONNECTED_CLIENTS and TAIL_TASK:
+        log.info("Last client disconnected. Stopping file tailing.")
+        try:
+            TAIL_TASK.cancel()
+            await TAIL_TASK
+        except asyncio.CancelledError:
+            pass # Expected
+        TAIL_TASK = None
 
 async def broadcast_log_entries():
     """Pulls log entries from the queue and sends them to all connected clients."""
@@ -143,15 +107,11 @@ async def broadcast_log_entries():
                      disconnected_clients.add(writer)
 
             if disconnected_clients:
-                 loop = asyncio.get_running_loop()
                  for writer in disconnected_clients:
                     if writer in CONNECTED_CLIENTS: CONNECTED_CLIENTS.remove(writer)
                     if not writer.is_closing(): writer.close()
-
-                 if not CONNECTED_CLIENTS:
-                    log.info("Last client disconnected. Signaling file tailer to pause.")
-                    # This must unblock both client_event and file_changed_event
-                    await loop.run_in_executor(None, lambda: (client_present_event.clear(), file_changed_event.set()))
+                 # Check if the last client was in the disconnected batch
+                 await stop_tailing_if_needed()
 
             LOG_QUEUE.task_done()
         except asyncio.CancelledError:
@@ -159,30 +119,28 @@ async def broadcast_log_entries():
         except Exception:
             log.error("Critical error in broadcast task:", exc_info=True)
 
-async def handle_new_connection(client_event: threading.Event, f_event: threading.Event, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+async def handle_new_connection(log_file: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     """Callback for when a new client connects."""
+    global TAIL_TASK
     peer_addr = writer.get_extra_info('peername')
-    loop = asyncio.get_running_loop()
 
     was_first_client = not CONNECTED_CLIENTS
     CONNECTED_CLIENTS.add(writer)
     log.info(f"Client connected: {peer_addr}. Total clients: {len(CONNECTED_CLIENTS)}")
 
     if was_first_client:
-        log.info("First client connected. Signaling file tailer to resume.")
-        await loop.run_in_executor(None, client_event.set)
+        log.info("First client connected. Starting file tailing.")
+        TAIL_TASK = asyncio.create_task(tail_log_file(log_file))
 
     try:
+        # Wait for client to close the connection from their end
         await reader.read(1)
     except (ConnectionResetError, asyncio.IncompleteReadError):
         log.info(f"Client {peer_addr} connection reset.")
     finally:
         if writer in CONNECTED_CLIENTS: CONNECTED_CLIENTS.remove(writer)
 
-        if not CONNECTED_CLIENTS:
-            log.info("Last client disconnected. Signaling file tailer to pause.")
-            # Wake the file tailer thread so it can notice client_event is now clear.
-            await loop.run_in_executor(None, lambda: (client_event.clear(), f_event.set()))
+        await stop_tailing_if_needed()
 
         if not writer.is_closing():
             writer.close()
@@ -191,26 +149,19 @@ async def handle_new_connection(client_event: threading.Event, f_event: threadin
 
 async def main(args):
     """Main async function to set up and run the server."""
-    loop = asyncio.get_running_loop()
-    shutdown_event = threading.Event()
-
-    tailer = threading.Thread(
-        target=file_tailer_thread,
-        args=(args.log_file, loop, shutdown_event, client_present_event, file_changed_event),
-        daemon=True, name="FileTailerThread"
-    )
-    tailer.start()
+    # Work with an absolute path for clarity in logs.
+    log_file_path = os.path.abspath(args.log_file)
 
     broadcast_task = asyncio.create_task(broadcast_log_entries())
 
-    connection_handler = functools.partial(handle_new_connection, client_present_event, file_changed_event)
+    connection_handler = functools.partial(handle_new_connection, log_file_path)
     server = await asyncio.start_server(
         connection_handler, args.host, args.port
     )
 
     server_addr = server.sockets[0].getsockname()
     log.info(f"Log forwarder started. Listening on {server_addr[0]}:{server_addr[1]}")
-    log.info(f"Forwarding logs from: {os.path.abspath(args.log_file)}")
+    log.info(f"Forwarding logs from: {log_file_path}")
 
     try:
         await server.serve_forever()
@@ -218,17 +169,16 @@ async def main(args):
         pass
     finally:
         log.info("Shutdown sequence initiated...")
-        shutdown_event.set()
-        client_present_event.set()
-        file_changed_event.set() # Wake up the tailer from any wait state
         broadcast_task.cancel()
         server.close(); await server.wait_closed()
 
         for client in list(CONNECTED_CLIENTS):
             client.close(); await client.wait_closed()
 
+        # Ensure tailing is stopped on server shutdown
+        await stop_tailing_if_needed()
+
         await asyncio.gather(broadcast_task, return_exceptions=True)
-        tailer.join(timeout=5)
         log.info("Shutdown complete.")
 
 if __name__ == "__main__":
