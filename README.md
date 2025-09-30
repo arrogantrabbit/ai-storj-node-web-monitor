@@ -77,10 +77,11 @@ uv run websies.py \
   --node "Remote-Node-2:192.168.1.101:9999"
 ```
 
-## Creadits
+## Credits
 
 Creaatd by Google Gemini Pro 2.5 and iterated on by Anthropic Opus 4.1 and Google Gemini Pro 2.5 under unrelending guidance of Sir Arrogant Rabbit.
 
 
 ## How it looks:
-<img width="918" height="1156" alt="image" src="https://github.com/user-attachments/assets/dbc73d18-001d-4991-b945-f65ba0528074" />
+<img width="903" height="1009" alt="image" src="https://github.com/user-attachments/assets/b07aaa7f-efd4-42f9-9de3-46b8b44f5411" />
+<img width="905" height="1038" alt="image" src="https://github.com/user-attachments/assets/88be66e8-7151-4b04-8df0-eb8954cdc60d" />
