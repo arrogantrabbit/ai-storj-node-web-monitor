@@ -249,6 +249,7 @@ def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queu
     An efficient, event-driven log reader that runs in a separate thread.
     Uses watchdog for file system notifications and falls back to polling.
     Handles log rotation and truncation gracefully.
+    Puts (line, arrival_time) tuples onto the queue.
     """
     log.info(f"Starting event-driven log reader for {log_path}")
     file_changed_event = threading.Event()
@@ -256,9 +257,6 @@ def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queu
 
     class ChangeHandler(FileSystemEventHandler):
         def on_any_event(self, event):
-            # A simple and robust way is to trigger on any event in the directory
-            # and let the main loop figure out if our file of interest was affected.
-            # This handles file modification, creation, and move/rename rotations.
             file_changed_event.set()
 
     observer = Observer()
@@ -282,7 +280,6 @@ def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queu
                     log.info(f"Tailing log file '{log_path}' with inode {current_inode}")
                     f.seek(0, os.SEEK_END)
                 except FileNotFoundError:
-                    # File doesn't exist, wait for a creation event.
                     shutdown_event.wait(5.0)
                     continue
                 except Exception as e:
@@ -292,41 +289,72 @@ def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queu
 
             line = f.readline()
             if line:
-                loop.call_soon_threadsafe(aio_queue.put_nowait, line)
+                # Add arrival timestamp here, in the reader thread, for maximum accuracy
+                loop.call_soon_threadsafe(aio_queue.put_nowait, (line, time.time()))
                 continue
 
-            # No line, so we wait for changes. The timeout serves as a fallback poll on
-            # filesystems that don't propagate events reliably (e.g., some network shares).
             file_changed_event.clear()
             file_changed_event.wait(timeout=5.0)
             if shutdown_event.is_set(): break
 
-            # After waking up, check for rotation or truncation which might require re-opening the file.
             try:
                 st = os.stat(log_path)
                 if st.st_ino != current_inode:
                     log.warning(f"Log rotation by inode change detected for '{log_path}'. Re-opening.")
-                    f.close()
-                    f = None
-                    continue
-
+                    f.close(); f = None; continue
                 if f.tell() > st.st_size:
                     log.warning(f"Log truncation detected for '{log_path}'. Seeking to start.")
                     f.seek(0)
             except FileNotFoundError:
                 log.warning(f"Log file '{log_path}' disappeared. Will attempt to re-open.")
-                f.close()
-                f = None
+                f.close(); f = None
             except Exception as e:
                 log.error(f"Error checking log status for '{log_path}': {e}. Re-opening.", exc_info=True)
-                f.close()
-                f = None
-                shutdown_event.wait(5)
+                f.close(); f = None; shutdown_event.wait(5)
     finally:
         observer.stop()
         observer.join()
         if f: f.close()
         log.info(f"Log reader for {log_path} has stopped.")
+
+
+async def network_log_reader_task(node_name: str, host: str, port: int, queue: asyncio.Queue):
+    """Connects to a remote log forwarder and reads timestamped log lines."""
+    log.info(f"[{node_name}] Starting network log reader for {host}:{port}")
+    backoff = 2
+    while True:
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            log.info(f"[{node_name}] Connected to remote log source at {host}:{port}")
+            backoff = 2 # Reset backoff on successful connection
+            while True:
+                line_bytes = await reader.readline()
+                if not line_bytes:
+                    log.warning(f"[{node_name}] Connection to {host}:{port} closed by remote end.")
+                    break
+
+                line = line_bytes.decode('utf-8').strip()
+                parts = line.split(' ', 1)
+                if len(parts) == 2:
+                    try:
+                        ts = float(parts[0])
+                        log_line = parts[1]
+                        await queue.put((log_line, ts))
+                    except (ValueError, TypeError):
+                        log.warning(f"[{node_name}] Received malformed line from {host}:{port}, ignoring: {line[:100]}")
+                else:
+                     log.warning(f"[{node_name}] Received malformed line from {host}:{port}, ignoring: {line[:100]}")
+
+        except asyncio.CancelledError:
+            log.info(f"[{node_name}] Network log reader for {host}:{port} cancelled.")
+            break
+        except (ConnectionRefusedError, OSError, asyncio.TimeoutError) as e:
+            log.error(f"[{node_name}] Cannot connect to {host}:{port}: {e}. Retrying in {backoff}s.")
+        except Exception:
+            log.error(f"[{node_name}] Unexpected error in network log reader for {host}:{port}. Retrying in {backoff}s.", exc_info=True)
+
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 60) # Exponential backoff up to 1 minute
 
 async def robust_broadcast(websockets_dict, payload, node_name: Optional[str] = None):
     tasks = []
@@ -382,34 +410,24 @@ def blocking_write_hashstore_log(db_path, stats_dict) -> bool:
         return False
 
 
-async def log_tailer_task(app, node_name: str, log_path: str):
+async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
+    """
+    Consumes log lines from a queue, parses them, and updates application state.
+    This task is agnostic to the source of the log lines (file or network).
+    """
     loop = asyncio.get_running_loop()
     geoip_reader = app['geoip_reader']
     geoip_cache = app_state['geoip_cache']
 
-    line_queue = asyncio.Queue(maxsize=5000)
-    shutdown_event = threading.Event()
-
-    reader_future = loop.run_in_executor(
-        app['log_executor'],
-        blocking_log_reader,
-        log_path,
-        loop,
-        line_queue,
-        shutdown_event
-    )
-
-    log.info(f"Log tailer task started for node: {node_name}")
+    log.info(f"Log processor task started for node: {node_name}")
     node_state = app_state['nodes'][node_name]
     JSON_RE = re.compile(r'\{.*\}')
 
     try:
         while True:
-            line = await line_queue.get()
+            line, arrival_time = await line_queue.get()
             try:
                 # --- PERFORMANCE: Quick filter for relevant log components ---
-                # Most traffic and compaction logs contain one of these keywords.
-                # This avoids expensive regex/JSON parsing on irrelevant lines.
                 if 'piecestore' not in line and 'hashstore' not in line:
                     continue
 
@@ -421,10 +439,7 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                 timestamp_str = parts[0].strip()
 
                 # --- DEFINITIVE TIMEZONE FIX ---
-                # Assume the timestamp from the log is in the server's local timezone,
-                # then correctly CONVERT it to UTC for storage and comparison.
                 timestamp_obj = datetime.datetime.fromisoformat(timestamp_str).astimezone().astimezone(datetime.timezone.utc)
-                # --- END DEFINITIVE TIMEZONE FIX ---
 
                 json_match = JSON_RE.search(line)
                 if not json_match: continue
@@ -455,9 +470,7 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                             table_stats = stats.get("Table", {})
 
                             compaction_stats = {
-                                "node_name": node_name,
-                                "satellite": satellite,
-                                "store": store,
+                                "node_name": node_name, "satellite": satellite, "store": store,
                                 "last_run_iso": timestamp_obj.isoformat(),
                                 "duration": round(duration_seconds, 2),
                                 "data_reclaimed_bytes": parse_size_to_bytes(stats.get("DataReclaimed", "0 B")),
@@ -467,14 +480,10 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                             }
 
                             was_written = await loop.run_in_executor(
-                                app['db_executor'],
-                                blocking_write_hashstore_log,
-                                DATABASE_FILE,
-                                compaction_stats
+                                app['db_executor'], blocking_write_hashstore_log, DATABASE_FILE, compaction_stats
                             )
                             if was_written:
                                 await robust_broadcast(app_state['websockets'], {"type": "hashstore_updated"})
-
                     continue
 
                 # --- Original Traffic Log Processing ---
@@ -484,10 +493,7 @@ async def log_tailer_task(app, node_name: str, log_path: str):
 
                 action, size, piece_id, sat_id, remote_addr = log_data.get("Action"), log_data.get("Size"), log_data.get("Piece ID"), log_data.get("Satellite ID"), log_data.get("Remote Address")
 
-                # BUG FIX: The original check `if not all(...)` incorrectly filtered out events with size=0.
-                # This new check validates essential fields while correctly allowing `size` to be 0.
-                if not all([action, piece_id, sat_id, remote_addr]) or size is None:
-                    continue
+                if not all([action, piece_id, sat_id, remote_addr]) or size is None: continue
 
                 remote_ip = remote_addr.split(':')[0]
                 location = geoip_cache.get(remote_ip)
@@ -499,52 +505,30 @@ async def log_tailer_task(app, node_name: str, log_path: str):
                     if len(geoip_cache) > MAX_GEOIP_CACHE_SIZE: geoip_cache.pop(next(iter(geoip_cache)))
                     geoip_cache[remote_ip] = location
 
-                # OPTIMIZATION: Pre-categorize event for faster processing in stats loop
                 category = categorize_action(action)
                 if category != 'other':
                     node_state['unprocessed_performance_events'].append({
-                        'ts_unix': timestamp_obj.timestamp(),
-                        'category': category,
-                        'status': status,
-                        'size': size
+                        'ts_unix': timestamp_obj.timestamp(), 'category': category,
+                        'status': status, 'size': size
                     })
 
-                # Add arrival time to augment timestamp resolution within seconds
-                arrival_time = time.time()
-                
-                # Create event with both original timestamp and arrival time
                 event = {
-                    "ts_unix": timestamp_obj.timestamp(),
-                    "timestamp": timestamp_obj,
-                    "action": action,
-                    "status": status,
-                    "size": size,
-                    "piece_id": piece_id,
-                    "satellite_id": sat_id,
-                    "remote_ip": remote_ip,
-                    "location": location,
-                    "error_reason": error_reason,
-                    "node_name": node_name,
-                    "category": category,
-                    "arrival_time": arrival_time  # NEW: Track when event arrived for sub-second resolution
+                    "ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action,
+                    "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id,
+                    "remote_ip": remote_ip, "location": location, "error_reason": error_reason,
+                    "node_name": node_name, "category": category, "arrival_time": arrival_time
                 }
                 node_state['live_events'].append(event)
 
-                # Queue websocket event for batched sending instead of immediate broadcast
                 websocket_event = {
-                    "type": "log_entry",
-                    "action": action,
-                    "size": size,
-                    "location": location,
-                    "timestamp": timestamp_obj.isoformat(),
-                    "node_name": node_name,
-                    "arrival_time": arrival_time  # Include arrival time for progressive display
+                    "type": "log_entry", "action": action, "size": size, "location": location,
+                    "timestamp": timestamp_obj.isoformat(), "node_name": node_name, "arrival_time": arrival_time
                 }
                 async with app_state['websocket_queue_lock']:
                     app_state['websocket_event_queue'].append(websocket_event)
 
                 if app_state['db_write_queue'].full():
-                    log.warning(f"Database write queue is full. Pausing log tailing to allow DB to catch up.")
+                    log.warning(f"Database write queue is full. Pausing log processing to allow DB to catch up.")
                 await app_state['db_write_queue'].put(event)
 
             except (json.JSONDecodeError, AttributeError, KeyError, ValueError):
@@ -552,16 +536,9 @@ async def log_tailer_task(app, node_name: str, log_path: str):
             except Exception:
                 log.error(f"Unexpected error processing a log line for {node_name}:", exc_info=True)
     except asyncio.CancelledError:
-        log.warning(f"Log tailer task for '{node_name}' is cancelled.")
-        raise
+        log.warning(f"Log processor task for '{node_name}' is cancelled.")
     except Exception:
-        log.error(f"Critical error in log_tailer_task main loop for {node_name}:", exc_info=True)
-        await asyncio.sleep(5)
-    finally:
-        if not shutdown_event.is_set():
-            log.info(f"Signaling log reader for '{node_name}' to shut down.")
-            shutdown_event.set()
-            # The executor shutdown in cleanup_background_tasks will wait for the thread.
+        log.error(f"Critical error in log_processor_task main loop for {node_name}:", exc_info=True)
 
 def blocking_db_batch_write(db_path, events):
     if not events: return
@@ -996,19 +973,19 @@ async def websocket_batch_broadcaster_task(app):
     Also staggers events within the same second using arrival time for progressive display.
     """
     log.info("Websocket batch broadcaster task started.")
-    
+
     while True:
         await asyncio.sleep(WEBSOCKET_BATCH_INTERVAL_MS / 1000.0)  # Convert ms to seconds
-        
+
         try:
             # Atomically get and clear the event queue
             async with app_state['websocket_queue_lock']:
                 events_to_send = app_state['websocket_event_queue'][:WEBSOCKET_BATCH_SIZE]
                 app_state['websocket_event_queue'] = app_state['websocket_event_queue'][WEBSOCKET_BATCH_SIZE:]
-            
+
             if not events_to_send:
                 continue
-            
+
             # Group events by the same log timestamp to enable progressive display
             events_by_timestamp = {}
             for event in events_to_send:
@@ -1016,12 +993,12 @@ async def websocket_batch_broadcaster_task(app):
                 if timestamp_key not in events_by_timestamp:
                     events_by_timestamp[timestamp_key] = []
                 events_by_timestamp[timestamp_key].append(event)
-            
+
             # Sort events within each timestamp group by arrival time and add display delays
             for timestamp_key, timestamp_events in events_by_timestamp.items():
                 # Sort by arrival time
                 timestamp_events.sort(key=lambda e: e['arrival_time'])
-                
+
                 # Add progressive display delays based on arrival order within the same second
                 base_arrival_time = timestamp_events[0]['arrival_time']
                 for i, event in enumerate(timestamp_events):
@@ -1029,7 +1006,7 @@ async def websocket_batch_broadcaster_task(app):
                     event['display_delay_ms'] = i * 10
                     # Calculate time since first event in this timestamp group
                     event['arrival_offset_ms'] = int((event['arrival_time'] - base_arrival_time) * 1000)
-            
+
             # Create batched payload
             if len(events_to_send) == 1:
                 # Send single event as before for backward compatibility
@@ -1041,10 +1018,10 @@ async def websocket_batch_broadcaster_task(app):
                     "events": events_to_send,
                     "count": len(events_to_send)
                 }
-            
+
             # Broadcast to all relevant websockets
             await robust_broadcast(app_state['websockets'], payload)
-            
+
         except Exception:
             log.error("Error in websocket_batch_broadcaster_task:", exc_info=True)
 
@@ -1344,7 +1321,7 @@ async def websocket_handler(request):
     return ws
 
 
-def load_initial_state_from_db(nodes_config: Dict[str, str]):
+def load_initial_state_from_db(nodes_config: Dict[str, Dict[str, Any]]):
     """Connects to the DB to re-hydrate the in-memory state on startup."""
     log.info("Attempting to load initial state from database...")
     initial_state = {}
@@ -1482,6 +1459,7 @@ async def start_background_tasks(app):
     app['db_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=5)
     app['log_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=len(app['nodes']) + 1)
     app['tasks'] = []
+    app['log_reader_shutdown_events'] = {}
 
     loop = asyncio.get_running_loop()
 
@@ -1495,20 +1473,38 @@ async def start_background_tasks(app):
     app_state['nodes'] = initial_node_states
     log.info("Initial state has been populated from the database.")
 
-    for node_name, log_path in app['nodes'].items():
+    for node_name, node_config in app['nodes'].items():
         if node_name not in app_state['nodes']:
              app_state['nodes'][node_name] = {
                 'live_events': deque(),
                 'active_compactions': {},
                 'unprocessed_performance_events': []
             }
-        app['tasks'].append(asyncio.create_task(log_tailer_task(app, node_name, log_path)))
+
+        line_queue = asyncio.Queue(maxsize=5000)
+
+        if node_config['type'] == 'file':
+            shutdown_event = threading.Event()
+            app['log_reader_shutdown_events'][node_name] = shutdown_event
+            loop.run_in_executor(
+                app['log_executor'],
+                blocking_log_reader,
+                node_config['path'], loop, line_queue, shutdown_event
+            )
+        elif node_config['type'] == 'network':
+            app['tasks'].append(asyncio.create_task(
+                network_log_reader_task(
+                    node_name, node_config['host'], node_config['port'], line_queue
+                )
+            ))
+
+        app['tasks'].append(asyncio.create_task(log_processor_task(app, node_name, line_queue)))
 
     app['tasks'].extend([
         asyncio.create_task(prune_live_events_task(app)),
         asyncio.create_task(stats_baker_and_broadcaster_task(app)),
         asyncio.create_task(performance_aggregator_task(app)),
-        asyncio.create_task(websocket_batch_broadcaster_task(app)),  # NEW: Batch websocket events
+        asyncio.create_task(websocket_batch_broadcaster_task(app)),
         asyncio.create_task(debug_logger_task(app)),
         asyncio.create_task(database_writer_task(app)),
         asyncio.create_task(hourly_aggregator_task(app)),
@@ -1517,37 +1513,66 @@ async def start_background_tasks(app):
 
 async def cleanup_background_tasks(app):
     log.warning("Application cleanup started.")
-    for task in app.get('tasks', []): task.cancel()
-    if 'tasks' in app: await asyncio.gather(*app['tasks'], return_exceptions=True)
-    log.info("Background tasks cancelled.")
+    for task in app.get('tasks', []):
+        task.cancel()
+    if 'tasks' in app:
+        await asyncio.gather(*app['tasks'], return_exceptions=True)
+    log.info("Asyncio background tasks cancelled.")
+
+    # Explicitly signal file reader threads to shut down
+    for node_name, event in app.get('log_reader_shutdown_events', {}).items():
+        log.info(f"Signaling file log reader for '{node_name}' to shut down.")
+        event.set()
+
     if 'geoip_reader' in app and hasattr(app['geoip_reader'], 'close'):
         app['geoip_reader'].close()
         log.info("GeoIP database reader closed.")
+
     for executor_name in ['db_executor', 'log_executor']:
-        if executor_name in app and app[executor_name]: app[executor_name].shutdown(wait=True)
+        if executor_name in app and app[executor_name]:
+            app[executor_name].shutdown(wait=True)
     log.info("Executors shut down.")
 
 
-def parse_nodes(args: List[str]) -> Dict[str, str]:
+def parse_nodes(args: List[str]) -> Dict[str, Dict[str, Any]]:
     nodes = {}
     if not args:
-        log.critical("No nodes specified. Use --node 'NodeName:/path/to/log' argument.")
+        log.critical("No nodes specified. Use --node 'NodeName:/path/to/log' or 'NodeName:host:port' argument.")
         sys.exit(1)
+
     for arg in args:
         parts = arg.split(':', 1)
         if len(parts) != 2 or not parts[0] or not parts[1]:
-            log.critical(f"Invalid node format: '{arg}'. Expected 'NodeName:/path/to/log'.")
+            log.critical(f"Invalid node format: '{arg}'. Expected 'NodeName:/path/to/log' or 'NodeName:host:port'.")
             sys.exit(1)
-        node_name, log_path = parts
-        if not os.path.exists(log_path):
-            log.warning(f"Log path for node '{node_name}' does not exist: {log_path}")
-        nodes[node_name] = log_path
+        node_name, source = parts
+
+        # Heuristic 1: If the source path exists on disk, it's a file.
+        if os.path.exists(source):
+            log.info(f"Configured node '{node_name}' with file source '{source}' (path exists).")
+            nodes[node_name] = {'type': 'file', 'path': source}
+            continue
+
+        # Heuristic 2: If it doesn't exist, check if it looks like host:port.
+        try:
+            host, port_str = source.rsplit(':', 1)
+            port = int(port_str)
+            if 1 <= port <= 65535 and host:
+                log.info(f"Configured node '{node_name}' with network source '{source}'.")
+                nodes[node_name] = {'type': 'network', 'host': host, 'port': port}
+                continue
+        except (ValueError, TypeError):
+            pass # Doesn't look like a network address.
+
+        # Fallback: Treat as a non-existent file path. This is valid for log files that will be created.
+        log.warning(f"Configured node '{node_name}' with file source '{source}' (path does not currently exist).")
+        nodes[node_name] = {'type': 'file', 'path': source}
     return nodes
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Storagenode Pro Monitor")
-    parser.add_argument('--node', action='append', help="Specify a node in 'NodeName:/path/to/log.log' format. Can be used multiple times.", required=True)
+    parser.add_argument('--node', action='append', help="Specify a node in 'NodeName:/path/to/log.log' or 'NodeName:host:port' format. Can be used multiple times.", required=True)
     parser.add_argument('--debug', action='store_true', help="Enable debug logging.")
     args = parser.parse_args()
 
