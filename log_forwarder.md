@@ -72,7 +72,7 @@ load_rc_config ${name}
 
 : ${storj_forwarder_enable:="NO"}
 : ${storj_forwarder_child_user:="storagenode"}
-: ${storj_forwarder_child_group:="${storj_forwarder_user}"}
+: ${storj_forwarder_child_group:="${storj_forwarder_child_user}"}
 : ${storj_forwarder_path:="/usr/local/storj_monitor/log_forwarder.py"}
 : ${storj_forwarder_pyexec:="/usr/local/bin/uv run --cache-dir /tmp"}
 : ${storj_forwarder_logfile:="/var/log/storagenode.log"} # Important: Check this path!
