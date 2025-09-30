@@ -1,0 +1,52 @@
+#!/bin/sh
+#
+# PROVIDE: storj_forwarder
+# REQUIRE: NETWORKING DAEMON
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf to enable this service:
+#
+# storj_forwarder_enable="YES"
+#
+# Optional variables:
+# storj_forwarder_user="storj"     # User to run the forwarder as
+# storj_forwarder_group="storj"    # Group to run the forwarder as
+# storj_forwarder_path="/usr/local/storj_monitor/log_forwarder.py" # Path to the script
+# storj_forwarder_pyexec="/usr/local/bin/uv run" # How to run the Python script
+# storj_forwarder_logfile="/var/log/storagenode.log" # Storj log to monitor
+# storj_forwarder_host="0.0.0.0"   # Host to listen on
+# storj_forwarder_port="9999"      # Port to listen on
+# storj_forwarder_pidfile="/var/run/storj_forwarder.pid"
+# storj_forwarder_output_log="/var/log/storj_forwarder.log" # Forwarder's own log
+#
+
+. /etc/rc.subr
+
+name="storj_forwarder"
+rcvar="${name}_enable"
+
+load_rc_config ${name}
+
+# Set defaults for optional variables
+: ${storj_forwarder_enable:="NO"}
+: ${storj_forwarder_user:="storj"}
+: ${storj_forwarder_group:="storj"}
+: ${storj_forwarder_path:="/usr/local/storj_monitor/log_forwarder.py"}
+: ${storj_forwarder_pyexec:="/usr/local/bin/uv run"}
+: ${storj_forwarder_logfile:="/var/log/storagenode.log"}
+: ${storj_forwarder_host:="0.0.0.0"}
+: ${storj_forwarder_port:="9999"}
+: ${storj_forwarder_pidfile:="/var/run/${name}.pid"}
+: ${storj_forwarder_output_log:="/var/log/${name}.log"}
+
+pidfile="${storj_forwarder_pidfile}"
+procname="${storj_forwarder_pyexec}"
+command="/usr/sbin/daemon"
+command_args="-f -p ${pidfile} -u ${storj_forwarder_user} \
+    -o ${storj_forwarder_output_log} \
+    ${procname} ${storj_forwarder_path} \
+    --log-file ${storj_forwarder_logfile} \
+    --host ${storj_forwarder_host} \
+    --port ${storj_forwarder_port}"
+
+run_rc_command "$1"
