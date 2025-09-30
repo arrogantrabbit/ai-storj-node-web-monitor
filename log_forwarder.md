@@ -94,7 +94,7 @@ start_precmd()
 {
     # Ensure the user running the service can read the log file
     if ! su -m "${storj_forwarder_child_user}" -c "test -r ${storj_forwarder_logfile}"; then
-        echo "Error: User '${storj_forwarder_user}' cannot read the log file:"
+        echo "Error: User '${storj_forwarder_child_user}' cannot read the log file:"
         echo "${storj_forwarder_logfile}"
         echo "Please check file permissions."
         return 1
