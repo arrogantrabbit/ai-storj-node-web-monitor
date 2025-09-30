@@ -24,158 +24,143 @@ log = logging.getLogger("StorjLogForwarder")
 LOG_QUEUE = asyncio.Queue(maxsize=10000)
 CONNECTED_CLIENTS: Set[asyncio.StreamWriter] = set()
 client_present_event = threading.Event()
+# A separate event for file changes, which we can also use to wake the thread
+file_changed_event = threading.Event()
 
-
-def file_tailer_thread(log_path: str, loop: asyncio.AbstractEventLoop, shutdown_event: threading.Event, client_event: threading.Event):
+def file_tailer_thread(log_path: str, loop: asyncio.AbstractEventLoop, shutdown_event: threading.Event, client_event: threading.Event, f_event: threading.Event):
     """
-    An efficient, event-driven log reader that only runs its file-watching
-    machinery when a client is actually connected.
+    A purely event-driven log reader. It only starts watchdog when a client is
+    present and uses blocking waits to consume 0% CPU when the log file is idle.
     """
-    log.info(f"File tailer thread started for {log_path}. Waiting for first client to connect.")
+    log.info(f"File tailer thread started for {log_path}. Waiting for client.")
 
-    f = None
-    current_inode = None
+    def read_all_new_lines(f):
+        """Reads all available lines from the current file position."""
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            try:
+                loop.call_soon_threadsafe(LOG_QUEUE.put_nowait, (time.time(), line.strip()))
+            except asyncio.QueueFull:
+                pass # Drop if consumer is slow
+
     observer = None
-
     try:
         while not shutdown_event.is_set():
-            # This is the primary idle state. The thread sleeps here with ~0% CPU usage.
+            # STATE 1: IDLE (No clients) - Zero CPU usage
+            # The thread sleeps here until the main loop sets the event.
             client_event.wait()
             if shutdown_event.is_set(): break
 
-            # --- A client is now connected, so we start work ---
+            # STATE 2: ACTIVE (Clients are present) - Start monitoring
             log.info("Client connected, starting file observation.")
-            file_changed_event = threading.Event()
             directory = os.path.dirname(log_path) or '.'
 
             class ChangeHandler(FileSystemEventHandler):
                 def on_any_event(self, event):
-                    file_changed_event.set()
+                    f_event.set() # Signal that something happened
 
             if not os.path.isdir(directory):
-                log.error(f"Log directory '{directory}' does not exist. Pausing until client disconnects.")
-                # Go back to sleep until the client disconnects and resets the state.
-                client_event.clear()
+                log.error(f"Log directory '{directory}' does not exist. Pausing.")
+                client_event.clear() # Go back to idle state
                 continue
 
-            # Start the watchdog observer now that we have a client.
             observer = Observer()
             observer.schedule(ChangeHandler(), directory, recursive=False)
             observer.start()
 
-            # This inner loop runs only while clients are connected.
-            while client_event.is_set() and not shutdown_event.is_set():
-                if f is None:
-                    try:
-                        f = open(log_path, 'r', encoding='utf-8')
-                        current_inode = os.fstat(f.fileno()).st_ino
-                        log.info(f"Tailing log file '{log_path}' (inode: {current_inode})")
-                        f.seek(0, os.SEEK_END)
-                    except FileNotFoundError:
-                        log.warning(f"Log file '{log_path}' not found. Waiting for it...")
-                        file_changed_event.clear()
-                        file_changed_event.wait(timeout=2.0)
-                        continue # Retry opening the file
-                    except Exception as e:
-                        log.error(f"Error opening log file '{log_path}': {e}. Retrying in 5s.")
-                        time.sleep(5)
-                        continue
+            try:
+                with open(log_path, 'r', encoding='utf-8') as f:
+                    f.seek(0, os.SEEK_END)
+                    current_inode = os.fstat(f.fileno()).st_ino
+                    # Initial read in case the file was written to between open and now
+                    read_all_new_lines(f)
 
-                line = f.readline()
-                if line:
-                    arrival_time = time.time()
-                    try:
-                        loop.call_soon_threadsafe(LOG_QUEUE.put_nowait, (arrival_time, line.strip()))
-                    except asyncio.QueueFull:
-                        pass # Drop if consumer is slow
-                    continue
+                    # Inner loop: main active state
+                    while client_event.is_set() and not shutdown_event.is_set():
+                        # STATE 3: WAITING (Clients connected, log idle) - Zero CPU usage
+                        # The thread sleeps here until watchdog OR the disconnect handler sets the event.
+                        f_event.wait()
+                        f_event.clear()
 
-                # Wait efficiently for file changes
-                file_changed_event.clear()
-                file_changed_event.wait(timeout=1.0)
+                        # If we were woken up but clients are now gone, break to cleanup.
+                        if not client_event.is_set() or shutdown_event.is_set():
+                            break
 
-                # After waiting, check for log rotation/truncation
-                try:
-                    st = os.stat(log_path)
-                    if st.st_ino != current_inode:
-                        log.info(f"Log rotation detected for '{log_path}'. Re-opening.")
-                        f.close(); f = None; continue
-                    if f and f.tell() > st.st_size:
-                        log.warning(f"Log truncation detected for '{log_path}'. Resetting.")
-                        f.seek(0)
-                except FileNotFoundError:
-                    log.warning(f"Log file '{log_path}' disappeared. Will re-open.")
-                    if f: f.close(); f=None
-                except Exception as e:
-                    log.error(f"Error checking log status: {e}", exc_info=True)
-                    if f: f.close(); f=None
-                    time.sleep(5)
+                        # Check for log rotation. If it happened, break inner loop to reopen.
+                        try:
+                            if os.stat(log_path).st_ino != current_inode:
+                                log.info("Log rotation detected. Re-opening file.")
+                                break
+                        except FileNotFoundError:
+                            log.warning("Log file disappeared during check. Re-opening.")
+                            break
 
-            # --- Client has disconnected or shutdown, so we clean up ---
-            log.info("Client disconnected or shutdown initiated. Stopping file observation.")
-            if observer and observer.is_alive():
-                observer.stop()
-                observer.join()
-            observer = None
-            if f:
-                f.close()
-                f = None
+                        read_all_new_lines(f)
+            except FileNotFoundError:
+                log.warning(f"Log file '{log_path}' not found. Will retry after a delay.")
+                time.sleep(2) # Don't spin if the file is missing
+            except Exception as e:
+                log.error(f"Error during file tailing: {e}. Retrying after delay.", exc_info=True)
+                time.sleep(5)
+            finally:
+                # STATE 4: CLEANUP (Client disconnected) - Stop observer
+                log.info("Client disconnected or file error. Stopping file observation.")
+                if observer and observer.is_alive():
+                    observer.stop()
+                    observer.join()
+                observer = None
 
     finally:
-        log.info(f"File tailer for {log_path} has shut down.")
+        log.info("File tailer thread has shut down.")
         if observer and observer.is_alive():
             observer.stop()
             observer.join()
-        if f:
-            f.close()
+
 
 async def broadcast_log_entries():
     """Pulls log entries from the queue and sends them to all connected clients."""
     while True:
         try:
             timestamp, line = await LOG_QUEUE.get()
-
             if not CONNECTED_CLIENTS:
-                LOG_QUEUE.task_done()
-                continue
+                LOG_QUEUE.task_done(); continue
 
             message = f"{timestamp} {line}\n".encode('utf-8')
             disconnected_clients = set()
 
             for writer in CONNECTED_CLIENTS:
                 if writer.is_closing():
-                    disconnected_clients.add(writer)
-                    continue
+                    disconnected_clients.add(writer); continue
                 try:
                     writer.write(message)
                     await writer.drain()
                 except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
                     disconnected_clients.add(writer)
                 except Exception:
-                     log.error(f"Unexpected error writing to client {writer.get_extra_info('peername')}", exc_info=True)
+                     log.error(f"Error writing to client {writer.get_extra_info('peername')}", exc_info=True)
                      disconnected_clients.add(writer)
 
             if disconnected_clients:
                  loop = asyncio.get_running_loop()
                  for writer in disconnected_clients:
-                    if writer in CONNECTED_CLIENTS:
-                        CONNECTED_CLIENTS.remove(writer)
+                    if writer in CONNECTED_CLIENTS: CONNECTED_CLIENTS.remove(writer)
                     if not writer.is_closing(): writer.close()
 
                  if not CONNECTED_CLIENTS:
                     log.info("Last client disconnected. Signaling file tailer to pause.")
-                    await loop.run_in_executor(None, client_present_event.clear)
+                    # This must unblock both client_event and file_changed_event
+                    await loop.run_in_executor(None, lambda: (client_present_event.clear(), file_changed_event.set()))
 
             LOG_QUEUE.task_done()
         except asyncio.CancelledError:
-            log.info("Log broadcast task is shutting down.")
             break
         except Exception:
-            log.error("Critical error in log broadcast task:", exc_info=True)
+            log.error("Critical error in broadcast task:", exc_info=True)
 
-
-async def handle_new_connection(client_event: threading.Event, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    """Callback for when a new client connects to the server."""
+async def handle_new_connection(client_event: threading.Event, f_event: threading.Event, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    """Callback for when a new client connects."""
     peer_addr = writer.get_extra_info('peername')
     loop = asyncio.get_running_loop()
 
@@ -189,24 +174,20 @@ async def handle_new_connection(client_event: threading.Event, reader: asyncio.S
 
     try:
         await reader.read(1)
-        log.info(f"Client {peer_addr} closed the connection.")
     except (ConnectionResetError, asyncio.IncompleteReadError):
         log.info(f"Client {peer_addr} connection reset.")
-    except asyncio.CancelledError:
-        raise
     finally:
-        if writer in CONNECTED_CLIENTS:
-            CONNECTED_CLIENTS.remove(writer)
+        if writer in CONNECTED_CLIENTS: CONNECTED_CLIENTS.remove(writer)
 
         if not CONNECTED_CLIENTS:
             log.info("Last client disconnected. Signaling file tailer to pause.")
-            await loop.run_in_executor(None, client_event.clear)
+            # Wake the file tailer thread so it can notice client_event is now clear.
+            await loop.run_in_executor(None, lambda: (client_event.clear(), f_event.set()))
 
         if not writer.is_closing():
             writer.close()
             await writer.wait_closed()
-        log.info(f"Cleaned up connection for {peer_addr}. Total clients: {len(CONNECTED_CLIENTS)}")
-
+        log.info(f"Cleaned up for {peer_addr}. Total clients: {len(CONNECTED_CLIENTS)}")
 
 async def main(args):
     """Main async function to set up and run the server."""
@@ -215,15 +196,14 @@ async def main(args):
 
     tailer = threading.Thread(
         target=file_tailer_thread,
-        args=(args.log_file, loop, shutdown_event, client_present_event),
-        daemon=True,
-        name="FileTailerThread"
+        args=(args.log_file, loop, shutdown_event, client_present_event, file_changed_event),
+        daemon=True, name="FileTailerThread"
     )
     tailer.start()
 
     broadcast_task = asyncio.create_task(broadcast_log_entries())
 
-    connection_handler = functools.partial(handle_new_connection, client_present_event)
+    connection_handler = functools.partial(handle_new_connection, client_present_event, file_changed_event)
     server = await asyncio.start_server(
         connection_handler, args.host, args.port
     )
@@ -239,47 +219,27 @@ async def main(args):
     finally:
         log.info("Shutdown sequence initiated...")
         shutdown_event.set()
-        client_present_event.set() # Wake up the tailer so it can see the shutdown event
+        client_present_event.set()
+        file_changed_event.set() # Wake up the tailer from any wait state
         broadcast_task.cancel()
-        server.close()
-        await server.wait_closed()
+        server.close(); await server.wait_closed()
 
-        for client_writer in list(CONNECTED_CLIENTS):
-            client_writer.close()
-            await client_writer.wait_closed()
+        for client in list(CONNECTED_CLIENTS):
+            client.close(); await client.wait_closed()
 
         await asyncio.gather(broadcast_task, return_exceptions=True)
         tailer.join(timeout=5)
         log.info("Shutdown complete.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="A lightweight log forwarder for Storj nodes.",
-        epilog="This tool tails a log file, prepends each line with a high-resolution timestamp, and broadcasts it over a TCP socket."
-    )
-    parser.add_argument(
-        '--log-file', type=str, required=True,
-        help="Path to the storagenode log file to monitor."
-    )
-    parser.add_argument(
-        '--host', type=str, default="0.0.0.0",
-        help="The host address to bind the server to. Defaults to '0.0.0.0'."
-    )
-    parser.add_argument(
-        '--port', type=int, required=True,
-        help="The TCP port to listen on for incoming connections from the monitor."
-    )
-    parser.add_argument(
-        '--debug', action='store_true', help="Enable verbose debug logging."
-    )
+    parser = argparse.ArgumentParser(description="A lightweight log forwarder for Storj nodes.")
+    parser.add_argument('--log-file', type=str, required=True, help="Path to the storagenode log file to monitor.")
+    parser.add_argument('--host', type=str, default="0.0.0.0", help="Host address to bind the server to.")
+    parser.add_argument('--port', type=int, required=True, help="TCP port to listen on.")
+    parser.add_argument('--debug', action='store_true', help="Enable verbose debug logging.")
     args = parser.parse_args()
 
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
     try:
         log.info("Starting log forwarder...")
