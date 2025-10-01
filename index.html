@@ -1604,7 +1604,17 @@
 
         // --- Data Processing on Message ---
 
+        function isEventVisible(event) {
+            if (!event.node_name) return true; // Default to visible if node_name is missing
+            if (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate') {
+                return true;
+            }
+            return currentNodeView.includes(event.node_name);
+        }
+
         function processLogEntry(event) {
+            if (!isEventVisible(event)) return;
+
             if (isCardVisible('map-card') && event.location && event.location.lat) {
                 // Use arrival_time if available for sub-second timing, otherwise use current time
                 const displayTime = event.arrival_time ? new Date(event.arrival_time * 1000).toISOString() : event.timestamp;
@@ -1614,16 +1624,19 @@
 
         function processBatchedLogEntries(events) {
             if (!isCardVisible('map-card') || !events || events.length === 0) return;
-            
+
+            const visibleEvents = events.filter(isEventVisible);
+            if (visibleEvents.length === 0) return;
+
             // Create continuous flow by spreading events over a longer window that overlaps batches
             const DISPLAY_WINDOW_MS = 100; // Spread over 100ms (4x batch interval) for overlap
-            const eventCount = events.length;
-            
-            events.forEach((event, index) => {
+            const eventCount = visibleEvents.length;
+
+            visibleEvents.forEach((event, index) => {
                 if (event.location && event.location.lat) {
                     // Create overlapping display windows to eliminate wave pattern
                     let displayDelay;
-                    
+
                     if (event.arrival_offset_ms && event.arrival_offset_ms < DISPLAY_WINDOW_MS) {
                         // Use actual arrival timing if available
                         displayDelay = event.arrival_offset_ms;
@@ -1633,11 +1646,11 @@
                         const normalizedIndex = index / Math.max(eventCount - 1, 1);
                         displayDelay = normalizedIndex * DISPLAY_WINDOW_MS;
                     }
-                    
+
                     // Add significant random jitter (±15ms) to break up patterns
                     displayDelay += (Math.random() - 0.5) * 30;
                     displayDelay = Math.max(0, Math.min(displayDelay, DISPLAY_WINDOW_MS));
-                    
+
                     // Schedule the event with overlapping timing
                     setTimeout(() => {
                         const displayTime = event.arrival_time ? new Date(event.arrival_time * 1000).toISOString() : event.timestamp;
