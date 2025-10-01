@@ -4,7 +4,7 @@
 #   "geoip2",
 #   "watchdog",
 # ]
-# requires-python = ">=3.11"
+# requires-python = ">=3.9"
 # ///
 
 import asyncio
@@ -645,7 +645,7 @@ async def hourly_aggregator_task(app):
 
 def blocking_db_prune(db_path, retention_days):
     log.info(f"[DB_PRUNER] Starting database pruning task. Retaining last {retention_days} days of events.")
-    cutoff_date = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=retention_days)
+    cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=retention_days)
     cutoff_iso = cutoff_date.isoformat()
 
     with sqlite3.connect(db_path, timeout=30, detect_types=0) as conn:
@@ -1045,7 +1045,7 @@ def _zero_fill_performance_data(sparse_data: List[Dict], start_unix: float, end_
             filled_results.append(results_map[current_bucket_unix])
         else:
             filled_results.append({
-                "timestamp": datetime.datetime.fromtimestamp(current_bucket_unix, tz=datetime.UTC).isoformat(),
+                "timestamp": datetime.datetime.fromtimestamp(current_bucket_unix, tz=datetime.timezone.utc).isoformat(),
                 "ingress_mbps": 0, "egress_mbps": 0,
                 "ingress_bytes": 0, "egress_bytes": 0,
                 "ingress_pieces": 0, "egress_pieces": 0,
@@ -1095,7 +1095,7 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
     sparse_results = []
     for ts_unix, data in buckets.items():
         sparse_results.append({
-            "timestamp": datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat(),
+            "timestamp": datetime.datetime.fromtimestamp(ts_unix, tz=datetime.timezone.utc).isoformat(),
             "ingress_mbps": round((data['ingress_bytes'] * 8) / (interval_sec * 1e6), 2),
             "egress_mbps": round((data['egress_bytes'] * 8) / (interval_sec * 1e6), 2),
             "ingress_bytes": data['ingress_bytes'], "egress_bytes": data['egress_bytes'],
@@ -1111,7 +1111,7 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
 def blocking_get_aggregated_performance(node_names: List[str], time_window_hours: int) -> List[Dict[str, Any]]:
     if not node_names: return []
     log.info(f"Fetching AGGREGATED performance for nodes {node_names} (last {time_window_hours} hours).")
-    now_dt = datetime.datetime.now(datetime.UTC)
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
     start_time = now_dt - datetime.timedelta(hours=time_window_hours)
     start_time_iso = start_time.isoformat()
     placeholders = ','.join('?' * len(node_names))
@@ -1152,7 +1152,7 @@ def blocking_get_aggregated_performance(node_names: List[str], time_window_hours
         for row in cursor.execute(query, params).fetchall():
             row_dict = dict(row)
             ts_unix = row_dict.get('time_bucket_start')
-            iso_ts = row_dict.get('time_bucket_start_iso') or datetime.datetime.fromtimestamp(ts_unix, tz=datetime.UTC).isoformat()
+            iso_ts = row_dict.get('time_bucket_start_iso') or datetime.datetime.fromtimestamp(ts_unix, tz=datetime.timezone.utc).isoformat()
             sparse_results.append({
                 "timestamp": iso_ts,
                 "ingress_mbps": round((row_dict.get('ingress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2), "egress_mbps": round((row_dict.get('egress_bytes', 0) * 8) / (actual_bin_sec * 1e6), 2),
