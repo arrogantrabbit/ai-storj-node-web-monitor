@@ -145,15 +145,15 @@ class IncrementalStats:
                 self._aggregate_error(event['error_reason'], TOKEN_REGEX)
                 
         elif category == 'get':
-            size_bucket = get_size_bucket(size)
             sat_stats['downloads'] += 1
             
             # Update hot pieces
             piece_id = event['piece_id']
             if piece_id not in self.hot_pieces:
                 self.hot_pieces[piece_id] = {'count': 0, 'size': 0}
-            self.hot_pieces[piece_id]['count'] += 1
-            self.hot_pieces[piece_id]['size'] += size
+            hot_piece = self.hot_pieces[piece_id]
+            hot_piece['count'] += 1
+            hot_piece['size'] += size
             
             # Update country stats
             country = event['location']['country']
@@ -165,14 +165,17 @@ class IncrementalStats:
                 sat_stats['dl_success'] += 1
                 sat_stats['total_download_size'] += size
                 self.total_dl_size += size
+                # Defer size bucket calculation
+                size_bucket = get_size_bucket(size)
                 self.dls_success[size_bucket] += 1
             else:
                 self.dl_fail += 1
                 self._aggregate_error(event['error_reason'], TOKEN_REGEX)
+                # Defer size bucket calculation
+                size_bucket = get_size_bucket(size)
                 self.dls_failed[size_bucket] += 1
                 
         elif category == 'put':
-            size_bucket = get_size_bucket(size)
             sat_stats['uploads'] += 1
             
             # Update country stats
@@ -185,14 +188,18 @@ class IncrementalStats:
                 sat_stats['ul_success'] += 1
                 sat_stats['total_upload_size'] += size
                 self.total_ul_size += size
+                # Defer size bucket calculation
+                size_bucket = get_size_bucket(size)
                 self.uls_success[size_bucket] += 1
             else:
                 self.ul_fail += 1
                 self._aggregate_error(event['error_reason'], TOKEN_REGEX)
+                # Defer size bucket calculation
+                size_bucket = get_size_bucket(size)
                 self.uls_failed[size_bucket] += 1
     
     def _aggregate_error(self, reason: str, TOKEN_REGEX: re.Pattern):
-        """Aggregate error reasons efficiently."""
+        """Aggregate error reasons efficiently with optimized template building."""
         if not reason:
             return
         
@@ -200,15 +207,27 @@ class IncrementalStats:
         if reason in self.error_templates_cache:
             template, tokens = self.error_templates_cache[reason]
         else:
-            # Build template
-            matches = list(TOKEN_REGEX.finditer(reason))
-            if not matches:
+            # Build template - optimized version
+            matches = TOKEN_REGEX.finditer(reason)
+            first_match = None
+            tokens = []
+            
+            # Peek at first match to decide strategy
+            try:
+                first_match = next(matches)
+                tokens.append(first_match.group(0))
+            except StopIteration:
+                # No matches - use reason as template
+                if len(self.error_templates_cache) < 1000:
+                    self.error_templates_cache[reason] = (reason, [])
                 template = reason
                 tokens = []
-            else:
-                template_parts = []
-                tokens = []
-                last_end = 0
+            
+            if first_match is not None:
+                # Build template efficiently
+                template_parts = [reason[:first_match.start()], '#']
+                last_end = first_match.end()
+                
                 for match in matches:
                     start = match.start()
                     if start > last_end:
@@ -216,21 +235,25 @@ class IncrementalStats:
                     template_parts.append('#')
                     tokens.append(match.group(0))
                     last_end = match.end()
+                
                 if last_end < len(reason):
                     template_parts.append(reason[last_end:])
+                
                 template = "".join(template_parts)
-            
-            # Cache it
-            if len(self.error_templates_cache) < 1000:
-                self.error_templates_cache[reason] = (template, tokens)
+                
+                # Cache it
+                if len(self.error_templates_cache) < 1000:
+                    self.error_templates_cache[reason] = (template, tokens)
         
         # Update error aggregation
         if template not in self.error_agg:
+            # Build placeholders only once
             placeholders = []
             for token in tokens:
                 if '.' in token or ':' in token:
                     placeholders.append({'type': 'address', 'seen': {token}})
                 else:
+                    # Try to parse as number
                     try:
                         num = int(token)
                         placeholders.append({'type': 'number', 'min': num, 'max': num})
@@ -240,16 +263,20 @@ class IncrementalStats:
         else:
             agg_item = self.error_agg[template]
             agg_item['count'] += 1
+            # Only update placeholders if counts match
             if len(tokens) == len(agg_item['placeholders']):
                 for i, token in enumerate(tokens):
                     ph = agg_item['placeholders'][i]
                     if ph['type'] == 'address':
-                        ph['seen'].add(token)
+                        if len(ph['seen']) < 100:  # Limit stored addresses
+                            ph['seen'].add(token)
                     elif ph['type'] == 'number':
                         try:
                             num = int(token)
-                            ph['min'] = min(ph['min'], num)
-                            ph['max'] = max(ph['max'], num)
+                            if num < ph['min']:
+                                ph['min'] = num
+                            elif num > ph['max']:
+                                ph['max'] = num
                         except ValueError:
                             pass
     
@@ -400,11 +427,29 @@ SIZE_BUCKET_THRESHOLDS = [
     (1048576, "256 KB - 1 MB")
 ]
 
+# Cache for size bucket calculations (LRU with max size)
+_size_bucket_cache = {}
+_CACHE_MAX_SIZE = 10000
+
 def get_size_bucket(size_in_bytes):
+    """Get size bucket with caching for frequently seen sizes."""
+    # Check cache first
+    if size_in_bytes in _size_bucket_cache:
+        return _size_bucket_cache[size_in_bytes]
+    
+    # Calculate bucket
     for threshold, label in SIZE_BUCKET_THRESHOLDS:
         if size_in_bytes < threshold:
-            return label
-    return "> 1 MB"
+            bucket = label
+            break
+    else:
+        bucket = "> 1 MB"
+    
+    # Cache result (with simple size limit)
+    if len(_size_bucket_cache) < _CACHE_MAX_SIZE:
+        _size_bucket_cache[size_in_bytes] = bucket
+    
+    return bucket
 
 def categorize_action(action: str) -> str:
     """Efficiently categorizes a log action string."""
@@ -821,10 +866,25 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
         log.error(f"Critical error in log_processor_task main loop for {node_name}:", exc_info=True)
 
 def blocking_db_batch_write(db_path, events):
+    """Optimized batch write with pre-allocated tuple creation."""
     if not events: return
+    
+    # Pre-allocate list for better performance
+    data_to_insert = []
+    data_to_insert_extend = data_to_insert.append  # Cache method reference
+    
+    # Build tuples more efficiently
+    for e in events:
+        loc = e['location']
+        data_to_insert_extend((
+            e['timestamp'].isoformat(), e['action'], e['status'], e['size'],
+            e['piece_id'], e['satellite_id'], e['remote_ip'],
+            loc['country'], loc['lat'], loc['lon'],
+            e['error_reason'], e['node_name']
+        ))
+    
     with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
         cursor = conn.cursor()
-        data_to_insert = [(e['timestamp'].isoformat(), e['action'], e['status'], e['size'], e['piece_id'], e['satellite_id'], e['remote_ip'], e['location']['country'], e['location']['lat'], e['location']['lon'], e['error_reason'], e['node_name']) for e in events]
         cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
         conn.commit()
     log.info(f"Successfully wrote {len(events)} events to the database.")
