@@ -1,3 +1,4 @@
+
 # /// script
 # dependencies = [
 #   "aiohttp",
@@ -15,7 +16,7 @@ import sqlite3
 import aiohttp
 from aiohttp import web
 import geoip2.database
-from collections import deque, Counter
+from collections import deque, Counter, defaultdict
 import concurrent.futures
 import os
 import time
@@ -28,6 +29,7 @@ import threading
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import heapq
+from dataclasses import dataclass, field
 
 
 # --- Centralized Logging Configuration ---
@@ -57,6 +59,285 @@ DB_PRUNE_INTERVAL_HOURS = 6  # New: How often to run the pruner
 SATELLITE_NAMES = { '121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1', '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1', '12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs': 'eu1', '1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE': 'saltlake' }
 
 
+# Incremental Stats Accumulator
+@dataclass
+class IncrementalStats:
+    """Maintains running statistics that can be updated incrementally."""
+    # Overall counters
+    dl_success: int = 0
+    dl_fail: int = 0
+    ul_success: int = 0
+    ul_fail: int = 0
+    audit_success: int = 0
+    audit_fail: int = 0
+    total_dl_size: int = 0
+    total_ul_size: int = 0
+    
+    # Live stats (last minute)
+    live_dl_bytes: int = 0
+    live_ul_bytes: int = 0
+    
+    # Satellite stats
+    satellites: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    
+    # Country stats
+    countries_dl: Counter = field(default_factory=Counter)
+    countries_ul: Counter = field(default_factory=Counter)
+    
+    # Transfer size buckets
+    dls_success: Counter = field(default_factory=Counter)
+    dls_failed: Counter = field(default_factory=Counter)
+    uls_success: Counter = field(default_factory=Counter)
+    uls_failed: Counter = field(default_factory=Counter)
+    
+    # Error aggregation
+    error_agg: Dict[str, Dict] = field(default_factory=dict)
+    error_templates_cache: Dict[str, tuple] = field(default_factory=dict)
+    
+    # Hot pieces tracking
+    hot_pieces: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    
+    # Time tracking
+    first_event_ts: Optional[datetime.datetime] = None
+    last_event_ts: Optional[datetime.datetime] = None
+    
+    # Last processed event index for incremental updates
+    last_processed_index: int = 0
+    
+    def get_or_create_satellite(self, sat_id: str) -> Dict[str, int]:
+        """Get or create satellite stats."""
+        if sat_id not in self.satellites:
+            self.satellites[sat_id] = {
+                'uploads': 0, 'downloads': 0, 'audits': 0,
+                'ul_success': 0, 'dl_success': 0, 'audit_success': 0,
+                'total_upload_size': 0, 'total_download_size': 0
+            }
+        return self.satellites[sat_id]
+    
+    def add_event(self, event: Dict[str, Any], TOKEN_REGEX: re.Pattern):
+        """Add a single event to the running statistics."""
+        timestamp = event['timestamp']
+        
+        # Update time tracking
+        if self.first_event_ts is None or timestamp < self.first_event_ts:
+            self.first_event_ts = timestamp
+        if self.last_event_ts is None or timestamp > self.last_event_ts:
+            self.last_event_ts = timestamp
+        
+        # Extract event data
+        category = event['category']
+        status = event['status']
+        sat_id = event['satellite_id']
+        size = event['size']
+        ts_unix = event['ts_unix']
+        
+        sat_stats = self.get_or_create_satellite(sat_id)
+        is_success = status == 'success'
+        
+        # Update stats based on category
+        if category == 'audit':
+            sat_stats['audits'] += 1
+            if is_success:
+                self.audit_success += 1
+                sat_stats['audit_success'] += 1
+            else:
+                self.audit_fail += 1
+                self._aggregate_error(event['error_reason'], TOKEN_REGEX)
+                
+        elif category == 'get':
+            size_bucket = get_size_bucket(size)
+            sat_stats['downloads'] += 1
+            
+            # Update hot pieces
+            piece_id = event['piece_id']
+            if piece_id not in self.hot_pieces:
+                self.hot_pieces[piece_id] = {'count': 0, 'size': 0}
+            self.hot_pieces[piece_id]['count'] += 1
+            self.hot_pieces[piece_id]['size'] += size
+            
+            # Update country stats
+            country = event['location']['country']
+            if country:
+                self.countries_dl[country] += size
+                
+            if is_success:
+                self.dl_success += 1
+                sat_stats['dl_success'] += 1
+                sat_stats['total_download_size'] += size
+                self.total_dl_size += size
+                self.dls_success[size_bucket] += 1
+            else:
+                self.dl_fail += 1
+                self._aggregate_error(event['error_reason'], TOKEN_REGEX)
+                self.dls_failed[size_bucket] += 1
+                
+        elif category == 'put':
+            size_bucket = get_size_bucket(size)
+            sat_stats['uploads'] += 1
+            
+            # Update country stats
+            country = event['location']['country']
+            if country:
+                self.countries_ul[country] += size
+                
+            if is_success:
+                self.ul_success += 1
+                sat_stats['ul_success'] += 1
+                sat_stats['total_upload_size'] += size
+                self.total_ul_size += size
+                self.uls_success[size_bucket] += 1
+            else:
+                self.ul_fail += 1
+                self._aggregate_error(event['error_reason'], TOKEN_REGEX)
+                self.uls_failed[size_bucket] += 1
+    
+    def _aggregate_error(self, reason: str, TOKEN_REGEX: re.Pattern):
+        """Aggregate error reasons efficiently."""
+        if not reason:
+            return
+        
+        # Check cache first
+        if reason in self.error_templates_cache:
+            template, tokens = self.error_templates_cache[reason]
+        else:
+            # Build template
+            matches = list(TOKEN_REGEX.finditer(reason))
+            if not matches:
+                template = reason
+                tokens = []
+            else:
+                template_parts = []
+                tokens = []
+                last_end = 0
+                for match in matches:
+                    start = match.start()
+                    if start > last_end:
+                        template_parts.append(reason[last_end:start])
+                    template_parts.append('#')
+                    tokens.append(match.group(0))
+                    last_end = match.end()
+                if last_end < len(reason):
+                    template_parts.append(reason[last_end:])
+                template = "".join(template_parts)
+            
+            # Cache it
+            if len(self.error_templates_cache) < 1000:
+                self.error_templates_cache[reason] = (template, tokens)
+        
+        # Update error aggregation
+        if template not in self.error_agg:
+            placeholders = []
+            for token in tokens:
+                if '.' in token or ':' in token:
+                    placeholders.append({'type': 'address', 'seen': {token}})
+                else:
+                    try:
+                        num = int(token)
+                        placeholders.append({'type': 'number', 'min': num, 'max': num})
+                    except ValueError:
+                        placeholders.append({'type': 'string', 'seen': {token}})
+            self.error_agg[template] = {'count': 1, 'placeholders': placeholders}
+        else:
+            agg_item = self.error_agg[template]
+            agg_item['count'] += 1
+            if len(tokens) == len(agg_item['placeholders']):
+                for i, token in enumerate(tokens):
+                    ph = agg_item['placeholders'][i]
+                    if ph['type'] == 'address':
+                        ph['seen'].add(token)
+                    elif ph['type'] == 'number':
+                        try:
+                            num = int(token)
+                            ph['min'] = min(ph['min'], num)
+                            ph['max'] = max(ph['max'], num)
+                        except ValueError:
+                            pass
+    
+    def update_live_stats(self, events: List[Dict[str, Any]]):
+        """Update live stats for the last minute."""
+        one_min_ago = time.time() - 60
+        self.live_dl_bytes = 0
+        self.live_ul_bytes = 0
+        
+        for event in events:
+            if event['ts_unix'] > one_min_ago and event['status'] == 'success':
+                if event['category'] == 'get':
+                    self.live_dl_bytes += event['size']
+                elif event['category'] == 'put':
+                    self.live_ul_bytes += event['size']
+    
+    def to_payload(self, historical_stats: List[Dict] = None) -> Dict[str, Any]:
+        """Convert stats to a JSON payload."""
+        # Calculate speeds
+        avg_egress_mbps = (self.live_dl_bytes * 8) / (60 * 1e6)
+        avg_ingress_mbps = (self.live_ul_bytes * 8) / (60 * 1e6)
+        
+        # Format satellites
+        satellites = sorted([
+            {'satellite_id': k, **v} 
+            for k, v in self.satellites.items()
+        ], key=lambda x: x['uploads'] + x['downloads'], reverse=True)
+        
+        # Format transfer sizes
+        all_buckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]
+        transfer_sizes = [
+            {
+                'bucket': b,
+                'downloads_success': self.dls_success[b],
+                'downloads_failed': self.dls_failed[b],
+                'uploads_success': self.uls_success[b],
+                'uploads_failed': self.uls_failed[b]
+            }
+            for b in all_buckets
+        ]
+        
+        # Format errors
+        sorted_errors = sorted(self.error_agg.items(), key=lambda item: item[1]['count'], reverse=True)
+        final_errors = []
+        for template, data in sorted_errors[:10]:
+            final_msg = template
+            if 'placeholders' in data:
+                for ph_data in data['placeholders']:
+                    if ph_data['type'] == 'number':
+                        min_val, max_val = ph_data['min'], ph_data['max']
+                        range_str = str(min_val) if min_val == max_val else f"({min_val}..{max_val})"
+                        final_msg = final_msg.replace('#', range_str, 1)
+                    elif ph_data['type'] == 'address':
+                        count = len(ph_data['seen'])
+                        range_str = f"[{count} unique address{'es' if count > 1 else ''}]"
+                        final_msg = final_msg.replace('#', range_str, 1)
+            final_errors.append({'reason': final_msg, 'count': data['count']})
+        
+        # Top pieces
+        top_pieces = [
+            {'id': k, 'count': v['count'], 'size': v['size']}
+            for k, v in heapq.nlargest(10, self.hot_pieces.items(), key=lambda item: item[1]['count'])
+        ]
+        
+        return {
+            "type": "stats_update",
+            "first_event_iso": self.first_event_ts.isoformat() if self.first_event_ts else None,
+            "last_event_iso": self.last_event_ts.isoformat() if self.last_event_ts else None,
+            "overall": {
+                "dl_success": self.dl_success,
+                "dl_fail": self.dl_fail,
+                "ul_success": self.ul_success,
+                "ul_fail": self.ul_fail,
+                "audit_success": self.audit_success,
+                "audit_fail": self.audit_fail,
+                "avg_egress_mbps": avg_egress_mbps,
+                "avg_ingress_mbps": avg_ingress_mbps
+            },
+            "satellites": satellites,
+            "transfer_sizes": transfer_sizes,
+            "historical_stats": historical_stats or [],
+            "error_categories": final_errors,
+            "top_pieces": top_pieces,
+            "top_countries_dl": [{'country': k, 'size': v} for k, v in self.countries_dl.most_common(10) if k],
+            "top_countries_ul": [{'country': k, 'size': v} for k, v in self.countries_ul.most_common(10) if k],
+        }
+
+
 # Custom type for a node's state
 NodeState = Dict[str, Any]
 
@@ -67,9 +348,11 @@ app_state: Dict[str, Any] = {
     'geoip_cache': {},
     'db_write_lock': asyncio.Lock(),  # Lock to serialize DB write operations
     'db_write_queue': asyncio.Queue(maxsize=DB_QUEUE_MAX_SIZE),
-    'stats_cache': {}, # New: Cache for pre-computed stats payloads
-    'websocket_event_queue': [],  # New: Queue for batching websocket events
+    'stats_cache': {}, # Cache for pre-computed stats payloads
+    'incremental_stats': {},  # New: { view_tuple: IncrementalStats }
+    'websocket_event_queue': [],  # Queue for batching websocket events
     'websocket_queue_lock': asyncio.Lock(),  # Lock for websocket queue operations
+    'TOKEN_REGEX': re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b\d+\b'),  # Pre-compiled regex
 }
 
 # --- New Helper Function for Parsing Size Strings ---
@@ -105,6 +388,33 @@ def parse_duration_str_to_seconds(duration_str: str) -> Optional[float]:
         return None
     except (ValueError, TypeError):
         return None
+
+
+# Pre-computed size bucket thresholds and labels for faster lookup
+SIZE_BUCKET_THRESHOLDS = [
+    (1024, "< 1 KB"),
+    (4096, "1-4 KB"),
+    (16384, "4-16 KB"),
+    (65536, "16-64 KB"),
+    (262144, "64-256 KB"),
+    (1048576, "256 KB - 1 MB")
+]
+
+def get_size_bucket(size_in_bytes):
+    for threshold, label in SIZE_BUCKET_THRESHOLDS:
+        if size_in_bytes < threshold:
+            return label
+    return "> 1 MB"
+
+def categorize_action(action: str) -> str:
+    """Efficiently categorizes a log action string."""
+    if action == 'GET_AUDIT':
+        return 'audit'
+    if 'GET' in action:
+        return 'get'
+    if 'PUT' in action:
+        return 'put'
+    return 'other'
 
 
 def init_db():
@@ -224,25 +534,6 @@ def init_db():
     conn.close()
     log.info("Database schema is valid and ready.")
 
-
-def get_size_bucket(size_in_bytes):
-    if size_in_bytes < 1024: return "< 1 KB"
-    if size_in_bytes < 4096: return "1-4 KB"
-    if size_in_bytes < 16384: return "4-16 KB"
-    if size_in_bytes < 65536: return "16-64 KB"
-    if size_in_bytes < 262144: return "64-256 KB"
-    if size_in_bytes < 1048576: return "256 KB - 1 MB"
-    return "> 1 MB"
-
-def categorize_action(action: str) -> str:
-    """Efficiently categorizes a log action string."""
-    if action == 'GET_AUDIT':
-        return 'audit'
-    if 'GET' in action:
-        return 'get'
-    if 'PUT' in action:
-        return 'put'
-    return 'other'
 
 def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queue: asyncio.Queue, shutdown_event: threading.Event):
     """
@@ -377,20 +668,6 @@ async def robust_broadcast(websockets_dict, payload, node_name: Optional[str] = 
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
-def blocking_save_state(db_path: str, key: str, value: Any):
-    """Saves a Python object as JSON into the state table."""
-    try:
-        json_value = json.dumps(value)
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT OR REPLACE INTO app_persistent_state (key, value) VALUES (?, ?)",
-                (key, json_value)
-            )
-            conn.commit()
-        log.info(f"Successfully persisted state for key '{key}'.")
-    except Exception:
-        log.error(f"Failed to persist state for key '{key}':", exc_info=True)
 
 def blocking_write_hashstore_log(db_path, stats_dict) -> bool:
     """Writes a single hashstore compaction event to the database. Returns True on success."""
@@ -519,6 +796,9 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
                     "node_name": node_name, "category": category, "arrival_time": arrival_time
                 }
                 node_state['live_events'].append(event)
+                
+                # NEW: Mark that we have new events that need processing
+                node_state['has_new_events'] = True
 
                 websocket_event = {
                     "type": "log_entry", "action": action, "size": size, "location": location,
@@ -574,7 +854,8 @@ async def debug_logger_task(app):
         await asyncio.sleep(30)
         total_live_events = sum(len(n['live_events']) for n in app_state['nodes'].values())
         unprocessed_perf_events = sum(len(n['unprocessed_performance_events']) for n in app_state['nodes'].values())
-        log.info(f"[HEARTBEAT] Clients: {len(app_state['websockets'])}, Live Events: {total_live_events}, DB Queue: {app_state['db_write_queue'].qsize()}, Perf Queue: {unprocessed_perf_events}")
+        incremental_stats = len(app_state['incremental_stats'])
+        log.info(f"[HEARTBEAT] Clients: {len(app_state['websockets'])}, Live Events: {total_live_events}, DB Queue: {app_state['db_write_queue'].qsize()}, Perf Queue: {unprocessed_perf_events}, Stats: {incremental_stats}")
         for name, state in app_state['nodes'].items():
             log.info(f"  -> Node '{name}': {len(state['live_events'])} events, {len(state['unprocessed_performance_events'])} perf events")
 
@@ -675,131 +956,16 @@ async def database_pruner_task(app):
         await asyncio.sleep(3600 * DB_PRUNE_INTERVAL_HOURS)
 
 
-def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState]):
-    events_copy = []
-    nodes_to_process = view if view != ['Aggregate'] else list(all_nodes_state.keys())
-    for node_name in nodes_to_process:
-        if node_name in all_nodes_state:
-            # Create a copy of the deque to prevent mutation during iteration
-            events_copy.extend(list(all_nodes_state[node_name]['live_events']))
-
-    if not events_copy:
-        return {
-            "type": "stats_update",
-            "first_event_iso": None, "last_event_iso": None, "overall": {}, "satellites": [], "transfer_sizes": [],
-            "historical_stats": [], "error_categories": [], "top_pieces": [], "top_countries_dl": [], "top_countries_ul": []
-        }
-
-    dl_s, dl_f, ul_s, ul_f, a_s, a_f = 0, 0, 0, 0, 0, 0
-    total_dl_size, total_ul_size = 0, 0
-    sats, cdl, cul, error_agg = {}, Counter(), Counter(), {}
-    hp = {}
-    min_ts, max_ts = None, None
-
-    # --- OPTIMIZATION: Prepare variables for in-loop calculation ---
-    one_min_ago = time.time() - 60
-    live_dl_bytes, live_ul_bytes = 0, 0
-    # --- END OPTIMIZATION ---
-
-    dls_success, dls_failed = Counter(), Counter()
-    uls_success, uls_failed = Counter(), Counter()
-
-    TOKEN_REGEX = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b\d+\b')
-
-    def aggregate_error(reason):
-        if not reason: return
-
-        # --- PERFORMANCE OPTIMIZATION: Use re.finditer for faster tokenization ---
-        template_parts = []
-        tokens = []
-        last_end = 0
-        for match in TOKEN_REGEX.finditer(reason):
-            start = match.start()
-            template_parts.append(reason[last_end:start])
-            template_parts.append('#')
-            tokens.append(match.group(0))
-            last_end = match.end()
-        template_parts.append(reason[last_end:])
-        template = "".join(template_parts)
-        # --- END OPTIMIZATION ---
-
-        if template not in error_agg:
-            placeholders = []
-            for token in tokens:
-                if '.' in token or ':' in token:
-                    placeholders.append({'type': 'address', 'seen': {token}})
-                else:
-                    try:
-                        num = int(token)
-                        placeholders.append({'type': 'number', 'min': num, 'max': num})
-                    except ValueError:
-                        placeholders.append({'type': 'string', 'seen': {token}})
-            error_agg[template] = {'count': 1, 'placeholders': placeholders}
-        else:
-            agg_item = error_agg[template]
-            agg_item['count'] += 1
-            if len(tokens) == len(agg_item['placeholders']):
-                for i, token in enumerate(tokens):
-                    ph = agg_item['placeholders'][i]
-                    if ph['type'] == 'address':
-                        ph['seen'].add(token)
-                    elif ph['type'] == 'number':
-                        try:
-                            num = int(token)
-                            ph['min'] = min(ph['min'], num)
-                            ph['max'] = max(ph['max'], num)
-                        except ValueError: pass
-
-    for e in events_copy:
-        timestamp = e['timestamp']
-        if min_ts is None or timestamp < min_ts: min_ts = timestamp
-        if max_ts is None or timestamp > max_ts: max_ts = timestamp
-
-        # OPTIMIZATION: Use pre-computed category
-        category = e['category']
-        status, sat_id, size, country, piece_id, error_reason = e['status'], e['satellite_id'], e['size'], e['location']['country'], e['piece_id'], e['error_reason']
-        is_success = status == 'success'
-
-        if sat_id not in sats: sats[sat_id] = {'uploads': 0, 'downloads': 0, 'audits': 0, 'ul_success': 0, 'dl_success': 0, 'audit_success': 0, 'total_upload_size': 0, 'total_download_size': 0}
-
-        if category == 'audit':
-            sats[sat_id]['audits'] += 1
-            if is_success: a_s += 1; sats[sat_id]['audit_success'] += 1
-            else: a_f += 1; aggregate_error(error_reason)
-        elif category == 'get':
-            size_bucket = get_size_bucket(size)
-            sats[sat_id]['downloads'] += 1
-            if piece_id not in hp: hp[piece_id] = {'count': 0, 'size': 0}
-            hp[piece_id]['count'] += 1; hp[piece_id]['size'] += size
-            if country: cdl[country] += size
-            if is_success:
-                dl_s += 1; sats[sat_id]['dl_success'] += 1; sats[sat_id]['total_download_size'] += size
-                total_dl_size += size; dls_success[size_bucket] += 1
-                if e['ts_unix'] > one_min_ago: live_dl_bytes += size
-            else:
-                dl_f += 1; aggregate_error(error_reason); dls_failed[size_bucket] += 1
-        elif category == 'put':
-            size_bucket = get_size_bucket(size)
-            sats[sat_id]['uploads'] += 1
-            if country: cul[country] += size
-            if is_success:
-                ul_s += 1; sats[sat_id]['ul_success'] += 1; sats[sat_id]['total_upload_size'] += size
-                total_ul_size += size; uls_success[size_bucket] += 1
-                if e['ts_unix'] > one_min_ago: live_ul_bytes += size
-            else:
-                ul_f += 1; aggregate_error(error_reason); uls_failed[size_bucket] += 1
-
-    first_event_iso = min_ts.isoformat() if min_ts else None
-    last_event_iso = max_ts.isoformat() if max_ts else None
-
+def get_historical_stats(view: List[str], all_nodes_state: Dict[str, NodeState]) -> List[Dict]:
+    """Fetch historical stats from the database."""
     hist_stats = []
     with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
         conn.row_factory = sqlite3.Row
-
+        
         nodes_for_hist = view
         if view == ['Aggregate']:
             nodes_for_hist = list(all_nodes_state.keys())
-
+        
         if nodes_for_hist:
             placeholders = ','.join('?' for _ in nodes_for_hist)
             raw_hist_stats = conn.execute(f"""
@@ -813,111 +979,100 @@ def blocking_prepare_stats(view: List[str], all_nodes_state: Dict[str, NodeState
             """, (*nodes_for_hist, HISTORICAL_HOURS_TO_SHOW)).fetchall()
         else:
             raw_hist_stats = []
-
+        
         for row in raw_hist_stats:
             d_row = dict(row)
             d_row['dl_mbps'] = ((d_row.get('total_download_size', 0) or 0) * 8) / (3600 * 1000000)
             d_row['ul_mbps'] = ((d_row.get('total_upload_size', 0) or 0) * 8) / (3600 * 1000000)
             hist_stats.append(d_row)
+    
+    return hist_stats
 
-    # --- OPTIMIZATION: Redundant loops removed. Calculate speed directly. ---
-    avg_egress_mbps = (live_dl_bytes * 8) / (60 * 1e6)
-    avg_ingress_mbps = (live_ul_bytes * 8) / (60 * 1e6)
-    # --- END OPTIMIZATION ---
 
-    all_buckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]
-    transfer_sizes = [{'bucket': b, 'downloads_success': dls_success[b], 'downloads_failed': dls_failed[b], 'uploads_success': uls_success[b], 'uploads_failed': uls_failed[b]} for b in all_buckets]
-
-    sorted_errors = sorted(error_agg.items(), key=lambda item: item[1]['count'], reverse=True)
-    final_errors = []
-    for template, data in sorted_errors[:10]:
-        final_msg = template
-        if 'placeholders' in data:
-            for ph_data in data['placeholders']:
-                if ph_data['type'] == 'number':
-                    min_val, max_val = ph_data['min'], ph_data['max']
-                    range_str = str(min_val) if min_val == max_val else f"({min_val}..{max_val})"
-                    final_msg = final_msg.replace('#', range_str, 1)
-                elif ph_data['type'] == 'address':
-                    count = len(ph_data['seen'])
-                    range_str = f"[{count} unique address{'es' if count > 1 else ''}]"
-                    final_msg = final_msg.replace('#', range_str, 1)
-        final_errors.append({'reason': final_msg, 'count': data['count']})
-
-    # PERFORMANCE OPTIMIZATION: Use heapq.nlargest for efficient top-k selection instead of sorting the whole dict.
-    top_pieces = [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in heapq.nlargest(10, hp.items(), key=lambda item: item[1]['count'])]
-
-    return {
-        "type": "stats_update",
-        "first_event_iso": first_event_iso, "last_event_iso": last_event_iso,
-        "overall": {
-            "dl_success": dl_s, "dl_fail": dl_f, "ul_success": ul_s, "ul_fail": ul_f,
-            "audit_success": a_s, "audit_fail": a_f, "avg_egress_mbps": avg_egress_mbps, "avg_ingress_mbps": avg_ingress_mbps
-        },
-        "satellites": sorted([{'satellite_id': k, **v} for k, v in sats.items()], key=lambda x: x['uploads'] + x['downloads'], reverse=True),
-        "transfer_sizes": transfer_sizes,
-        "historical_stats": hist_stats,
-        "error_categories": final_errors,
-        "top_pieces": top_pieces,
-        "top_countries_dl": [{'country': k, 'size': v} for k,v in cdl.most_common(10) if k],
-        "top_countries_ul": [{'country': k, 'size': v} for k,v in cul.most_common(10) if k],
-    }
-
-async def stats_baker_and_broadcaster_task(app):
+async def incremental_stats_updater_task(app):
     """
-    This task replaces the old periodic_stats_updater. It computes stats only
-    once per unique client view, caches the result, and then broadcasts it
-    to all relevant clients. This is far more efficient.
+    New task that maintains incremental statistics for each view.
+    This replaces the old stats_baker_and_broadcaster_task.
     """
-    log.info("Stats baker and broadcaster task started.")
+    log.info("Incremental stats updater task started.")
+    
     while True:
         await asyncio.sleep(STATS_INTERVAL_SECONDS)
+        
         try:
-            websockets_by_view = {}
-            # Group websockets by their current view
+            # Collect all unique views from websockets
+            views_to_update = set()
             for ws, state in app_state['websockets'].items():
-                # Use a tuple for the view so it's hashable and can be a dict key
                 view_tuple = tuple(state.get('view', ['Aggregate']))
-                if view_tuple not in websockets_by_view:
-                    websockets_by_view[view_tuple] = []
-                websockets_by_view[view_tuple].append(ws)
-
-            if not websockets_by_view:
+                views_to_update.add(view_tuple)
+            
+            if not views_to_update:
                 continue
-
-            unique_views = list(websockets_by_view.keys())
-            loop = asyncio.get_running_loop()
-
-            # Prepare all parallel computation tasks
-            computation_tasks = []
-            for view_tuple in unique_views:
+            
+            # Update stats for each view
+            for view_tuple in views_to_update:
                 view_list = list(view_tuple)
-                task = loop.run_in_executor(app['db_executor'], blocking_prepare_stats, view_list, app_state['nodes'])
-                computation_tasks.append(task)
-
-            # Execute all stat preparations in parallel in the thread pool
-            results = await asyncio.gather(*computation_tasks)
-
-            # Now we have all the results. Cache them and prepare broadcast tasks.
-            broadcast_tasks = []
-            for i, view_tuple in enumerate(unique_views):
-                payload = results[i]
-                if payload:
-                    # Cache the fresh result
+                
+                # Get or create incremental stats for this view
+                if view_tuple not in app_state['incremental_stats']:
+                    app_state['incremental_stats'][view_tuple] = IncrementalStats()
+                
+                stats = app_state['incremental_stats'][view_tuple]
+                
+                # Determine which nodes to process
+                nodes_to_process = view_list if view_list != ['Aggregate'] else list(app_state['nodes'].keys())
+                
+                # Process only NEW events since last update
+                new_events_processed = False
+                for node_name in nodes_to_process:
+                    if node_name in app_state['nodes']:
+                        node_state = app_state['nodes'][node_name]
+                        
+                        # Check if this node has new events
+                        if node_state.get('has_new_events', False):
+                            # Get events to process
+                            all_events = list(node_state['live_events'])
+                            
+                            # Process only new events since last update
+                            if stats.last_processed_index < len(all_events):
+                                new_events = all_events[stats.last_processed_index:]
+                                for event in new_events:
+                                    stats.add_event(event, app_state['TOKEN_REGEX'])
+                                stats.last_processed_index = len(all_events)
+                                new_events_processed = True
+                
+                # Update live stats (last minute)
+                if new_events_processed:
+                    all_events_for_view = []
+                    for node_name in nodes_to_process:
+                        if node_name in app_state['nodes']:
+                            all_events_for_view.extend(list(app_state['nodes'][node_name]['live_events']))
+                    stats.update_live_stats(all_events_for_view)
+                    
+                    # Clear the new events flag for processed nodes
+                    for node_name in nodes_to_process:
+                        if node_name in app_state['nodes']:
+                            app_state['nodes'][node_name]['has_new_events'] = False
+                
+                    # Get historical stats
+                    historical_stats = get_historical_stats(view_list, app_state['nodes'])
+                    
+                    # Generate payload
+                    payload = stats.to_payload(historical_stats)
+                    
+                    # Cache and broadcast
                     app_state['stats_cache'][view_tuple] = payload
-
+                    
                     # Broadcast to all websockets subscribed to this view
-                    for ws in websockets_by_view[view_tuple]:
-                        try:
-                            broadcast_tasks.append(asyncio.create_task(ws.send_json(payload)))
-                        except (ConnectionResetError, asyncio.CancelledError):
-                            pass # Client disconnected, will be cleaned up on next msg
-
-            if broadcast_tasks:
-                await asyncio.gather(*broadcast_tasks, return_exceptions=True)
-
+                    for ws, state in app_state['websockets'].items():
+                        if tuple(state.get('view', ['Aggregate'])) == view_tuple:
+                            try:
+                                await ws.send_json(payload)
+                            except (ConnectionResetError, asyncio.CancelledError):
+                                pass  # Client disconnected
+        
         except Exception:
-            log.error("Error in stats_baker_and_broadcaster_task:", exc_info=True)
+            log.error("Error in incremental_stats_updater_task:", exc_info=True)
 
 
 async def performance_aggregator_task(app):
@@ -1209,9 +1364,8 @@ def blocking_get_hashstore_stats(filters: Dict[str, Any]) -> List[Dict[str, Any]
 
 async def send_initial_stats(app, ws, view: List[str]):
     """
-    Sends stats to a client upon connection or view change. It first tries
-    to find a fresh payload in the cache, and if not found, computes it
-    on-demand to provide immediate feedback to the user.
+    Sends stats to a client upon connection or view change.
+    For the optimized version, we use the incremental stats if available.
     """
     view_tuple = tuple(view)
 
@@ -1225,12 +1379,32 @@ async def send_initial_stats(app, ws, view: List[str]):
 
     # If not in cache, compute it now for this one client
     log.info(f"Cache miss for view {view}. Computing stats on-demand.")
-    loop = asyncio.get_running_loop()
+    
+    # Create temporary incremental stats for this view
+    stats = IncrementalStats()
+    nodes_to_process = view if view != ['Aggregate'] else list(app_state['nodes'].keys())
+    
+    # Process all current events
+    for node_name in nodes_to_process:
+        if node_name in app_state['nodes']:
+            for event in list(app_state['nodes'][node_name]['live_events']):
+                stats.add_event(event, app_state['TOKEN_REGEX'])
+    
+    # Update live stats
+    all_events = []
+    for node_name in nodes_to_process:
+        if node_name in app_state['nodes']:
+            all_events.extend(list(app_state['nodes'][node_name]['live_events']))
+    stats.update_live_stats(all_events)
+    
+    # Get historical stats
+    historical_stats = get_historical_stats(view, app_state['nodes'])
+    
+    # Generate and send payload
     try:
-        payload = await loop.run_in_executor(app['db_executor'], blocking_prepare_stats, view, app_state['nodes'])
-        if payload:
-            app_state['stats_cache'][view_tuple] = payload
-            await ws.send_json(payload)
+        payload = stats.to_payload(historical_stats)
+        app_state['stats_cache'][view_tuple] = payload
+        await ws.send_json(payload)
     except (ConnectionResetError, asyncio.CancelledError):
         pass # Client disconnected during computation
     except Exception:
@@ -1335,7 +1509,8 @@ def load_initial_state_from_db(nodes_config: Dict[str, Dict[str, Any]]):
             node_state = {
                 'live_events': deque(),
                 'active_compactions': {},
-                'unprocessed_performance_events': []
+                'unprocessed_performance_events': [],
+                'has_new_events': False
             }
             log.info(f"Re-hydrating live events for node '{node_name}' since {cutoff_datetime.isoformat()}")
             cursor.execute(
@@ -1478,7 +1653,8 @@ async def start_background_tasks(app):
              app_state['nodes'][node_name] = {
                 'live_events': deque(),
                 'active_compactions': {},
-                'unprocessed_performance_events': []
+                'unprocessed_performance_events': [],
+                'has_new_events': False
             }
 
         line_queue = asyncio.Queue(maxsize=5000)
@@ -1502,7 +1678,7 @@ async def start_background_tasks(app):
 
     app['tasks'].extend([
         asyncio.create_task(prune_live_events_task(app)),
-        asyncio.create_task(stats_baker_and_broadcaster_task(app)),
+        asyncio.create_task(incremental_stats_updater_task(app)),  # NEW: replaces stats_baker_and_broadcaster_task
         asyncio.create_task(performance_aggregator_task(app)),
         asyncio.create_task(websocket_batch_broadcaster_task(app)),
         asyncio.create_task(debug_logger_task(app)),
@@ -1571,7 +1747,7 @@ def parse_nodes(args: List[str]) -> Dict[str, Dict[str, Any]]:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Storagenode Pro Monitor")
+    parser = argparse.ArgumentParser(description="Storagenode Pro Monitor - Optimized Version")
     parser.add_argument('--node', action='append', help="Specify a node in 'NodeName:/path/to/log.log' or 'NodeName:host:port' format. Can be used multiple times.", required=True)
     parser.add_argument('--debug', action='store_true', help="Enable debug logging.")
     args = parser.parse_args()
