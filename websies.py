@@ -1,4 +1,3 @@
-
 # /// script
 # dependencies = [
 #   "aiohttp",
@@ -72,38 +71,38 @@ class IncrementalStats:
     audit_fail: int = 0
     total_dl_size: int = 0
     total_ul_size: int = 0
-    
+
     # Live stats (last minute)
     live_dl_bytes: int = 0
     live_ul_bytes: int = 0
-    
+
     # Satellite stats
     satellites: Dict[str, Dict[str, int]] = field(default_factory=dict)
-    
+
     # Country stats
     countries_dl: Counter = field(default_factory=Counter)
     countries_ul: Counter = field(default_factory=Counter)
-    
+
     # Transfer size buckets
     dls_success: Counter = field(default_factory=Counter)
     dls_failed: Counter = field(default_factory=Counter)
     uls_success: Counter = field(default_factory=Counter)
     uls_failed: Counter = field(default_factory=Counter)
-    
+
     # Error aggregation
     error_agg: Dict[str, Dict] = field(default_factory=dict)
     error_templates_cache: Dict[str, tuple] = field(default_factory=dict)
-    
+
     # Hot pieces tracking
     hot_pieces: Dict[str, Dict[str, int]] = field(default_factory=dict)
-    
+
     # Time tracking
     first_event_ts: Optional[datetime.datetime] = None
     last_event_ts: Optional[datetime.datetime] = None
-    
+
     # Last processed event index for incremental updates
     last_processed_index: int = 0
-    
+
     def get_or_create_satellite(self, sat_id: str) -> Dict[str, int]:
         """Get or create satellite stats."""
         if sat_id not in self.satellites:
@@ -113,27 +112,27 @@ class IncrementalStats:
                 'total_upload_size': 0, 'total_download_size': 0
             }
         return self.satellites[sat_id]
-    
+
     def add_event(self, event: Dict[str, Any], TOKEN_REGEX: re.Pattern):
         """Add a single event to the running statistics."""
         timestamp = event['timestamp']
-        
+
         # Update time tracking
         if self.first_event_ts is None or timestamp < self.first_event_ts:
             self.first_event_ts = timestamp
         if self.last_event_ts is None or timestamp > self.last_event_ts:
             self.last_event_ts = timestamp
-        
+
         # Extract event data
         category = event['category']
         status = event['status']
         sat_id = event['satellite_id']
         size = event['size']
         ts_unix = event['ts_unix']
-        
+
         sat_stats = self.get_or_create_satellite(sat_id)
         is_success = status == 'success'
-        
+
         # Update stats based on category
         if category == 'audit':
             sat_stats['audits'] += 1
@@ -143,10 +142,10 @@ class IncrementalStats:
             else:
                 self.audit_fail += 1
                 self._aggregate_error(event['error_reason'], TOKEN_REGEX)
-                
+
         elif category == 'get':
             sat_stats['downloads'] += 1
-            
+
             # Update hot pieces
             piece_id = event['piece_id']
             if piece_id not in self.hot_pieces:
@@ -154,12 +153,12 @@ class IncrementalStats:
             hot_piece = self.hot_pieces[piece_id]
             hot_piece['count'] += 1
             hot_piece['size'] += size
-            
+
             # Update country stats
             country = event['location']['country']
             if country:
                 self.countries_dl[country] += size
-                
+
             if is_success:
                 self.dl_success += 1
                 sat_stats['dl_success'] += 1
@@ -174,15 +173,15 @@ class IncrementalStats:
                 # Defer size bucket calculation
                 size_bucket = get_size_bucket(size)
                 self.dls_failed[size_bucket] += 1
-                
+
         elif category == 'put':
             sat_stats['uploads'] += 1
-            
+
             # Update country stats
             country = event['location']['country']
             if country:
                 self.countries_ul[country] += size
-                
+
             if is_success:
                 self.ul_success += 1
                 sat_stats['ul_success'] += 1
@@ -197,12 +196,12 @@ class IncrementalStats:
                 # Defer size bucket calculation
                 size_bucket = get_size_bucket(size)
                 self.uls_failed[size_bucket] += 1
-    
+
     def _aggregate_error(self, reason: str, TOKEN_REGEX: re.Pattern):
         """Aggregate error reasons efficiently with optimized template building."""
         if not reason:
             return
-        
+
         # Check cache first
         if reason in self.error_templates_cache:
             template, tokens = self.error_templates_cache[reason]
@@ -211,7 +210,7 @@ class IncrementalStats:
             matches = TOKEN_REGEX.finditer(reason)
             first_match = None
             tokens = []
-            
+
             # Peek at first match to decide strategy
             try:
                 first_match = next(matches)
@@ -222,12 +221,12 @@ class IncrementalStats:
                     self.error_templates_cache[reason] = (reason, [])
                 template = reason
                 tokens = []
-            
+
             if first_match is not None:
                 # Build template efficiently
                 template_parts = [reason[:first_match.start()], '#']
                 last_end = first_match.end()
-                
+
                 for match in matches:
                     start = match.start()
                     if start > last_end:
@@ -235,16 +234,16 @@ class IncrementalStats:
                     template_parts.append('#')
                     tokens.append(match.group(0))
                     last_end = match.end()
-                
+
                 if last_end < len(reason):
                     template_parts.append(reason[last_end:])
-                
+
                 template = "".join(template_parts)
-                
+
                 # Cache it
                 if len(self.error_templates_cache) < 1000:
                     self.error_templates_cache[reason] = (template, tokens)
-        
+
         # Update error aggregation
         if template not in self.error_agg:
             # Build placeholders only once
@@ -279,32 +278,32 @@ class IncrementalStats:
                                 ph['max'] = num
                         except ValueError:
                             pass
-    
+
     def update_live_stats(self, events: List[Dict[str, Any]]):
         """Update live stats for the last minute."""
         one_min_ago = time.time() - 60
         self.live_dl_bytes = 0
         self.live_ul_bytes = 0
-        
+
         for event in events:
             if event['ts_unix'] > one_min_ago and event['status'] == 'success':
                 if event['category'] == 'get':
                     self.live_dl_bytes += event['size']
                 elif event['category'] == 'put':
                     self.live_ul_bytes += event['size']
-    
+
     def to_payload(self, historical_stats: List[Dict] = None) -> Dict[str, Any]:
         """Convert stats to a JSON payload."""
         # Calculate speeds
         avg_egress_mbps = (self.live_dl_bytes * 8) / (60 * 1e6)
         avg_ingress_mbps = (self.live_ul_bytes * 8) / (60 * 1e6)
-        
+
         # Format satellites
         satellites = sorted([
-            {'satellite_id': k, **v} 
+            {'satellite_id': k, **v}
             for k, v in self.satellites.items()
         ], key=lambda x: x['uploads'] + x['downloads'], reverse=True)
-        
+
         # Format transfer sizes
         all_buckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]
         transfer_sizes = [
@@ -317,7 +316,7 @@ class IncrementalStats:
             }
             for b in all_buckets
         ]
-        
+
         # Format errors
         sorted_errors = sorted(self.error_agg.items(), key=lambda item: item[1]['count'], reverse=True)
         final_errors = []
@@ -334,13 +333,13 @@ class IncrementalStats:
                         range_str = f"[{count} unique address{'es' if count > 1 else ''}]"
                         final_msg = final_msg.replace('#', range_str, 1)
             final_errors.append({'reason': final_msg, 'count': data['count']})
-        
+
         # Top pieces
         top_pieces = [
             {'id': k, 'count': v['count'], 'size': v['size']}
             for k, v in heapq.nlargest(10, self.hot_pieces.items(), key=lambda item: item[1]['count'])
         ]
-        
+
         return {
             "type": "stats_update",
             "first_event_iso": self.first_event_ts.isoformat() if self.first_event_ts else None,
@@ -436,7 +435,7 @@ def get_size_bucket(size_in_bytes):
     # Check cache first
     if size_in_bytes in _size_bucket_cache:
         return _size_bucket_cache[size_in_bytes]
-    
+
     # Calculate bucket
     for threshold, label in SIZE_BUCKET_THRESHOLDS:
         if size_in_bytes < threshold:
@@ -444,11 +443,11 @@ def get_size_bucket(size_in_bytes):
             break
     else:
         bucket = "> 1 MB"
-    
+
     # Cache result (with simple size limit)
     if len(_size_bucket_cache) < _CACHE_MAX_SIZE:
         _size_bucket_cache[size_in_bytes] = bucket
-    
+
     return bucket
 
 def categorize_action(action: str) -> str:
@@ -692,6 +691,24 @@ async def network_log_reader_task(node_name: str, host: str, port: int, queue: a
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 60) # Exponential backoff up to 1 minute
 
+def get_active_compactions_payload() -> Dict[str, Any]:
+    """Gathers currently active compactions from all nodes and creates a payload."""
+    active_list = []
+    for node_name, node_state in app_state['nodes'].items():
+        for key, start_time in node_state.get('active_compactions', {}).items():
+            try:
+                satellite, store = key.split(':', 1)
+                active_list.append({
+                    "node_name": node_name,
+                    "satellite": satellite,
+                    "store": store,
+                    "start_iso": start_time.isoformat()
+                })
+            except ValueError:
+                log.warning(f"Malformed compaction key '{key}' for node '{node_name}'")
+
+    return {"type": "active_compactions_update", "compactions": active_list}
+
 async def robust_broadcast(websockets_dict, payload, node_name: Optional[str] = None):
     tasks = []
     # If this is a node-specific message, filter the recipients
@@ -732,6 +749,95 @@ def blocking_write_hashstore_log(db_path, stats_dict) -> bool:
         return False
 
 
+# --- New Centralized Parsing Logic ---
+JSON_RE = re.compile(r'\{.*\}')
+
+def parse_log_line(line: str, node_name: str, geoip_reader, geoip_cache: Dict) -> Optional[Dict]:
+    """
+    Parses a single log line and returns a structured dictionary, or None if the line is irrelevant.
+    This function is now the single source of truth for parsing logic.
+    """
+    try:
+        if 'piecestore' not in line and 'hashstore' not in line:
+            return None
+
+        log_level_part = "INFO" if "INFO" in line else "ERROR" if "ERROR" in line else None
+        if not log_level_part: return None
+
+        parts = line.split(log_level_part)
+        timestamp_str = parts[0].strip()
+        timestamp_obj = datetime.datetime.fromisoformat(timestamp_str).astimezone().astimezone(datetime.timezone.utc)
+
+        json_match = JSON_RE.search(line)
+        if not json_match: return None
+        log_data = json.loads(json_match.group(0))
+
+        # --- Hashstore Log Processing ---
+        if "hashstore" in line:
+            hashstore_action = line.split(log_level_part)[1].split("hashstore")[1].strip().split('\t')[0]
+            satellite = log_data.get("satellite")
+            store = log_data.get("store")
+            if not all([hashstore_action, satellite, store]): return None
+
+            compaction_key = f"{satellite}:{store}"
+            if hashstore_action == "beginning compaction":
+                return {"type": "hashstore_begin", "key": compaction_key, "timestamp": timestamp_obj}
+            elif hashstore_action == "finished compaction":
+                stats = log_data.get("stats", {})
+                table_stats = stats.get("Table", {})
+                duration_str = log_data.get("duration")
+                duration_seconds = 0
+                if duration_str:
+                    parsed_duration = parse_duration_str_to_seconds(duration_str)
+                    if parsed_duration is not None: duration_seconds = parsed_duration
+
+                compaction_stats = {
+                    "node_name": node_name, "satellite": satellite, "store": store,
+                    "last_run_iso": timestamp_obj.isoformat(),
+                    "duration": round(duration_seconds, 2),
+                    "data_reclaimed_bytes": parse_size_to_bytes(stats.get("DataReclaimed", "0 B")),
+                    "data_rewritten_bytes": parse_size_to_bytes(stats.get("DataRewritten", "0 B")),
+                    "table_load": (table_stats.get("Load") or 0) * 100,
+                    "trash_percent": stats.get("TrashPercent", 0) * 100,
+                }
+                return {"type": "hashstore_end", "key": compaction_key, "timestamp": timestamp_obj, "data": compaction_stats}
+            return None
+
+        # --- Original Traffic Log Processing ---
+        status, error_reason = "success", None
+        if "download canceled" in line: status, error_reason = "canceled", log_data.get("reason", "context canceled")
+        elif "failed" in line or "ERROR" in line: status, error_reason = "failed", log_data.get("error", "unknown error")
+
+        action, size, piece_id, sat_id, remote_addr = log_data.get("Action"), log_data.get("Size"), log_data.get("Piece ID"), log_data.get("Satellite ID"), log_data.get("Remote Address")
+
+        if not all([action, piece_id, sat_id, remote_addr]) or size is None: return None
+
+        remote_ip = remote_addr.split(':')[0]
+        location = geoip_cache.get(remote_ip)
+        if location is None:
+            try:
+                geo_response = geoip_reader.city(remote_ip)
+                location = {"lat": geo_response.location.latitude, "lon": geo_response.location.longitude, "country": geo_response.country.name}
+            except geoip2.errors.AddressNotFoundError: location = {"lat": None, "lon": None, "country": "Unknown"}
+            if len(geoip_cache) > MAX_GEOIP_CACHE_SIZE: geoip_cache.pop(next(iter(geoip_cache)))
+            geoip_cache[remote_ip] = location
+
+        event = {
+            "ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action,
+            "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id,
+            "remote_ip": remote_ip, "location": location, "error_reason": error_reason,
+            "node_name": node_name, "category": categorize_action(action)
+        }
+        return {"type": "traffic_event", "data": event}
+
+    except (json.JSONDecodeError, AttributeError, KeyError, ValueError):
+        return None
+    except Exception:
+        # Avoid crashing the whole process for one bad line
+        log.debug("Failed to parse log line", exc_info=True)
+        return None
+
+
 async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
     """
     Consumes log lines from a queue, parses them, and updates application state.
@@ -740,114 +846,31 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
     loop = asyncio.get_running_loop()
     geoip_reader = app['geoip_reader']
     geoip_cache = app_state['geoip_cache']
-
-    log.info(f"Log processor task started for node: {node_name}")
     node_state = app_state['nodes'][node_name]
-    JSON_RE = re.compile(r'\{.*\}')
+    log.info(f"Log processor task started for node: {node_name}")
 
     try:
         while True:
             line, arrival_time = await line_queue.get()
-            try:
-                # --- PERFORMANCE: Quick filter for relevant log components ---
-                if 'piecestore' not in line and 'hashstore' not in line:
-                    continue
+            parsed = parse_log_line(line, node_name, geoip_reader, geoip_cache)
+            if not parsed:
+                continue
 
-                # --- General Log Parsing ---
-                log_level_part = "INFO" if "INFO" in line else "ERROR" if "ERROR" in line else None
-                if not log_level_part: continue
-
-                parts = line.split(log_level_part)
-                timestamp_str = parts[0].strip()
-
-                # --- DEFINITIVE TIMEZONE FIX ---
-                timestamp_obj = datetime.datetime.fromisoformat(timestamp_str).astimezone().astimezone(datetime.timezone.utc)
-
-                json_match = JSON_RE.search(line)
-                if not json_match: continue
-                log_data = json.loads(json_match.group(0))
-
-                # --- Hashstore Log Processing ---
-                if "hashstore" in line:
-                    hashstore_action = line.split(log_level_part)[1].split("hashstore")[1].strip().split('\t')[0]
-                    satellite = log_data.get("satellite")
-                    store = log_data.get("store")
-                    if not all([hashstore_action, satellite, store]): continue
-
-                    compaction_key = f"{satellite}:{store}"
-                    if hashstore_action == "beginning compaction":
-                        node_state['active_compactions'][compaction_key] = timestamp_obj
-                    elif hashstore_action == "finished compaction":
-                        start_time = node_state['active_compactions'].pop(compaction_key, None)
-                        if start_time:
-                            duration_seconds = (timestamp_obj - start_time).total_seconds()
-                            if duration_seconds < 60:
-                                duration_str = log_data.get("duration")
-                                if duration_str:
-                                    parsed_duration = parse_duration_str_to_seconds(duration_str)
-                                    if parsed_duration is not None:
-                                        duration_seconds = parsed_duration
-
-                            stats = log_data.get("stats", {})
-                            table_stats = stats.get("Table", {})
-
-                            compaction_stats = {
-                                "node_name": node_name, "satellite": satellite, "store": store,
-                                "last_run_iso": timestamp_obj.isoformat(),
-                                "duration": round(duration_seconds, 2),
-                                "data_reclaimed_bytes": parse_size_to_bytes(stats.get("DataReclaimed", "0 B")),
-                                "data_rewritten_bytes": parse_size_to_bytes(stats.get("DataRewritten", "0 B")),
-                                "table_load": (table_stats.get("Load") or 0) * 100,
-                                "trash_percent": stats.get("TrashPercent", 0) * 100,
-                            }
-
-                            was_written = await loop.run_in_executor(
-                                app['db_executor'], blocking_write_hashstore_log, DATABASE_FILE, compaction_stats
-                            )
-                            if was_written:
-                                await robust_broadcast(app_state['websockets'], {"type": "hashstore_updated"})
-                    continue
-
-                # --- Original Traffic Log Processing ---
-                status, error_reason = "success", None
-                if "download canceled" in line: status, error_reason = "canceled", log_data.get("reason", "context canceled")
-                elif "failed" in line or "ERROR" in line: status, error_reason = "failed", log_data.get("error", "unknown error")
-
-                action, size, piece_id, sat_id, remote_addr = log_data.get("Action"), log_data.get("Size"), log_data.get("Piece ID"), log_data.get("Satellite ID"), log_data.get("Remote Address")
-
-                if not all([action, piece_id, sat_id, remote_addr]) or size is None: continue
-
-                remote_ip = remote_addr.split(':')[0]
-                location = geoip_cache.get(remote_ip)
-                if location is None:
-                    try:
-                        geo_response = geoip_reader.city(remote_ip)
-                        location = {"lat": geo_response.location.latitude, "lon": geo_response.location.longitude, "country": geo_response.country.name}
-                    except geoip2.errors.AddressNotFoundError: location = {"lat": None, "lon": None, "country": "Unknown"}
-                    if len(geoip_cache) > MAX_GEOIP_CACHE_SIZE: geoip_cache.pop(next(iter(geoip_cache)))
-                    geoip_cache[remote_ip] = location
-
-                category = categorize_action(action)
-                if category != 'other':
+            if parsed['type'] == 'traffic_event':
+                event = parsed['data']
+                if event['category'] != 'other':
                     node_state['unprocessed_performance_events'].append({
-                        'ts_unix': timestamp_obj.timestamp(), 'category': category,
-                        'status': status, 'size': size
+                        'ts_unix': event['ts_unix'], 'category': event['category'],
+                        'status': event['status'], 'size': event['size']
                     })
 
-                event = {
-                    "ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action,
-                    "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id,
-                    "remote_ip": remote_ip, "location": location, "error_reason": error_reason,
-                    "node_name": node_name, "category": category, "arrival_time": arrival_time
-                }
+                event['arrival_time'] = arrival_time
                 node_state['live_events'].append(event)
-                
-                # NEW: Mark that we have new events that need processing
                 node_state['has_new_events'] = True
 
                 websocket_event = {
-                    "type": "log_entry", "action": action, "size": size, "location": location,
-                    "timestamp": timestamp_obj.isoformat(), "node_name": node_name, "arrival_time": arrival_time
+                    "type": "log_entry", "action": event['action'], "size": event['size'], "location": event['location'],
+                    "timestamp": event['timestamp'].isoformat(), "node_name": node_name, "arrival_time": arrival_time
                 }
                 async with app_state['websocket_queue_lock']:
                     app_state['websocket_event_queue'].append(websocket_event)
@@ -856,23 +879,35 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
                     log.warning(f"Database write queue is full. Pausing log processing to allow DB to catch up.")
                 await app_state['db_write_queue'].put(event)
 
-            except (json.JSONDecodeError, AttributeError, KeyError, ValueError):
-                continue
-            except Exception:
-                log.error(f"Unexpected error processing a log line for {node_name}:", exc_info=True)
+            elif parsed['type'] == 'hashstore_begin':
+                node_state['active_compactions'][parsed['key']] = parsed['timestamp']
+                await robust_broadcast(app_state['websockets'], get_active_compactions_payload())
+
+            elif parsed['type'] == 'hashstore_end':
+                node_state['active_compactions'].pop(parsed['key'], None)
+                await robust_broadcast(app_state['websockets'], get_active_compactions_payload())
+
+                # Write historical record to DB
+                was_written = await loop.run_in_executor(
+                    app['db_executor'], blocking_write_hashstore_log, DATABASE_FILE, parsed['data']
+                )
+                if was_written:
+                    await robust_broadcast(app_state['websockets'], {"type": "hashstore_updated"})
+
     except asyncio.CancelledError:
         log.warning(f"Log processor task for '{node_name}' is cancelled.")
     except Exception:
         log.error(f"Critical error in log_processor_task main loop for {node_name}:", exc_info=True)
 
+
 def blocking_db_batch_write(db_path, events):
     """Optimized batch write with pre-allocated tuple creation."""
     if not events: return
-    
+
     # Pre-allocate list for better performance
     data_to_insert = []
     data_to_insert_extend = data_to_insert.append  # Cache method reference
-    
+
     # Build tuples more efficiently
     for e in events:
         loc = e['location']
@@ -882,7 +917,7 @@ def blocking_db_batch_write(db_path, events):
             loc['country'], loc['lat'], loc['lon'],
             e['error_reason'], e['node_name']
         ))
-    
+
     with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
         cursor = conn.cursor()
         cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
@@ -1021,11 +1056,11 @@ def get_historical_stats(view: List[str], all_nodes_state: Dict[str, NodeState])
     hist_stats = []
     with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
         conn.row_factory = sqlite3.Row
-        
+
         nodes_for_hist = view
         if view == ['Aggregate']:
             nodes_for_hist = list(all_nodes_state.keys())
-        
+
         if nodes_for_hist:
             placeholders = ','.join('?' for _ in nodes_for_hist)
             raw_hist_stats = conn.execute(f"""
@@ -1039,13 +1074,13 @@ def get_historical_stats(view: List[str], all_nodes_state: Dict[str, NodeState])
             """, (*nodes_for_hist, HISTORICAL_HOURS_TO_SHOW)).fetchall()
         else:
             raw_hist_stats = []
-        
+
         for row in raw_hist_stats:
             d_row = dict(row)
             d_row['dl_mbps'] = ((d_row.get('total_download_size', 0) or 0) * 8) / (3600 * 1000000)
             d_row['ul_mbps'] = ((d_row.get('total_upload_size', 0) or 0) * 8) / (3600 * 1000000)
             hist_stats.append(d_row)
-    
+
     return hist_stats
 
 
@@ -1055,44 +1090,44 @@ async def incremental_stats_updater_task(app):
     This replaces the old stats_baker_and_broadcaster_task.
     """
     log.info("Incremental stats updater task started.")
-    
+
     while True:
         await asyncio.sleep(STATS_INTERVAL_SECONDS)
-        
+
         try:
             # Collect all unique views from websockets
             views_to_update = set()
             for ws, state in app_state['websockets'].items():
                 view_tuple = tuple(state.get('view', ['Aggregate']))
                 views_to_update.add(view_tuple)
-            
+
             if not views_to_update:
                 continue
-            
+
             # Update stats for each view
             for view_tuple in views_to_update:
                 view_list = list(view_tuple)
-                
+
                 # Get or create incremental stats for this view
                 if view_tuple not in app_state['incremental_stats']:
                     app_state['incremental_stats'][view_tuple] = IncrementalStats()
-                
+
                 stats = app_state['incremental_stats'][view_tuple]
-                
+
                 # Determine which nodes to process
                 nodes_to_process = view_list if view_list != ['Aggregate'] else list(app_state['nodes'].keys())
-                
+
                 # Process only NEW events since last update
                 new_events_processed = False
                 for node_name in nodes_to_process:
                     if node_name in app_state['nodes']:
                         node_state = app_state['nodes'][node_name]
-                        
+
                         # Check if this node has new events
                         if node_state.get('has_new_events', False):
                             # Get events to process
                             all_events = list(node_state['live_events'])
-                            
+
                             # Process only new events since last update
                             if stats.last_processed_index < len(all_events):
                                 new_events = all_events[stats.last_processed_index:]
@@ -1100,7 +1135,7 @@ async def incremental_stats_updater_task(app):
                                     stats.add_event(event, app_state['TOKEN_REGEX'])
                                 stats.last_processed_index = len(all_events)
                                 new_events_processed = True
-                
+
                 # Update live stats (last minute)
                 if new_events_processed:
                     all_events_for_view = []
@@ -1108,21 +1143,21 @@ async def incremental_stats_updater_task(app):
                         if node_name in app_state['nodes']:
                             all_events_for_view.extend(list(app_state['nodes'][node_name]['live_events']))
                     stats.update_live_stats(all_events_for_view)
-                    
+
                     # Clear the new events flag for processed nodes
                     for node_name in nodes_to_process:
                         if node_name in app_state['nodes']:
                             app_state['nodes'][node_name]['has_new_events'] = False
-                
+
                     # Get historical stats
                     historical_stats = get_historical_stats(view_list, app_state['nodes'])
-                    
+
                     # Generate payload
                     payload = stats.to_payload(historical_stats)
-                    
+
                     # Cache and broadcast
                     app_state['stats_cache'][view_tuple] = payload
-                    
+
                     # Broadcast to all websockets subscribed to this view
                     for ws, state in app_state['websockets'].items():
                         if tuple(state.get('view', ['Aggregate'])) == view_tuple:
@@ -1130,7 +1165,7 @@ async def incremental_stats_updater_task(app):
                                 await ws.send_json(payload)
                             except (ConnectionResetError, asyncio.CancelledError):
                                 pass  # Client disconnected
-        
+
         except Exception:
             log.error("Error in incremental_stats_updater_task:", exc_info=True)
 
@@ -1439,27 +1474,27 @@ async def send_initial_stats(app, ws, view: List[str]):
 
     # If not in cache, compute it now for this one client
     log.info(f"Cache miss for view {view}. Computing stats on-demand.")
-    
+
     # Create temporary incremental stats for this view
     stats = IncrementalStats()
     nodes_to_process = view if view != ['Aggregate'] else list(app_state['nodes'].keys())
-    
+
     # Process all current events
     for node_name in nodes_to_process:
         if node_name in app_state['nodes']:
             for event in list(app_state['nodes'][node_name]['live_events']):
                 stats.add_event(event, app_state['TOKEN_REGEX'])
-    
+
     # Update live stats
     all_events = []
     for node_name in nodes_to_process:
         if node_name in app_state['nodes']:
             all_events.extend(list(app_state['nodes'][node_name]['live_events']))
     stats.update_live_stats(all_events)
-    
+
     # Get historical stats
     historical_stats = get_historical_stats(view, app_state['nodes'])
-    
+
     # Generate and send payload
     try:
         payload = stats.to_payload(historical_stats)
@@ -1481,6 +1516,7 @@ async def websocket_handler(request):
     node_names = list(app['nodes'].keys())
     await ws.send_json({"type": "init", "nodes": node_names})
     await send_initial_stats(app, ws, ["Aggregate"])
+    await ws.send_json(get_active_compactions_payload())
 
     try:
         async for msg in ws:
@@ -1805,10 +1841,92 @@ def parse_nodes(args: List[str]) -> Dict[str, Dict[str, Any]]:
         nodes[node_name] = {'type': 'file', 'path': source}
     return nodes
 
+def blocking_batch_write_hashstore_ingest(db_path: str, records: List[Dict]):
+    if not records: return
+    try:
+        with sqlite3.connect(db_path, timeout=30) as conn:
+            cursor = conn.cursor()
+            cursor.executemany('''
+                INSERT OR IGNORE INTO hashstore_compaction_history
+                (node_name, satellite, store, last_run_iso, duration, data_reclaimed_bytes, data_rewritten_bytes, table_load, trash_percent)
+                VALUES (:node_name, :satellite, :store, :last_run_iso, :duration, :data_reclaimed_bytes, :data_rewritten_bytes, :table_load, :trash_percent)
+            ''', records)
+            conn.commit()
+        log.info(f"Successfully ingested {len(records)} hashstore compaction records into the database.")
+    except Exception:
+        log.error("Failed to write ingested hashstore logs to DB:", exc_info=True)
+
+def ingest_log_file(node_name: str, log_path: str):
+    """Reads a log file from start to finish, parsing and inserting all relevant events into the database."""
+    log.info(f"Starting ingestion for node '{node_name}' from log file '{log_path}'.")
+
+    if not os.path.exists(log_path):
+        log.critical(f"Log file not found: {log_path}")
+        return
+
+    try:
+        geoip_reader = geoip2.database.Reader(GEOIP_DATABASE_PATH)
+    except Exception as e:
+        log.critical(f"Could not load GeoIP database: {e}. Ingestion cannot proceed.")
+        return
+
+    geoip_cache = {}
+    events_to_write = []
+    hashstore_records_to_write = []
+    active_compactions = {}
+
+    traffic_event_count = 0
+    hashstore_event_count = 0
+    line_count = 0
+
+    with open(log_path, 'r', errors='ignore') as f:
+        for line in f:
+            line_count += 1
+            if line_count % 100000 == 0:
+                log.info(f"Processed {line_count} lines...")
+
+            parsed = parse_log_line(line, node_name, geoip_reader, geoip_cache)
+            if not parsed:
+                continue
+
+            if parsed['type'] == 'traffic_event':
+                events_to_write.append(parsed['data'])
+            elif parsed['type'] == 'hashstore_begin':
+                active_compactions[parsed['key']] = parsed['timestamp']
+            elif parsed['type'] == 'hashstore_end':
+                start_time = active_compactions.pop(parsed['key'], None)
+                record = parsed['data']
+                if start_time and record['duration'] == 0:
+                    record['duration'] = round((parsed['timestamp'] - start_time).total_seconds(), 2)
+                hashstore_records_to_write.append(record)
+
+            if len(events_to_write) >= 50000:
+                log.info(f"Writing a batch of {len(events_to_write)} traffic events to the database...")
+                blocking_db_batch_write(DATABASE_FILE, events_to_write)
+                traffic_event_count += len(events_to_write)
+                events_to_write.clear()
+
+    if events_to_write:
+        log.info(f"Writing the final batch of {len(events_to_write)} traffic events...")
+        blocking_db_batch_write(DATABASE_FILE, events_to_write)
+        traffic_event_count += len(events_to_write)
+
+    if hashstore_records_to_write:
+        log.info(f"Writing {len(hashstore_records_to_write)} hashstore records...")
+        blocking_batch_write_hashstore_ingest(DATABASE_FILE, hashstore_records_to_write)
+        hashstore_event_count = len(hashstore_records_to_write)
+
+    log.info(f"Ingestion complete. Total lines processed: {line_count}. Traffic events ingested: {traffic_event_count}. Hashstore records ingested: {hashstore_event_count}.")
+    geoip_reader.close()
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Storagenode Pro Monitor - Optimized Version")
-    parser.add_argument('--node', action='append', help="Specify a node in 'NodeName:/path/to/log.log' or 'NodeName:host:port' format. Can be used multiple times.", required=True)
+    parser = argparse.ArgumentParser(description="Storagenode Pro Monitor")
+
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument('--node', action='append', help="SERVER MODE: Specify a node in 'NodeName:/path/to/log.log' or 'NodeName:host:port' format. Can be used multiple times.")
+    mode_group.add_argument('--ingest-log', help="INGEST MODE: Ingest a log file for a specific node and exit. Format: 'NodeName:/path/to/log.log'")
+
     parser.add_argument('--debug', action='store_true', help="Enable debug logging.")
     args = parser.parse_args()
 
@@ -1816,14 +1934,31 @@ if __name__ == "__main__":
     logging.basicConfig(level=log_level, format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
     init_db()
-    app = web.Application()
-    app['nodes'] = parse_nodes(args.node)
 
-    app.on_startup.append(start_background_tasks)
-    app.on_cleanup.append(cleanup_background_tasks)
-    app.router.add_get('/', handle_index)
-    app.router.add_get('/ws', websocket_handler)
+    if args.ingest_log:
+        try:
+            node_name, log_path = args.ingest_log.split(':', 1)
+            if not node_name or not log_path:
+                raise ValueError("Invalid format")
+        except ValueError:
+            log.critical(f"Invalid format for --ingest-log: '{args.ingest_log}'. Expected 'NodeName:/path/to/log.log'.")
+            sys.exit(1)
 
-    log.info(f"Server starting on http://{SERVER_HOST}:{SERVER_PORT}")
-    log.info(f"Monitoring nodes: {list(app['nodes'].keys())}")
-    web.run_app(app, host=SERVER_HOST, port=SERVER_PORT)
+        ingest_log_file(node_name, log_path)
+        log.info("Ingestion finished. Now backfilling hourly statistics. This may take a while...")
+        blocking_backfill_hourly_stats([node_name])
+        log.info("Hourly statistics backfilled. Process complete.")
+        sys.exit(0)
+
+    else: # Run in server mode
+        app = web.Application()
+        app['nodes'] = parse_nodes(args.node)
+
+        app.on_startup.append(start_background_tasks)
+        app.on_cleanup.append(cleanup_background_tasks)
+        app.router.add_get('/', handle_index)
+        app.router.add_get('/ws', websocket_handler)
+
+        log.info(f"Server starting on http://{SERVER_HOST}:{SERVER_PORT}")
+        log.info(f"Monitoring nodes: {list(app['nodes'].keys())}")
+        web.run_app(app, host=SERVER_HOST, port=SERVER_PORT)
