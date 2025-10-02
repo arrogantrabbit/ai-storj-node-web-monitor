@@ -1,0 +1,4 @@
+# This command tells the build system to find the 'static' directory
+# inside the 'storj_monitor' package and include all files within it,
+# recursively.
+recursive-include storj_monitor/static *

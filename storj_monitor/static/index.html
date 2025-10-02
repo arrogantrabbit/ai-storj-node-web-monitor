@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex">
+    <title>Storagenode Pro Monitor</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div id="connection-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); color: white; display: none; justify-content: center; align-items: center; text-align: center; font-size: 1.5em; z-index: 10000;">
+        <div><p>Connection Lost</p><p style="font-size: 0.6em;">Attempting to reconnect...</p></div>
+    </div>
+    <div class="container">
+        <div class="card header-card">
+            <h1>Storagenode Pro Monitor</h1>
+            <div class="header-controls">
+                <div id="node-selector" title="Select a node to view or show an aggregate of all nodes">
+                    <span>Loading...</span>
+                </div>
+                <div id="display-menu-container">
+                    <button id="display-menu-btn">Options</button>
+                    <div id="display-menu-dropdown"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="map-card" class="card">
+            <div class="card-header-flex">
+                <h3 class="card-title">Live Traffic Heatmap</h3>
+                <button id="toggle-map-size-btn" title="Maximize Map">&#x26F6;</button>
+            </div>
+            <div id="map"></div>
+        </div>
+
+        <div id="stats-card" class="card">
+            <h3 id="stats-title" class="card-title">Overall Success Rates & Speed</h3>
+            <div class="stats-grid card-content">
+                <div class="stat"><div id="dl-rate" class="stat-value">...%</div><div class="stat-label">Download Success</div><small>(<span id="dl-success">0</span> / <span id="dl-total">0</span>)</small></div>
+                <div class="stat"><div id="ul-rate" class="stat-value">...%</div><div class="stat-label">Upload Success</div><small>(<span id="ul-success">0</span> / <span id="ul-total">0</span>)</small></div>
+                <div class="stat"><div id="dl-speed" class="stat-value">... Mbps</div><div class="stat-label" id="dl-speed-label">Download Speed</div></div>
+                <div class="stat"><div id="ul-speed" class="stat-value">... Mbps</div><div class="stat-label" id="ul-speed-label">Upload Speed</div></div>
+            </div>
+        </div>
+
+        <div id="health-card" class="card">
+             <h3 class="card-title">Node Health & History</h3>
+             <div class="stats-grid">
+                <div class="stat"><div id="audit-rate" class="stat-value">...%</div><div class="stat-label">Audit Success</div><small>(<span id="audit-success">0</span> / <span id="audit-total">0</span>)</small></div>
+                <div class="stat"><div class="stat-value">&nbsp;</div><div class="stat-label">&nbsp;</div></div>
+             </div>
+             <div class="table-container" style="margin-top: 15px;">
+                 <table class="info-table">
+                    <thead><tr><th>Time</th><th class="numeric">DL %</th><th class="numeric">UL %</th><th class="numeric">Audit %</th><th class="numeric">DL Speed</th><th class="numeric">UL Speed</th></tr></thead>
+                    <tbody id="history-body"></tbody>
+                </table>
+             </div>
+        </div>
+
+        <div id="performance-card" class="card">
+            <div class="chart-header">
+                <h3 id="performance-title" class="card-title">Live Performance</h3>
+                <div>
+                     <div id="performance-toggles">
+                        <a href="#" class="toggle-link active" data-view="rate">Rate (Mbps)</a> | <a href="#" class="toggle-link" data-view="volume">Volume (MB)</a> | <a href="#" class="toggle-link" data-view="pieces">Pieces</a> | <a href="#" class="toggle-link" data-view="concurrency">Concurrency</a>
+                    </div>
+                    <div id="time-range-toggles" style="text-align: right; font-size: 0.9em; margin-top: 4px;">
+                        <small>Range:</small>
+                        <a href="#" class="toggle-link active" data-range="5m">5m</a> |
+                        <a href="#" class="toggle-link" data-range="30m">30m</a> |
+                        <a href="#" class="toggle-link" data-range="1h">1h</a> |
+                        <a href="#" class="toggle-link" data-range="6h">6h</a> |
+                        <a href="#" class="toggle-link" data-range="24h">24h</a>
+                    </div>
+                    <div id="aggregation-toggles">
+                        <small>Aggregate:</small>
+                        <a href="#" class="toggle-link active" data-agg="sum">Sum</a> |
+                        <a href="#" class="toggle-link" data-agg="avg">Average</a>
+                   </div>
+                </div>
+            </div>
+            <div class="card-content"><canvas id="performanceChart"></canvas></div>
+        </div>
+
+        <div id="satellite-card" class="card">
+
+      <div class="chart-header">
+                <h3 id="satellite-title" class="card-title">Traffic by Satellite</h3>
+                <a href="#" id="toggle-satellite-view" class="toggle-link">Show by Size</a>
+            </div>
+            <div class="card-content"><canvas id="satelliteChart"></canvas></div>
+        </div>
+
+        <div id="analysis-card" class="card">
+            <h3 class="card-title">Network & Error Analysis</h3>
+            <div class="stats-grid card-content">
+                <div>
+                    <h5>Top 10 Errors</h5>
+                    <table class="info-table">
+                        <thead><tr><th>Reason</th><th class="numeric">Count</th></tr></thead>
+                        <tbody id="error-body"></tbody>
+                    </table>
+                </div>
+                <div>
+                    <h5>Top 10 Hot Pieces</h5>
+                    <table class="info-table">
+                        <thead><tr><th>Piece ID</th><th class="numeric">Count</th><th class="numeric">Size</th></tr></thead>
+                        <tbody id="pieces-body"></tbody>
+                    </table>
+                </div>
+                 <div>
+                    <h5>Top 10 Countries (Egress)</h5>
+                     <table class="info-table">
+                        <thead><tr><th>Country</th><th class="numeric">Size</th></tr></thead>
+                        <tbody id="countries-dl-body"></tbody>
+                    </table>
+                </div>
+                 <div>
+                    <h5>Top 10 Countries (Ingress)</h5>
+                     <table class="info-table">
+                        <thead><tr><th>Country</th><th class="numeric">Size</th></tr></thead>
+                        <tbody id="countries-ul-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="size-charts-card" class="card">
+            <div class="chart-header">
+                <h3 id="size-chart-title" class="card-title">Data Transfer Size Distribution</h3>
+                <div id="size-view-toggles">
+                    <small>Show:</small>
+                    <a href="#" class="toggle-link active" data-view="counts">Counts</a> |
+                    <a href="#" class="toggle-link" data-view="percentages">Percentages</a> |
+                    <a href="#" class="toggle-link" data-view="rates">Success Rate</a>
+                </div>
+            </div>
+            <div class="card-content"><canvas id="sizeBarChart"></canvas></div>
+        </div>
+
+        <div id="active-compactions-card" class="card">
+            <h3 class="card-title">Active Hashstore Compactions</h3>
+            <div class="card-content table-container">
+                <table class="info-table">
+                    <thead>
+                        <tr>
+                            <th>Node</th>
+                            <th>Satellite</th>
+                            <th>Store</th>
+                            <th>Started At</th>
+                            <th class="numeric">Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody id="active-compactions-body">
+                        <!-- JS populates this -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="hashstore-chart-card" class="card">
+            <div class="card-header-flex">
+                <h3 id="hashstore-chart-title" class="card-title">Hashstore Compaction Trends</h3>
+                <div id="hashstore-filters" style="display: flex; gap: 15px; align-items: center; font-size: 0.9em;">
+                    <!-- JS populates this -->
+                </div>
+            </div>
+            <div class="card-content" style="position: relative; height:300px;">
+                <canvas id="hashstoreChart"></canvas>
+            </div>
+        </div>
+
+        <div id="hashstore-card" class="card">
+            <div class="card-header-flex">
+                <h3 id="hashstore-title" class="card-title">Hashstore Compaction Details</h3>
+            </div>
+            <div class="card-content table-container">
+                <table class="info-table">
+                    <thead>
+                        <tr>
+                            <th data-column="node_name">Node</th>
+                            <th data-column="satellite">Satellite</th>
+                            <th data-column="store">Store</th>
+                            <th data-column="last_run_iso">Last Run</th>
+                            <th class="numeric" data-column="duration">Duration</th>
+                            <th class="numeric" data-column="data_reclaimed_bytes">Data Reclaimed</th>
+                            <th class="numeric" data-column="data_rewritten_bytes">Data Rewritten</th>
+                            <th class="numeric" data-column="reclaim_efficiency">Reclaim Efficiency</th>
+                            <th class="numeric" data-column="throughput">Throughput (MB/s)</th>
+                            <th class="numeric" data-column="table_load">Table Load</th>
+                            <th class="numeric" data-column="trash_percent">Trash %</th>
+                        </tr>
+                    </thead>
+                    <tbody id="hashstore-body">
+                        <!-- JS populates this -->
+                    </tbody>
+                    <tfoot id="hashstore-foot">
+                        <!-- JS populates this -->
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+    <script src="/static/js/app.js" type="module"></script>
+</body>
+</html>
