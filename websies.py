@@ -53,6 +53,7 @@ MAX_GEOIP_CACHE_SIZE = 5000
 HOURLY_AGG_INTERVAL_MINUTES = 10
 DB_EVENTS_RETENTION_DAYS = 2 # New: How many days of event data to keep
 DB_PRUNE_INTERVAL_HOURS = 6  # New: How often to run the pruner
+DB_HASHSTORE_RETENTION_DAYS = 180 # How many days of hashstore compaction history to keep
 
 # --- Global Constants ---
 SATELLITE_NAMES = { '121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1', '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1', '12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs': 'eu1', '1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE': 'saltlake' }
@@ -1019,25 +1020,41 @@ async def hourly_aggregator_task(app):
             log.error("Error in hourly aggregator task:", exc_info=True)
 
 
-def blocking_db_prune(db_path, retention_days):
-    log.info(f"[DB_PRUNER] Starting database pruning task. Retaining last {retention_days} days of events.")
-    cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=retention_days)
-    cutoff_iso = cutoff_date.isoformat()
+def blocking_db_prune(db_path, events_retention_days, hashstore_retention_days):
+    log.info(f"[DB_PRUNER] Starting database pruning task. Retaining last {events_retention_days} days of events and {hashstore_retention_days} days of compaction history.")
 
     with sqlite3.connect(db_path, timeout=30, detect_types=0) as conn:
         cursor = conn.cursor()
 
-        log.info(f"Finding events older than {cutoff_iso} to delete...")
-        cursor.execute("SELECT COUNT(*) FROM events WHERE timestamp < ?", (cutoff_iso,))
+        # Prune events table
+        events_cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=events_retention_days)
+        events_cutoff_iso = events_cutoff_date.isoformat()
+        log.info(f"Finding events older than {events_cutoff_iso} to delete...")
+        cursor.execute("SELECT COUNT(*) FROM events WHERE timestamp < ?", (events_cutoff_iso,))
         count = cursor.fetchone()[0]
 
         if count > 0:
             log.warning(f"Deleting {count} old event(s) from the database. This might take a while...")
-            cursor.execute("DELETE FROM events WHERE timestamp < ?", (cutoff_iso,))
+            cursor.execute("DELETE FROM events WHERE timestamp < ?", (events_cutoff_iso,))
             conn.commit()
             log.info(f"Successfully pruned {count} old event(s) from the database.")
         else:
             log.info("No old events found to prune.")
+
+        # Prune hashstore_compaction_history table
+        hashstore_cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=hashstore_retention_days)
+        hashstore_cutoff_iso = hashstore_cutoff_date.isoformat()
+        log.info(f"Finding hashstore history older than {hashstore_cutoff_iso} to delete...")
+        cursor.execute("SELECT COUNT(*) FROM hashstore_compaction_history WHERE last_run_iso < ?", (hashstore_cutoff_iso,))
+        count = cursor.fetchone()[0]
+
+        if count > 0:
+            log.warning(f"Deleting {count} old hashstore compaction record(s) from the database...")
+            cursor.execute("DELETE FROM hashstore_compaction_history WHERE last_run_iso < ?", (hashstore_cutoff_iso,))
+            conn.commit()
+            log.info(f"Successfully pruned {count} old hashstore compaction record(s).")
+        else:
+            log.info("No old hashstore compaction records found to prune.")
 
 async def database_pruner_task(app):
     log.info("Database pruner task started.")
@@ -1045,7 +1062,13 @@ async def database_pruner_task(app):
         try:
             loop = asyncio.get_running_loop()
             async with app_state['db_write_lock']:
-                await loop.run_in_executor(app['db_executor'], blocking_db_prune, DATABASE_FILE, DB_EVENTS_RETENTION_DAYS)
+                await loop.run_in_executor(
+                    app['db_executor'],
+                    blocking_db_prune,
+                    DATABASE_FILE,
+                    DB_EVENTS_RETENTION_DAYS,
+                    DB_HASHSTORE_RETENTION_DAYS
+                )
         except Exception:
             log.error("Error in database pruner task:", exc_info=True)
         await asyncio.sleep(3600 * DB_PRUNE_INTERVAL_HOURS)
