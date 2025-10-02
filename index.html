@@ -918,6 +918,22 @@
         // --- Helper Functions ---
         function formatBytes(bytes, decimals = 2) { if (!bytes || bytes === 0) return '0 Bytes'; const k = 1024; const dm = decimals < 0 ? 0 : decimals; const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']; const i = Math.floor(Math.log(bytes) / Math.log(k)); return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]; }
         function getRateClass(rate) { if (rate > 99.5) return 'rate-good'; if (rate > 95) return 'rate-ok'; return 'rate-bad'; }
+        function formatCompactionDate(isoString) {
+            const date = new Date(isoString);
+            const today = new Date();
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+
+            const timeStr = date.toLocaleTimeString();
+
+            if (date.toDateString() === today.toDateString()) {
+                return timeStr;
+            }
+            if (date.toDateString() === yesterday.toDateString()) {
+                return `Yesterday ${timeStr}`;
+            }
+            return `${date.toLocaleDateString()} ${timeStr}`;
+        }
         const SATELLITE_NAMES = { '121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1', '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1', '12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs': 'eu1', '1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE': 'saltlake' };
 
         // --- Chart Initialization ---
@@ -1428,7 +1444,7 @@
                 row.insertCell(cellIndex++).textContent = item.store;
 
                 const lastRunCell = row.insertCell(cellIndex++);
-                lastRunCell.textContent = new Date(item.last_run_iso).toLocaleTimeString();
+                lastRunCell.textContent = formatCompactionDate(item.last_run_iso);
 
                 const durationCell = row.insertCell(cellIndex++);
                 durationCell.className = 'numeric';
