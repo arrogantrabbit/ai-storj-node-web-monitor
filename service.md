@@ -185,12 +185,6 @@ TimeoutStopSec=30
 Restart=on-failure
 RestartSec=10
 
-# Security hardening (optional but recommended)
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-
 [Install]
 WantedBy=multi-user.target
 ```
