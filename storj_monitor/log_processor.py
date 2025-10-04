@@ -40,17 +40,42 @@ def parse_size_to_bytes(size_str: str) -> int:
 
 
 def parse_duration_str_to_seconds(duration_str: str) -> Optional[float]:
-    """Parses a duration string like '198.8ms' or '4.5s' into seconds."""
+    """
+    Parses a complex duration string like '1m37.535505102s' or '42.281s' into seconds.
+    Handles hours (h), minutes (m), seconds (s), and milliseconds (ms).
+    """
     if not isinstance(duration_str, str):
         return None
-    try:
-        duration_str = duration_str.lower().strip()
-        if 'ms' in duration_str:
-            return float(duration_str.replace('ms', '')) / 1000.0
-        if 's' in duration_str:
-            return float(duration_str.replace('s', ''))
-        # If no unit is found, we cannot reliably determine the value.
+
+    total_seconds = 0.0
+    duration_str = duration_str.strip()
+
+    # Regex to find all number-unit pairs in the string
+    pattern = re.compile(r'(\d+\.?\d*)\s*(h|m|s|ms)')
+    matches = pattern.findall(duration_str)
+
+    if not matches and re.match(r'^\d+\.?\d*$', duration_str):
+        # Handle plain number, assume seconds
+        try:
+            return float(duration_str)
+        except ValueError:
+            return None
+
+    if not matches:
         return None
+
+    try:
+        for value, unit in matches:
+            val = float(value)
+            if unit == 'h':
+                total_seconds += val * 3600
+            elif unit == 'm':
+                total_seconds += val * 60
+            elif unit == 's':
+                total_seconds += val
+            elif unit == 'ms':
+                total_seconds += val / 1000.0
+        return total_seconds
     except (ValueError, TypeError):
         return None
 
@@ -148,7 +173,7 @@ def parse_log_line(line: str, node_name: str, geoip_reader, geoip_cache: Dict) -
                 compaction_stats = {
                     "node_name": node_name, "satellite": satellite, "store": store,
                     "last_run_iso": timestamp_obj.isoformat(),
-                    "duration": round(duration_seconds, 2),
+                    "duration": duration_seconds,
                     "data_reclaimed_bytes": parse_size_to_bytes(stats.get("DataReclaimed", "0 B")),
                     "data_rewritten_bytes": parse_size_to_bytes(stats.get("DataRewritten", "0 B")),
                     "table_load": (table_stats.get("Load") or 0) * 100,
