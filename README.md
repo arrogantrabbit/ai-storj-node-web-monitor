@@ -44,6 +44,15 @@ export PATH="$HOME/.uv/tools/bin:$PATH"
 
 After updating your `PATH`, restart your terminal or source the startup file (e.g., `source ~/.zshrc`).
 
+### 1a. Editable (Developer) Mode
+
+If you are developing the tool and want your code changes to be reflected immediately without reinstalling, use the `-e` flag for an "editable" install:
+
+```bash
+# From your project's root directory
+uv tool install -e .
+```
+
 ### 2. Updating the Tool
 
 If you have already installed the tool and need to apply updates (like this fix), you must reinstall it:
