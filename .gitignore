@@ -15,4 +15,7 @@ GeoLite2-City.mmdb
 .vscode/
 
 # OS
-.DS_Store
+**/.DS_Store
+
+
+**/*.egg-info
