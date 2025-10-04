@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import List, Any, Dict
 
 import aiohttp
@@ -14,6 +15,9 @@ from .config import SERVER_HOST, SERVER_PORT, PERFORMANCE_INTERVAL_SECONDS
 from .websocket_utils import robust_broadcast
 
 log = logging.getLogger("StorjMonitor.Server")
+
+# Version string for cache busting (update when static files change)
+STATIC_VERSION = str(int(time.time()))
 
 
 def get_active_compactions_payload() -> Dict[str, Any]:
@@ -85,9 +89,34 @@ async def send_initial_stats(app, ws, view: List[str]):
         log.error(f"Error computing initial stats for view {view}:", exc_info=True)
 
 
+@web.middleware
+async def cache_control_middleware(request, handler):
+    """Add cache control headers to static files"""
+    response = await handler(request)
+    
+    # Add no-cache headers for static files to prevent caching issues during development
+    if request.path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    
+    return response
+
+
 async def handle_index(request):
+    """Serve index.html with version parameter for cache busting"""
     index_path = os.path.join(os.path.dirname(__file__), 'static', 'index.html')
-    return web.FileResponse(index_path)
+    
+    # Read the file and inject version parameter
+    with open(index_path, 'r') as f:
+        content = f.read()
+    
+    # Add version parameter to JS file imports
+    content = content.replace('/static/js/app.js', f'/static/js/app.js?v={STATIC_VERSION}')
+    
+    response = web.Response(text=content, content_type='text/html')
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
 
 
 async def websocket_handler(request):
@@ -179,7 +208,7 @@ async def websocket_handler(request):
 
 
 def run_server(nodes_config: Dict[str, Any]):
-    app = web.Application()
+    app = web.Application(middlewares=[cache_control_middleware])
     app['nodes'] = nodes_config
 
     app.on_startup.append(start_background_tasks)
@@ -191,5 +220,6 @@ def run_server(nodes_config: Dict[str, Any]):
     app.router.add_static('/static/', path=static_path, name='static')
 
     log.info(f"Server starting on http://{SERVER_HOST}:{SERVER_PORT}")
+    log.info(f"Static files version: {STATIC_VERSION}")
     log.info(f"Monitoring nodes: {list(app['nodes'].keys())}")
     web.run_app(app, host=SERVER_HOST, port=SERVER_PORT)
