@@ -9,90 +9,96 @@ Storagenode Pro Monitor is a high-performance, real-time web dashboard for Storj
 *   **Performance Charting:** Live and historical graphs for bandwidth, piece counts, and operational concurrency.
 *   **Multi-Node Support:** Monitor multiple nodes simultaneously, either individually or as an aggregated view.
 *   **Detailed Analysis:** View breakdowns by satellite, transfer size, top error types, and most frequently accessed pieces.
-*   **Remote Monitoring:** A purpose-built, lightweight log forwarder enables smooth, high-fidelity monitoring even when the dashboard is run on a separate machine.
+*   **Remote Monitoring:** The server can connect to remote log sources, enabling high-fidelity monitoring even when the dashboard is run on a separate machine.
 *   **Efficient Architecture:** Built with modern Python `asyncio` and `watchdog` for minimal impact on your storagenode's performance.
 *   **Historical Log Ingestion:** A one-time ingestion mode to pre-populate the database from existing log files, providing immediate historical context.
 
 ## Prerequisites
 
-1.  **Python Environment:** Python 3.9+ is required. The scripts are self-bootstrapping and will install dependencies automatically when run with a compatible tool like `uv` or `pip`.
+1.  **Python Environment:** Python 3.9+ is required. The application uses `uv` (or `pip`) to manage its environment and will install dependencies automatically.
 2.  **GeoIP Database:** The application uses the MaxMind GeoLite2 City database to map IP addresses to physical locations for the heatmap.
     *   Download the free database from the [MaxMind website](https://www.maxmind.com/en/geolite2/signup).
     *   After signing up, download the `GeoLite2-City.mmdb` file.
-    *   Place the `GeoLite2-City.mmdb` file in the same directory as `websies.py`.
+    *   Place the `GeoLite2-City.mmdb` file in the same top-level directory as the `storj_monitor` package.
 
 ---
 
-## Getting Started: Basic Local Monitoring
+## Installation & Usage
 
-This is the simplest way to run the monitor, with the dashboard running on the same machine as your storagenode.
+This application is designed to be run as a command-line tool. The recommended workflow is to use `uv tool install` to make it available on your system. This avoids creating `.venv` directories in your project folder.
 
-1.  **Arrange Files:** Place `websies.py`, `index.html`, and the `GeoLite2-City.mmdb` file you downloaded into the same directory.
+### 1. Installation
 
-2.  **Run the Application:** Open a terminal and run the main application script. You must specify a unique name and the full path to your node's log file for each node you wish to monitor.
+From your project's root directory (the one containing `pyproject.toml`), run the following command:
 
-    ```bash
-    # For a single node
-    uv run websies.py --node "My-Node:/path/to/storagenode.log"
+```bash
+# Install the tool using the current directory as the source
+uv tool install .
+```
 
-    # For multiple nodes on the same machine
-    uv run websies.py --node "Node1:/path/to/node1.log" --node "Node2:/path/to/node2.log"
-    ```
-    *The server will start and automatically install its dependencies.*
+`uv` will install the `storj-pro-monitor` and its dependencies into a managed environment. It may prompt you to add its tool `bin` directory to your shell's `PATH`. **This is a required one-time setup step.** Follow the instructions provided by `uv`. A common way to do this is to add the following line to your shell's startup file (e.g., `~/.zshrc`, `~/.bashrc`):
 
-3.  **View the Dashboard:** Open a web browser and navigate to `http://localhost:8765`.
+```bash
+export PATH="$HOME/.uv/tools/bin:$PATH"
+```
 
----
+After updating your `PATH`, restart your terminal or source the startup file (e.g., `source ~/.zshrc`).
 
-## Advanced Usage
+### 1a. Editable (Developer) Mode
 
-### One-Time Log Ingestion
+If you are developing the tool and want your code changes to be reflected immediately without reinstalling, use the `-e` flag for an "editable" install:
 
-To start the monitor with a rich set of historical data instead of a blank database, you can perform a one-time ingestion of your existing storagenode log files.
+```bash
+# From your project's root directory
+uv tool install -e .
+```
 
-This mode will parse an entire log file, extract all relevant traffic and hashstore compaction events, and write them directly to the database. It will then pre-calculate the hourly statistics for historical charts. The script exits upon completion without starting the web server.
+### 2. Updating the Tool
 
-**To ingest a log file, use the `--ingest-log` argument:**
+If you have already installed the tool and need to apply updates (like this fix), you must reinstall it:
+
+```bash
+# From your project's root directory
+uv tool install . --reinstall
+```
+
+### 3. Running the Monitor
+
+Once installed, you can run the monitor from any directory.
+
+#### Local Monitoring
+This is the simplest use case, monitoring a log file on the same machine.
+
+```bash
+# For a single node
+storj_monitor --node "My-Node:/path/to/storagenode.log"
+
+# For multiple nodes on the same machine
+storj_monitor --node "Node1:/path/to/node1.log" --node "Node2:/path/to/node2.log"
+```
+
+#### Remote Monitoring
+The monitor can connect to a simple TCP log stream from another machine. This requires a log forwarding utility on the storagenode machine (see `log_processor.py` included in this package) that streams new log lines to a network port.
+
+```bash
+# Example connecting to a remote node at 192.168.1.100 on port 9999
+storj_monitor --node "Remote-Node:192.168.1.100:9999"
+
+# You can seamlessly monitor a mix of local and remote nodes:
+storj_monitor \
+  --node "Local-Node:/var/log/localnode.log" \
+  --node "Remote-Node-1:192.168.1.100:9999"
+```
+
+After starting the server, view the dashboard by opening a web browser to `http://localhost:8765`.
+
+### 4. One-Time Log Ingestion
+
+To pre-populate the database with historical data, use the `--ingest-log` argument. This command parses an entire log file and exits without starting the web server.
 
 ```bash
 # Example: Ingest a log file for a node named "My-Node"
-uv run websies.py --ingest-log "My-Node:/path/to/storagenode.log"
-```
-
-Run this command for each node you plan to monitor. Once the ingestion is complete, you can start the monitor in the normal server mode, and all your historical data will be immediately visible in the dashboard.
-
-### Remote Monitoring with Log Forwarder
-
-If you want to run the dashboard on a separate server (e.g., a home server or VM) and monitor storagenodes running elsewhere, using the log forwarder is the recommended approach.
-
-While mounting the log file directory via NFS is an option, network latency and filesystem caching can batch log updates. This disrupts the high-resolution event timing required for the dashboard's smooth animations. The `log_forwarder.py` utility solves this problem by tailing the log file locally and streaming new entries with high-precision timestamps over a simple TCP connection.
-
-#### Step 1: On Each Storagenode Machine
-
-Run the lightweight `log_forwarder.py` script. It will watch the log file and listen for a connection from your main monitoring server.
-
-```bash
-# Example for a storagenode
-uv run log_forwarder.py --log-file /path/to/storagenode.log --port 9999
-```
-*   You can choose any available port.
-*   Ensure this port is accessible from your monitoring server (you may need to configure a firewall rule).
-
-#### Step 2: On the Monitoring Server
-
-Run the main `websies.py` application, but instead of a file path, provide the IP address and port of the storagenode running the forwarder.
-
-```bash
-# Example connecting to a storagenode at 192.168.1.100
-uv run websies.py --node "Remote-Node:192.168.1.100:9999"
-```
-
-You can seamlessly monitor a mix of local and remote nodes:
-```bash
-uv run websies.py \
-  --node "Local-Node:/var/log/localnode.log" \
-  --node "Remote-Node-1:192.168.1.100:9999" \
-  --node "Remote-Node-2:192.168.1.101:9999"
+storj_monitor --ingest-log "My-Node:/path/to/storagenode.log"
 ```
 
 ## Credits

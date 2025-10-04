@@ -135,8 +135,8 @@ async def handle_new_connection(log_file: str, reader: asyncio.StreamReader, wri
     try:
         # Wait for client to close the connection from their end
         await reader.read(1)
-    except (ConnectionResetError, asyncio.IncompleteReadError):
-        log.info(f"Client {peer_addr} connection reset.")
+    except (ConnectionResetError, asyncio.IncompleteReadError, TimeoutError):
+        log.info(f"Client {peer_addr} connection reset or timed out.")
     finally:
         if writer in CONNECTED_CLIENTS: CONNECTED_CLIENTS.remove(writer)
 

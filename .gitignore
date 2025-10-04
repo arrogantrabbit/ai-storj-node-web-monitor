@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Database
+*.db*
+
+# GeoIP Database
+GeoLite2-City.mmdb
+
+# IDE/Editor specific
+.idea/
+.vscode/
+
+# OS
+**/.DS_Store
+
+
+**/*.egg-info

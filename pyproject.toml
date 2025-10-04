@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "storj-pro-monitor"
+version = "1.0.0"
+requires-python = ">=3.9"
+dependencies = [
+  "aiohttp",
+  "geoip2",
+  "watchdog",
+]
+
+[project.scripts]
+storj_monitor = "storj_monitor.__main__:main"
+
+# This section tells setuptools to include data files specified
+# in the MANIFEST.in file when building the package.
+[tool.setuptools]
+include-package-data = true
