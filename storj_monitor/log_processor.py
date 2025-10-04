@@ -47,36 +47,35 @@ def parse_duration_str_to_seconds(duration_str: str) -> Optional[float]:
     if not isinstance(duration_str, str):
         return None
 
-    total_seconds = 0.0
     duration_str = duration_str.strip()
+    total_seconds = 0.0
 
-    # Regex to find all number-unit pairs in the string
-    pattern = re.compile(r'(\d+\.?\d*)\s*(h|m|s|ms)')
+    # This regex will find all number-unit pairs, like "1m", "37.5s", "500ms"
+    # IMPORTANT: 'ms' must come before 'm' in alternation to match correctly
+    pattern = re.compile(r'(\d+\.?\d*)\s*(ms|h|m|s)')
     matches = pattern.findall(duration_str)
 
-    if not matches and re.match(r'^\d+\.?\d*$', duration_str):
-        # Handle plain number, assume seconds
+    # If there are no unit matches, try to parse the whole string as a float (in seconds)
+    if not matches:
         try:
             return float(duration_str)
         except ValueError:
-            return None
-
-    if not matches:
-        return None
+            return None # Return None if it's not a simple float either
 
     try:
-        for value, unit in matches:
-            val = float(value)
+        for value_str, unit in matches:
+            value = float(value_str)
             if unit == 'h':
-                total_seconds += val * 3600
+                total_seconds += value * 3600
             elif unit == 'm':
-                total_seconds += val * 60
+                total_seconds += value * 60
             elif unit == 's':
-                total_seconds += val
+                total_seconds += value
             elif unit == 'ms':
-                total_seconds += val / 1000.0
+                total_seconds += value / 1000.0
         return total_seconds
     except (ValueError, TypeError):
+        # This will catch errors during float conversion if the regex somehow fails
         return None
 
 
