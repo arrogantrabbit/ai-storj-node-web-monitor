@@ -78,7 +78,7 @@ storj_monitor --node "Node1:/path/to/node1.log" --node "Node2:/path/to/node2.log
 ```
 
 #### Remote Monitoring
-The monitor can connect to a simple TCP log stream from another machine. This requires a log forwarding utility on the storagenode machine (see `log_processor.py` included in this package) that streams new log lines to a network port.
+The monitor can connect to a simple TCP log stream from another machine. This requires a log forwarding utility on the storagenode machine (see `log_forwarder.py` included in this package) that streams new log lines to a network port.
 
 ```bash
 # Example connecting to a remote node at 192.168.1.100 on port 9999
