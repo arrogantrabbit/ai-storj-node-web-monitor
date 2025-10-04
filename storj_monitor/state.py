@@ -43,10 +43,6 @@ class IncrementalStats:
     # Hot pieces tracking
     hot_pieces: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
-    # Time tracking
-    first_event_ts: Optional[Any] = None
-    last_event_ts: Optional[Any] = None
-
     # Last processed event index for incremental updates
     last_processed_index: int = 0
 
@@ -63,13 +59,6 @@ class IncrementalStats:
     def add_event(self, event: Dict[str, Any], TOKEN_REGEX: re.Pattern):
         """Add a single event to the running statistics."""
         from .log_processor import get_size_bucket
-        timestamp = event['timestamp']
-
-        # Update time tracking
-        if self.first_event_ts is None or timestamp < self.first_event_ts:
-            self.first_event_ts = timestamp
-        if self.last_event_ts is None or timestamp > self.last_event_ts:
-            self.last_event_ts = timestamp
 
         # Extract event data
         category = event['category']
@@ -206,7 +195,14 @@ class IncrementalStats:
                 elif event['category'] == 'put': self.live_ul_bytes += event['size']
 
     def to_payload(self, historical_stats: list[dict] = None) -> dict[str, any]:
-        """Convert stats to a JSON payload."""
+        """Convert stats to a JSON payload with sliding time window."""
+        import datetime
+        from .config import STATS_WINDOW_MINUTES
+        
+        # Calculate time range based on sliding window, not tracked events
+        last_event_ts = datetime.datetime.now(datetime.timezone.utc)
+        first_event_ts = last_event_ts - datetime.timedelta(minutes=STATS_WINDOW_MINUTES)
+        
         avg_egress_mbps = (self.live_dl_bytes * 8) / (60 * 1e6)
         avg_ingress_mbps = (self.live_ul_bytes * 8) / (60 * 1e6)
         satellites = sorted([{'satellite_id': k, **v} for k, v in self.satellites.items()],
@@ -232,8 +228,8 @@ class IncrementalStats:
         top_pieces = [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in
                       heapq.nlargest(10, self.hot_pieces.items(), key=lambda item: item[1]['count'])]
         return {"type": "stats_update",
-                "first_event_iso": self.first_event_ts.isoformat() if self.first_event_ts else None,
-                "last_event_iso": self.last_event_ts.isoformat() if self.last_event_ts else None,
+                "first_event_iso": first_event_ts.isoformat(),
+                "last_event_iso": last_event_ts.isoformat(),
                 "overall": {"dl_success": self.dl_success, "dl_fail": self.dl_fail, "ul_success": self.ul_success,
                             "ul_fail": self.ul_fail, "audit_success": self.audit_success, "audit_fail": self.audit_fail,
                             "avg_egress_mbps": avg_egress_mbps, "avg_ingress_mbps": avg_ingress_mbps},
