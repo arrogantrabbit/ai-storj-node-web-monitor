@@ -321,6 +321,11 @@ async def start_background_tasks(app):
     from .alert_manager import alert_evaluation_task
     app['tasks'].append(asyncio.create_task(alert_evaluation_task(app)))
     log.info("Alert evaluation task initialized")
+    
+    # Add financial tracking task (Phase 5.2)
+    from .financial_tracker import financial_polling_task
+    app['tasks'].append(asyncio.create_task(financial_polling_task(app)))
+    log.info("Financial tracking task initialized")
 
 
 async def cleanup_background_tasks(app):
