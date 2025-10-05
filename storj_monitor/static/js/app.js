@@ -29,6 +29,9 @@ let performanceState = {
     range: '5m', // 5m, 30m, 1h, 6h, 24h
     agg: 'sum' // sum, avg
 };
+let latencyState = {
+    range: '1h' // 30m, 1h, 6h, 12h, 24h
+};
 let cardVisibilityState = {};
 let livePerformanceBins = {};
 let maxHistoricalTimestampByView = {};
@@ -421,7 +424,7 @@ function processBatchedLogEntries(events) { if (!isCardVisible('map-card') || !e
 function processLivePerformanceUpdate(data) { const { node_name, bins } = data; const updateNodeBins = (targetNodeName) => { const maxTs = maxHistoricalTimestampByView[targetNodeName] || 0; if (!livePerformanceBins[targetNodeName]) { livePerformanceBins[targetNodeName] = {}; } const targetBins = livePerformanceBins[targetNodeName]; for (const ts in bins) { if (parseInt(ts, 10) <= maxTs) continue; if (!targetBins[ts]) { targetBins[ts] = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0 }; } const binData = bins[ts]; targetBins[ts].ingress_bytes += binData.ingress_bytes || 0; targetBins[ts].egress_bytes += binData.egress_bytes || 0; targetBins[ts].ingress_pieces += binData.ingress_pieces || 0; targetBins[ts].egress_pieces += binData.egress_pieces || 0; targetBins[ts].total_ops += binData.total_ops || 0; } const cutoff = Date.now() - (5 * 60 * 1000 + 5000); for (const ts in targetBins) { if (parseInt(ts, 10) < cutoff) delete targetBins[ts]; } }; updateNodeBins(node_name); updateNodeBins('Aggregate'); if (isCardVisible('performance-card') && performanceState.range === '5m') { const viewKey = currentNodeView.join(','); if (currentNodeView.length > 1 && currentNodeView.includes(node_name)) updateNodeBins(viewKey); clearTimeout(chartUpdateTimer); chartUpdateTimer = setTimeout(() => charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes), 250); } }
 
 // --- WebSocket Connection & Data Handling ---
-const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_reputation_data', view: currentNodeView })); ws.send(JSON.stringify({ type: 'get_latency_stats', view: currentNodeView, hours: 1 })); ws.send(JSON.stringify({ type: 'get_storage_data', view: currentNodeView })); } }, 1000); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update' && data.type !== 'log_entry_batch') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
+const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_reputation_data', view: currentNodeView })); const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range]; ws.send(JSON.stringify({ type: 'get_latency_stats', view: currentNodeView, hours: latencyHours })); ws.send(JSON.stringify({ type: 'get_storage_data', view: currentNodeView })); } }, 1000); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update' && data.type !== 'log_entry_batch') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
 function handleWebSocketMessage(data) {
     switch(data.type) {
         case 'init':
@@ -468,10 +471,11 @@ function handleWebSocketMessage(data) {
             updateLatencyCard(data.data);
             // Request histogram data
             if (ws && ws.readyState === WebSocket.OPEN) {
+                const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range];
                 ws.send(JSON.stringify({
                     type: 'get_latency_histogram',
                     view: currentNodeView,
-                    hours: 1
+                    hours: latencyHours
                 }));
             }
             break;
@@ -490,6 +494,23 @@ function setupEventListeners() {
     document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.view = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } });
     document.getElementById('time-range-toggles').addEventListener('click', function(e) { e.preventDefault(); const newRange = e.target.getAttribute('data-range'); if (newRange === performanceState.range) return; performanceState.range = newRange; document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.createPerformanceChart(performanceState); if (newRange === '5m') { charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } else { const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange]; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours })); } } });
     document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.agg = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } });
+    document.getElementById('latency-range-toggles').addEventListener('click', function(e) {
+        e.preventDefault();
+        const newRange = e.target.getAttribute('data-range');
+        if (!newRange || newRange === latencyState.range) return;
+        latencyState.range = newRange;
+        document.querySelectorAll('#latency-range-toggles .toggle-link').forEach(el => el.classList.remove('active'));
+        e.target.classList.add('active');
+        // Request latency data with new range
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            const hours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[newRange];
+            ws.send(JSON.stringify({
+                type: 'get_latency_stats',
+                view: currentNodeView,
+                hours: hours
+            }));
+        }
+    });
     document.getElementById('node-selector').addEventListener('click', function(e) {
         e.preventDefault();
         if (!e.target.hasAttribute('data-view')) return;
@@ -590,10 +611,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }));
             
             // Request latency stats every minute
+            const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range];
             ws.send(JSON.stringify({
                 type: 'get_latency_stats',
                 view: currentNodeView,
-                hours: 1
+                hours: latencyHours
             }));
             
             // Request storage data every 5 minutes
