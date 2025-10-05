@@ -127,11 +127,13 @@ async def incremental_stats_updater_task(app):
                         node_state = app_state['nodes'][node_name]
                         if node_state.get('has_new_events', False):
                             all_events = list(node_state['live_events'])
-                            if stats.last_processed_index < len(all_events):
-                                new_events = all_events[stats.last_processed_index:]
+                            # Get or initialize the last processed index for this node
+                            last_index = stats.last_processed_indices.get(node_name, 0)
+                            if last_index < len(all_events):
+                                new_events = all_events[last_index:]
                                 for event in new_events:
                                     stats.add_event(event, app_state['TOKEN_REGEX'])
-                                stats.last_processed_index = len(all_events)
+                                stats.last_processed_indices[node_name] = len(all_events)
                                 new_events_processed = True
 
                 if new_events_processed:
