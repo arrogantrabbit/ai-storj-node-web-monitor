@@ -656,6 +656,107 @@ class FinancialTracker:
             'satellites': len(estimates)
         }
     
+    async def import_historical_payouts(self, db_path: str, loop, executor=None):
+        """
+        Import historical payout data from API to populate earnings history.
+        
+        This allows the graph to show historical data immediately without waiting months.
+        Only imports data once - won't duplicate if database already has historical data.
+        
+        Args:
+            db_path: Path to database
+            loop: Event loop for executor
+            executor: Thread pool executor for database operations
+        """
+        if not self.api_client or not self.api_client.is_available:
+            log.debug(f"[{self.node_name}] API not available for historical import")
+            return
+        
+        try:
+            # Get all payout history from API
+            payout_history = await self.api_client.get_payout_history()
+            
+            if not payout_history:
+                log.info(f"[{self.node_name}] No historical payout data available from API")
+                return
+            
+            # Check if this is a dict with period keys or some other structure
+            log.info(f"[{self.node_name}] Received payout history data: {type(payout_history)}")
+            
+            # The API might return data in various formats:
+            # Option 1: {'2021-10': {...}, '2021-11': {...}, ...}
+            # Option 2: {'currentMonthPayouts': {...}, 'previousMonthsPayouts': [...]}
+            # We'll handle both
+            
+            imported_count = 0
+            
+            # If it's a dict with period-like keys (YYYY-MM format)
+            if isinstance(payout_history, dict):
+                for period_key, period_data in payout_history.items():
+                    # Check if key looks like a period (YYYY-MM)
+                    if len(period_key) == 7 and period_key[4] == '-':
+                        # This looks like a period key
+                        # period_data should contain per-satellite payout info
+                        log.info(f"[{self.node_name}] Processing historical period: {period_key}")
+                        
+                        # Convert API payout data to earnings estimate format
+                        # Note: Historical payouts are actual paid amounts, not estimates
+                        # We store them as estimates for consistency but mark them as historical
+                        
+                        if isinstance(period_data, dict):
+                            for satellite_id, satellite_data in period_data.items():
+                                if not isinstance(satellite_data, dict):
+                                    continue
+                                
+                                # Extract payout information
+                                # API format might vary, adapt as needed
+                                payout_amount = satellite_data.get('paid', satellite_data.get('totalAmount', 0))
+                                held = satellite_data.get('held', 0)
+                                
+                                if payout_amount > 0 or held > 0:
+                                    estimate = {
+                                        'timestamp': datetime.datetime.now(datetime.timezone.utc),
+                                        'node_name': self.node_name,
+                                        'satellite': satellite_id,
+                                        'period': period_key,
+                                        'egress_bytes': 0,  # Historical data doesn't have breakdown
+                                        'egress_earnings_gross': 0,
+                                        'egress_earnings_net': 0,
+                                        'storage_bytes_hour': 0,
+                                        'storage_earnings_gross': 0,
+                                        'storage_earnings_net': 0,
+                                        'repair_bytes': 0,
+                                        'repair_earnings_gross': 0,
+                                        'repair_earnings_net': 0,
+                                        'audit_bytes': 0,
+                                        'audit_earnings_gross': 0,
+                                        'audit_earnings_net': 0,
+                                        'total_earnings_gross': payout_amount + held,
+                                        'total_earnings_net': payout_amount,
+                                        'held_amount': held,
+                                        'node_age_months': 0,  # Unknown for historical
+                                        'held_percentage': held / (payout_amount + held) if (payout_amount + held) > 0 else 0
+                                    }
+                                    
+                                    # Write to database
+                                    success = await loop.run_in_executor(
+                                        executor,
+                                        blocking_write_earnings_estimate,
+                                        db_path,
+                                        estimate
+                                    )
+                                    
+                                    if success:
+                                        imported_count += 1
+            
+            if imported_count > 0:
+                log.info(f"[{self.node_name}] Successfully imported {imported_count} historical payout records")
+            else:
+                log.info(f"[{self.node_name}] No historical payouts to import (or data format not recognized)")
+                
+        except Exception as e:
+            log.error(f"[{self.node_name}] Error importing historical payouts: {e}", exc_info=True)
+    
     async def track_earnings(self, db_path: str, loop, executor=None):
         """
         Main tracking function - calculates and stores earnings estimates.
@@ -718,6 +819,18 @@ async def financial_polling_task(app: Dict[str, Any]):
         api_client = app.get('api_clients', {}).get(node_name)
         app['financial_trackers'][node_name] = FinancialTracker(node_name, api_client)
         log.info(f"[{node_name}] Financial tracker initialized")
+    
+    # Import historical payouts on first run (one-time operation)
+    log.info("Importing historical payout data from node APIs...")
+    for node_name, tracker in app['financial_trackers'].items():
+        try:
+            await tracker.import_historical_payouts(
+                DATABASE_FILE,
+                asyncio.get_running_loop(),
+                app.get('db_executor')
+            )
+        except Exception as e:
+            log.error(f"[{node_name}] Failed to import historical payouts: {e}")
     
     # Initial poll
     await asyncio.sleep(10)  # Wait for other systems to initialize

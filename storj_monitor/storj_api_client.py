@@ -156,11 +156,26 @@ class StorjNodeAPIClient:
     
     async def get_estimated_payout(self) -> Optional[Dict]:
         """
-        Get earnings estimates.
+        Get earnings estimates for current period.
         
         Returns dict with payout estimates per satellite.
         """
         return await self._get('/api/sno/estimated-payout')
+    
+    async def get_payout_history(self, period: Optional[str] = None) -> Optional[Dict]:
+        """
+        Get historical payout data.
+        
+        Args:
+            period: Optional period in YYYY-MM format. If not provided, returns all history.
+        
+        Returns dict with historical payouts per satellite.
+        API endpoint: /api/sno/payout (for current period) or /api/sno/payout?period=YYYY-MM
+        """
+        if period:
+            return await self._get(f'/api/sno/payout?period={period}')
+        else:
+            return await self._get('/api/sno/payout')
 
 
 async def auto_discover_api_endpoint(node_config: Dict[str, Any]) -> Optional[str]:
