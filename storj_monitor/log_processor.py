@@ -286,8 +286,12 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
                 log.debug(f"[{node_name}] Stored operation_start: action={parsed['action']}, piece={parsed['piece_id'][:16]}..., sat={parsed['satellite_id'][:12]}...")
                 
                 # Extract available space for storage tracking (from DEBUG logs)
+                # Only use log-based storage data if API is not available for this node
                 available_space = parsed.get('available_space')
-                if available_space:
+                api_clients = app.get('api_clients', {})
+                has_api = node_name in api_clients and api_clients[node_name].is_available
+                
+                if available_space and not has_api:
                     current_time = arrival_time
                     # Only sample storage every STORAGE_SAMPLE_INTERVAL seconds
                     if current_time - last_storage_sample_time >= STORAGE_SAMPLE_INTERVAL:
