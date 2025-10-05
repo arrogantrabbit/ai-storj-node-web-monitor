@@ -318,7 +318,17 @@ function updateStorageHealthCard(data) {
         document.getElementById('storage-days-until-full').textContent = 'N/A';
     }
     
-    // Request storage history for chart
+    // Request storage history for chart using the selected range
+    // Map UI range to days
+    const rangeToDays = {
+        '1d': 1,
+        '3d': 3,
+        '7d': 7,
+        '14d': 14,
+        '30d': 30
+    };
+    const daysToRequest = rangeToDays[storageState.range] || 7;
+    
     // For aggregate view or multi-node: request histories for all nodes
     // For single-node view: request history for that one node
     if (ws && ws.readyState === WebSocket.OPEN && data.length > 0) {
@@ -327,7 +337,7 @@ function updateStorageHealthCard(data) {
             ws.send(JSON.stringify({
                 type: 'get_storage_history',
                 node_name: currentNodeView[0],
-                days: 7
+                days: daysToRequest
             }));
         } else {
             // Aggregate or multi-node view - request all nodes' histories
@@ -335,7 +345,7 @@ function updateStorageHealthCard(data) {
                 ws.send(JSON.stringify({
                     type: 'get_storage_history',
                     node_name: node.node_name,
-                    days: 7
+                    days: daysToRequest
                 }));
             });
         }
@@ -673,12 +683,48 @@ function setupEventListeners() {
             updateStorageHealthCard(storageState.cachedData);
         }
         
-        // Still request fresh data from server for accuracy
+        // Request fresh data from server and chart history with new range
         if (ws && ws.readyState === WebSocket.OPEN) {
+            // Request storage data (for the summary stats)
             ws.send(JSON.stringify({
                 type: 'get_storage_data',
                 view: currentNodeView
             }));
+            
+            // Request storage history for the chart with the new range
+            const rangeToDays = {
+                '1d': 1,
+                '3d': 3,
+                '7d': 7,
+                '14d': 14,
+                '30d': 30
+            };
+            const daysToRequest = rangeToDays[newRange] || 7;
+            
+            // Clear storage history cache to force fresh data
+            if (typeof charts !== 'undefined' && charts.clearStorageHistoryCache) {
+                charts.clearStorageHistoryCache();
+            }
+            
+            if (currentNodeView.length === 1 && currentNodeView[0] !== 'Aggregate') {
+                // Single node view
+                ws.send(JSON.stringify({
+                    type: 'get_storage_history',
+                    node_name: currentNodeView[0],
+                    days: daysToRequest
+                }));
+            } else {
+                // Aggregate or multi-node view
+                const nodesToQuery = currentNodeView[0] === 'Aggregate' ?
+                    availableNodes : currentNodeView;
+                nodesToQuery.forEach(nodeName => {
+                    ws.send(JSON.stringify({
+                        type: 'get_storage_history',
+                        node_name: nodeName,
+                        days: daysToRequest
+                    }));
+                });
+            }
         }
     });
     document.getElementById('node-selector').addEventListener('click', function(e) {
