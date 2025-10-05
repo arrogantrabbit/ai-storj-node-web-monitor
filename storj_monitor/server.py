@@ -360,6 +360,89 @@ async def websocket_handler(request):
                             await ws.send_json(payload)
                         else:
                             await ws.send_json({"type": "alert_summary", "data": {"critical": 0, "warning": 0, "info": 0, "total": 0}})
+                    
+                    elif msg_type == 'get_earnings_data':
+                        # Phase 5.3: Get current earnings data
+                        view = data.get('view', ['Aggregate'])
+                        nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
+                        
+                        loop = asyncio.get_running_loop()
+                        from .config import DATABASE_FILE
+                        from .financial_tracker import SATELLITE_NAMES
+                        from .database import blocking_get_latest_earnings
+                        
+                        # Get current period
+                        import datetime
+                        now = datetime.datetime.now(datetime.timezone.utc)
+                        period = now.strftime('%Y-%m')
+                        
+                        earnings_data = await loop.run_in_executor(
+                            app['db_executor'],
+                            blocking_get_latest_earnings,
+                            DATABASE_FILE,
+                            nodes_to_query,
+                            period
+                        )
+                        
+                        # Format data with forecasts
+                        formatted_data = []
+                        for estimate in earnings_data:
+                            # Calculate forecast if tracker available
+                            tracker = app.get('financial_trackers', {}).get(estimate['node_name'])
+                            forecast_info = None
+                            if tracker:
+                                try:
+                                    forecast_info = await tracker.forecast_payout(DATABASE_FILE, period)
+                                except Exception as e:
+                                    log.error(f"Failed to get forecast for {estimate['node_name']}: {e}")
+                            
+                            sat_name = SATELLITE_NAMES.get(estimate['satellite'], estimate['satellite'][:8])
+                            
+                            formatted_data.append({
+                                'node_name': estimate['node_name'],
+                                'satellite': sat_name,
+                                'total_net': round(estimate['total_earnings_net'], 2),
+                                'total_gross': round(estimate['total_earnings_gross'], 2),
+                                'held_amount': round(estimate['held_amount'], 2),
+                                'breakdown': {
+                                    'egress': round(estimate['egress_earnings_net'], 2),
+                                    'storage': round(estimate['storage_earnings_net'], 2),
+                                    'repair': round(estimate['repair_earnings_net'], 2),
+                                    'audit': round(estimate['audit_earnings_net'], 2)
+                                },
+                                'forecast_month_end': round(forecast_info['forecasted_payout'], 2) if forecast_info else None,
+                                'confidence': round(forecast_info['confidence'], 2) if forecast_info else None
+                            })
+                        
+                        payload = {"type": "earnings_data", "data": formatted_data}
+                        await ws.send_json(payload)
+                    
+                    elif msg_type == 'get_earnings_history':
+                        # Phase 5.3: Get earnings history
+                        node_name = data.get('node_name')
+                        satellite = data.get('satellite')
+                        days = data.get('days', 30)
+                        
+                        if not node_name:
+                            await ws.send_json({"type": "error", "message": "node_name required"})
+                            continue
+                        
+                        loop = asyncio.get_running_loop()
+                        from .config import DATABASE_FILE
+                        from .database import blocking_get_earnings_estimates
+                        
+                        history_data = await loop.run_in_executor(
+                            app['db_executor'],
+                            blocking_get_earnings_estimates,
+                            DATABASE_FILE,
+                            [node_name],
+                            satellite,
+                            None,  # period
+                            days
+                        )
+                        
+                        payload = {"type": "earnings_history", "data": history_data}
+                        await ws.send_json(payload)
 
                 except Exception:
                     log.error("Could not parse websocket message:", exc_info=True)

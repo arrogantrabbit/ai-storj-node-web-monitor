@@ -605,7 +605,7 @@ class FinancialTracker:
 
 async def financial_polling_task(app: Dict[str, Any]):
     """
-    Background task that polls earnings data for all nodes.
+    Background task that polls earnings data for all nodes and broadcasts updates.
     
     Args:
         app: Application context
@@ -641,6 +641,9 @@ async def financial_polling_task(app: Dict[str, Any]):
                         exc_info=True
                     )
             
+            # Broadcast earnings update to all connected clients
+            await broadcast_earnings_update(app)
+            
             # Wait for next poll interval
             await asyncio.sleep(NODE_API_POLL_INTERVAL)
             
@@ -650,3 +653,73 @@ async def financial_polling_task(app: Dict[str, Any]):
         except Exception as e:
             log.error(f"Error in financial polling task: {e}", exc_info=True)
             await asyncio.sleep(60)  # Wait before retry on error
+
+
+async def broadcast_earnings_update(app: Dict[str, Any]):
+    """
+    Broadcast earnings updates to all connected WebSocket clients.
+    
+    Args:
+        app: Application context
+    """
+    try:
+        from .state import app_state
+        from .websocket_utils import robust_broadcast
+        
+        # Get current period
+        now = datetime.datetime.now(datetime.timezone.utc)
+        period = now.strftime('%Y-%m')
+        
+        # Get latest earnings for all nodes
+        loop = asyncio.get_running_loop()
+        node_names = list(app['nodes'].keys())
+        
+        earnings_data = await loop.run_in_executor(
+            None,
+            blocking_get_latest_earnings,
+            DATABASE_FILE,
+            node_names,
+            period
+        )
+        
+        if not earnings_data:
+            return
+        
+        # Format data for WebSocket transmission
+        formatted_data = []
+        for estimate in earnings_data:
+            # Calculate forecast
+            tracker = app['financial_trackers'].get(estimate['node_name'])
+            forecast_info = None
+            if tracker:
+                forecast_info = await tracker.forecast_payout(DATABASE_FILE, period)
+            
+            sat_name = SATELLITE_NAMES.get(estimate['satellite'], estimate['satellite'][:8])
+            
+            formatted_data.append({
+                'node_name': estimate['node_name'],
+                'satellite': sat_name,
+                'total_net': round(estimate['total_earnings_net'], 2),
+                'total_gross': round(estimate['total_earnings_gross'], 2),
+                'held_amount': round(estimate['held_amount'], 2),
+                'breakdown': {
+                    'egress': round(estimate['egress_earnings_net'], 2),
+                    'storage': round(estimate['storage_earnings_net'], 2),
+                    'repair': round(estimate['repair_earnings_net'], 2),
+                    'audit': round(estimate['audit_earnings_net'], 2)
+                },
+                'forecast_month_end': round(forecast_info['forecasted_payout'], 2) if forecast_info else None,
+                'confidence': round(forecast_info['confidence'], 2) if forecast_info else None
+            })
+        
+        # Broadcast to all clients
+        payload = {
+            'type': 'earnings_data',
+            'data': formatted_data
+        }
+        
+        await robust_broadcast(app_state['websockets'], payload)
+        log.debug(f"Broadcast earnings update with {len(formatted_data)} estimates")
+        
+    except Exception as e:
+        log.error(f"Failed to broadcast earnings update: {e}", exc_info=True)
