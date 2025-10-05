@@ -553,6 +553,24 @@ function setupEventListeners() {
             ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView }));
             if (performanceState.range !== '5m') { document.querySelector('#time-range-toggles [data-range="5m"]').click(); } else { ws.send(JSON.stringify({ type: 'get_historical_performance', view: currentNodeView, points: MAX_PERF_POINTS, interval_sec: PERFORMANCE_INTERVAL_MS / 1000 })); }
             requestHashstoreData();
+            
+            // Request Phase 3 enhanced monitoring data for new view
+            ws.send(JSON.stringify({
+                type: 'get_reputation_data',
+                view: currentNodeView
+            }));
+            
+            const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range];
+            ws.send(JSON.stringify({
+                type: 'get_latency_stats',
+                view: currentNodeView,
+                hours: latencyHours
+            }));
+            
+            ws.send(JSON.stringify({
+                type: 'get_storage_data',
+                view: currentNodeView
+            }));
         }
     });
     const mapCard = document.getElementById('map-card'), toggleMapSizeBtn = document.getElementById('toggle-map-size-btn');
