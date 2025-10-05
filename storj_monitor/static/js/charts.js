@@ -554,7 +554,8 @@ export function createEarningsHistoryChart() {
                     backgroundColor: 'rgba(34, 197, 94, 0.1)',
                     fill: true,
                     tension: 0.3,
-                    borderWidth: 2
+                    borderWidth: 2,
+                    spanGaps: false  // Don't interpolate through missing data
                 },
                 {
                     label: 'Held Amount',
@@ -563,7 +564,8 @@ export function createEarningsHistoryChart() {
                     backgroundColor: 'rgba(245, 158, 11, 0.1)',
                     fill: false,
                     tension: 0.3,
-                    borderWidth: 2
+                    borderWidth: 2,
+                    spanGaps: false  // Don't interpolate through missing data
                 },
                 {
                     label: 'Gross Earnings',
@@ -573,7 +575,8 @@ export function createEarningsHistoryChart() {
                     fill: false,
                     tension: 0.3,
                     borderWidth: 2,
-                    borderDash: [5, 5]
+                    borderDash: [5, 5],
+                    spanGaps: false  // Don't interpolate through missing data
                 }
             ]
         },
