@@ -846,6 +846,9 @@ def blocking_write_storage_snapshot(db_path: str, snapshot: Dict[str, Any]) -> b
     """
     Write storage snapshot to database.
     
+    Supports both complete snapshots (from API) and partial snapshots (from logs).
+    Log-based snapshots only have available_bytes, other fields may be None.
+    
     Args:
         db_path: Path to database file
         snapshot: Storage snapshot data
@@ -864,16 +867,17 @@ def blocking_write_storage_snapshot(db_path: str, snapshot: Dict[str, Any]) -> b
             ''', (
                 snapshot['timestamp'].isoformat(),
                 snapshot['node_name'],
-                snapshot['total_bytes'],
-                snapshot['used_bytes'],
-                snapshot['available_bytes'],
-                snapshot['trash_bytes'],
-                snapshot['used_percent'],
-                snapshot['trash_percent'],
-                snapshot['available_percent']
+                snapshot.get('total_bytes'),  # May be None for log-based snapshots
+                snapshot.get('used_bytes'),   # May be None for log-based snapshots
+                snapshot.get('available_bytes'),
+                snapshot.get('trash_bytes'),  # May be None for log-based snapshots
+                snapshot.get('used_percent'), # May be None for log-based snapshots
+                snapshot.get('trash_percent'),# May be None for log-based snapshots
+                snapshot.get('available_percent') # May be None for log-based snapshots
             ))
             conn.commit()
-        log.info(f"Successfully wrote storage snapshot for {snapshot['node_name']}")
+        source = snapshot.get('source', 'API')
+        log.info(f"Successfully wrote storage snapshot for {snapshot['node_name']} (source: {source})")
         return True
     except Exception:
         log.error("Failed to write storage snapshot to DB:", exc_info=True)

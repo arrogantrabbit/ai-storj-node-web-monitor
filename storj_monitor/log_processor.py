@@ -188,9 +188,15 @@ def parse_log_line(line: str, node_name: str, geoip_reader, geoip_cache: Dict) -
             piece_id = log_data.get("Piece ID")
             sat_id = log_data.get("Satellite ID")
             action = log_data.get("Action")
+            available_space = log_data.get("Available Space")
+            
             if all([piece_id, sat_id, action]):
-                return {"type": "operation_start", "piece_id": piece_id,
+                result = {"type": "operation_start", "piece_id": piece_id,
                        "satellite_id": sat_id, "action": action, "timestamp": timestamp_obj}
+                # Include available space if present for storage tracking
+                if available_space:
+                    result["available_space"] = available_space
+                return result
             return None
 
         # --- Original Traffic Log Processing ---
@@ -258,6 +264,12 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
     # Key: (piece_id, satellite_id, action) -> (arrival_time, timestamp_obj)
     operation_start_times = {}
     MAX_TRACKED_OPERATIONS = 10000  # Prevent memory growth
+    
+    # Track storage samples to avoid excessive writes
+    # Sample every 5 minutes to avoid database spam
+    last_storage_sample_time = 0
+    STORAGE_SAMPLE_INTERVAL = 300  # 5 minutes in seconds
+    last_available_space = None
 
     try:
         while True:
@@ -271,6 +283,46 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
                 key = (parsed['piece_id'], parsed['satellite_id'], parsed['action'])
                 operation_start_times[key] = (arrival_time, parsed['timestamp'])
                 log.debug(f"[{node_name}] Stored operation_start: action={parsed['action']}, piece={parsed['piece_id'][:16]}..., sat={parsed['satellite_id'][:12]}...")
+                
+                # Extract available space for storage tracking (from DEBUG logs)
+                available_space = parsed.get('available_space')
+                if available_space:
+                    current_time = arrival_time
+                    # Only sample storage every STORAGE_SAMPLE_INTERVAL seconds
+                    if current_time - last_storage_sample_time >= STORAGE_SAMPLE_INTERVAL:
+                        # Check if space has changed significantly (>1GB or first sample)
+                        if last_available_space is None or abs(available_space - last_available_space) > 1024**3:
+                            last_storage_sample_time = current_time
+                            last_available_space = available_space
+                            
+                            # Create storage snapshot from log data
+                            # Note: We only know available space, not used space from logs
+                            snapshot = {
+                                'timestamp': parsed['timestamp'],
+                                'node_name': node_name,
+                                'available_bytes': available_space,
+                                'total_bytes': None,  # Unknown from logs
+                                'used_bytes': None,  # Unknown from logs
+                                'trash_bytes': None,  # Unknown from logs
+                                'used_percent': None,  # Cannot calculate without total
+                                'trash_percent': None,  # Unknown from logs
+                                'available_percent': None,  # Cannot calculate without total
+                                'source': 'logs'  # Mark as coming from logs vs API
+                            }
+                            
+                            # Write to database
+                            from .config import DATABASE_FILE
+                            try:
+                                from .database import blocking_write_storage_snapshot
+                                await loop.run_in_executor(
+                                    app['db_executor'],
+                                    blocking_write_storage_snapshot,
+                                    DATABASE_FILE,
+                                    snapshot
+                                )
+                                log.info(f"[{node_name}] Sampled storage from logs: {available_space / (1024**4):.2f} TB available")
+                            except Exception as e:
+                                log.error(f"[{node_name}] Failed to write storage snapshot from logs: {e}")
                 
                 # Prevent unbounded growth
                 if len(operation_start_times) > MAX_TRACKED_OPERATIONS:
