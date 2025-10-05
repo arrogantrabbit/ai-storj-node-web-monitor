@@ -45,7 +45,19 @@ async def track_reputation(
         alerts = []
         timestamp = datetime.datetime.now(datetime.timezone.utc)
         
-        for sat_id, sat_data in satellites_data.items():
+        # The API returns a list of satellites directly
+        if isinstance(satellites_data, list):
+            satellites_list = satellites_data
+        else:
+            log.error(f"[{node_name}] Unexpected satellites data format: {type(satellites_data)}")
+            return None
+        
+        for sat_data in satellites_list:
+            # Extract satellite ID
+            sat_id = sat_data.get('id')
+            if not sat_id:
+                continue
+            
             # Extract reputation scores
             audit = sat_data.get('audit', {})
             suspension = sat_data.get('suspension', {})

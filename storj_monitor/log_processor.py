@@ -207,11 +207,20 @@ def parse_log_line(line: str, node_name: str, geoip_reader, geoip_cache: Dict) -
             if len(geoip_cache) > MAX_GEOIP_CACHE_SIZE: geoip_cache.pop(next(iter(geoip_cache)))
             geoip_cache[remote_ip] = location
 
+        # Phase 2.1: Extract operation duration for latency analytics
+        duration_ms = None
+        duration_str = log_data.get("duration")
+        if duration_str:
+            duration_seconds = parse_duration_str_to_seconds(duration_str)
+            if duration_seconds is not None:
+                duration_ms = int(duration_seconds * 1000)  # Convert to milliseconds
+
         event = {
             "ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj, "action": action,
             "status": status, "size": size, "piece_id": piece_id, "satellite_id": sat_id,
             "remote_ip": remote_ip, "location": location, "error_reason": error_reason,
-            "node_name": node_name, "category": categorize_action(action)
+            "node_name": node_name, "category": categorize_action(action),
+            "duration_ms": duration_ms  # Phase 2.1: Store operation duration
         }
         return {"type": "traffic_event", "data": event}
 

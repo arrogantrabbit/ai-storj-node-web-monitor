@@ -307,11 +307,14 @@ async def start_background_tasks(app):
         asyncio.create_task(database_pruner_task(app))
     ])
     
-    # Add reputation polling task if we have any API clients (Phase 1.3)
+    # Add reputation and storage polling tasks if we have any API clients
     if app['api_clients']:
         from .reputation_tracker import reputation_polling_task
-        log.info(f"Reputation monitoring enabled for {len(app['api_clients'])} node(s)")
-        app['tasks'].append(asyncio.create_task(reputation_polling_task(app)))
+        from .storage_tracker import storage_polling_task
+        
+        log.info(f"Enhanced monitoring enabled for {len(app['api_clients'])} node(s)")
+        app['tasks'].append(asyncio.create_task(reputation_polling_task(app)))  # Phase 1.3
+        app['tasks'].append(asyncio.create_task(storage_polling_task(app)))  # Phase 2.2
 
 
 async def cleanup_background_tasks(app):

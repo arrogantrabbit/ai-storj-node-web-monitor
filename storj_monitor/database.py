@@ -50,9 +50,15 @@ def init_db():
             cursor.execute("ALTER TABLE events ADD COLUMN node_name TEXT;")
             cursor.execute("UPDATE events SET node_name = 'default' WHERE node_name IS NULL;")
             log.info("'events' table upgrade complete.")
+        
+        # Phase 2.1: Add duration_ms column for latency analytics
+        if 'duration_ms' not in columns:
+            log.info("Upgrading 'events' table: Adding 'duration_ms' column for latency tracking...")
+            cursor.execute("ALTER TABLE events ADD COLUMN duration_ms INTEGER;")
+            log.info("'duration_ms' column added successfully.")
 
     cursor.execute(
-        'CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, timestamp DATETIME, action TEXT, status TEXT, size INTEGER, piece_id TEXT, satellite_id TEXT, remote_ip TEXT, country TEXT, latitude REAL, longitude REAL, error_reason TEXT, node_name TEXT)')
+        'CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, timestamp DATETIME, action TEXT, status TEXT, size INTEGER, piece_id TEXT, satellite_id TEXT, remote_ip TEXT, country TEXT, latitude REAL, longitude REAL, error_reason TEXT, node_name TEXT, duration_ms INTEGER)')
 
     # --- Schema migration for hourly_stats table ---
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='hourly_stats';")
@@ -121,6 +127,23 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_reputation_node_time ON reputation_history (node_name, timestamp);')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_reputation_satellite ON reputation_history (satellite);')
     
+    # --- Storage Snapshots Table (Phase 2.2) ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS storage_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME NOT NULL,
+            node_name TEXT NOT NULL,
+            total_bytes INTEGER,
+            used_bytes INTEGER,
+            available_bytes INTEGER,
+            trash_bytes INTEGER,
+            used_percent REAL,
+            trash_percent REAL,
+            available_percent REAL
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_storage_node_time ON storage_snapshots (node_name, timestamp);')
+    
     conn.commit()
     conn.close()
     log.info("Database schema is valid and ready.")
@@ -159,12 +182,12 @@ def blocking_db_batch_write(db_path: str, events: list):
             e['timestamp'].isoformat(), e['action'], e['status'], e['size'],
             e['piece_id'], e['satellite_id'], e['remote_ip'],
             loc['country'], loc['lat'], loc['lon'],
-            e['error_reason'], e['node_name']
+            e['error_reason'], e['node_name'], e.get('duration_ms')  # Phase 2.1: Include duration
         ))
 
     with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
         cursor = conn.cursor()
-        cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
+        cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
         conn.commit()
     log.info(f"Successfully wrote {len(events)} events to the database.")
 
@@ -756,4 +779,121 @@ def blocking_get_reputation_history(
             return [dict(row) for row in results]
     except Exception:
         log.error("Failed to get reputation history:", exc_info=True)
+        return []
+
+
+# --- Storage Tracking Functions (Phase 2.2) ---
+
+def blocking_write_storage_snapshot(db_path: str, snapshot: Dict[str, Any]) -> bool:
+    """
+    Write storage snapshot to database.
+    
+    Args:
+        db_path: Path to database file
+        snapshot: Storage snapshot data
+    
+    Returns:
+        True if successful
+    """
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO storage_snapshots
+                (timestamp, node_name, total_bytes, used_bytes, available_bytes, trash_bytes,
+                 used_percent, trash_percent, available_percent)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                snapshot['timestamp'].isoformat(),
+                snapshot['node_name'],
+                snapshot['total_bytes'],
+                snapshot['used_bytes'],
+                snapshot['available_bytes'],
+                snapshot['trash_bytes'],
+                snapshot['used_percent'],
+                snapshot['trash_percent'],
+                snapshot['available_percent']
+            ))
+            conn.commit()
+        log.info(f"Successfully wrote storage snapshot for {snapshot['node_name']}")
+        return True
+    except Exception:
+        log.error("Failed to write storage snapshot to DB:", exc_info=True)
+        return False
+
+
+def blocking_get_storage_history(
+    db_path: str,
+    node_name: str,
+    days: int = 7
+) -> List[Dict[str, Any]]:
+    """
+    Get storage history for a node.
+    
+    Args:
+        db_path: Path to database file
+        node_name: Name of the node
+        days: Number of days of history to retrieve
+    
+    Returns:
+        List of storage snapshots ordered by timestamp
+    """
+    try:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+        cutoff_iso = cutoff.isoformat()
+        
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            query = """
+                SELECT * FROM storage_snapshots
+                WHERE node_name = ? AND timestamp >= ?
+                ORDER BY timestamp ASC
+            """
+            results = conn.execute(query, (node_name, cutoff_iso)).fetchall()
+            return [dict(row) for row in results]
+    except Exception:
+        log.error("Failed to get storage history:", exc_info=True)
+        return []
+
+
+def blocking_get_latest_storage(
+    db_path: str,
+    node_names: List[str]
+) -> List[Dict[str, Any]]:
+    """
+    Get the most recent storage data for specified nodes.
+    
+    Args:
+        db_path: Path to database file
+        node_names: List of node names
+    
+    Returns:
+        List of latest storage snapshots
+    """
+    if not node_names:
+        return []
+    
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            placeholders = ','.join('?' for _ in node_names)
+            query = f"""
+                SELECT s1.*
+                FROM storage_snapshots s1
+                INNER JOIN (
+                    SELECT node_name, MAX(timestamp) as max_timestamp
+                    FROM storage_snapshots
+                    WHERE node_name IN ({placeholders})
+                    GROUP BY node_name
+                ) s2 ON s1.node_name = s2.node_name
+                    AND s1.timestamp = s2.max_timestamp
+                ORDER BY s1.node_name
+            """
+            
+            results = [dict(row) for row in conn.execute(query, node_names).fetchall()]
+            return results
+    except Exception:
+        log.error("Failed to get latest storage:", exc_info=True)
         return []

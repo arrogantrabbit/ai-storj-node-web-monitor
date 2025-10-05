@@ -38,6 +38,16 @@ AUDIT_SCORE_CRITICAL = 70.0  # Red alert
 SUSPENSION_SCORE_CRITICAL = 60.0  # Red alert - risk of suspension
 ONLINE_SCORE_WARNING = 95.0
 
+# --- Storage Capacity Thresholds (Phase 2.2) ---
+STORAGE_WARNING_PERCENT = 80  # 80% full
+STORAGE_CRITICAL_PERCENT = 95  # 95% full
+STORAGE_FORECAST_WARNING_DAYS = 30  # Alert if full within 30 days
+STORAGE_FORECAST_CRITICAL_DAYS = 7  # Critical if full within 7 days
+
+# --- Performance Thresholds (Phase 2.1) ---
+LATENCY_WARNING_MS = 5000  # 5 seconds
+LATENCY_CRITICAL_MS = 10000  # 10 seconds
+
 # --- Global Constants ---
 SATELLITE_NAMES = {'121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1',
                    '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1',

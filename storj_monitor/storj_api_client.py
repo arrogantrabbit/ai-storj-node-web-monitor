@@ -34,29 +34,45 @@ class StorjNodeAPIClient:
         
     async def start(self):
         """Initialize the API client and verify connectivity."""
-        self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=self.timeout)
-        )
-        
-        # Test connectivity
+        # Create session with redirect support (Storj API uses 301 redirects for trailing slash)
         try:
+            self.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+                connector=aiohttp.TCPConnector(limit=10),
+                raise_for_status=False  # Handle status codes manually
+            )
+            
+            # Test connectivity
             data = await self.get_dashboard()
+            
+            # Debug: Log what we received
+            log.debug(f"[{self.node_name}] API response type: {type(data)}")
             if data:
+                log.debug(f"[{self.node_name}] API response keys: {list(data.keys())[:10]}")
+            
+            if data and 'nodeID' in data:
                 self.is_available = True
                 node_id = data.get('nodeID', 'unknown')[:12]
                 wallet = data.get('wallet', 'unknown')[:12]
+                version = data.get('version', 'unknown')
                 log.info(
                     f"[{self.node_name}] API client connected to {self.api_endpoint} "
-                    f"(Node ID: {node_id}..., Wallet: {wallet}...)"
+                    f"(Node ID: {node_id}..., Wallet: {wallet}..., Version: {version})"
                 )
             else:
                 log.warning(
-                    f"[{self.node_name}] API endpoint responded but data format unexpected"
+                    f"[{self.node_name}] API endpoint responded but data format unexpected. "
+                    f"Data type: {type(data)}, Has nodeID: {data and 'nodeID' in data if data else 'No data'}"
                 )
+                self.is_available = False
         except Exception as e:
             self._last_error = str(e)
-            log.error(f"[{self.node_name}] Failed to connect to API: {e}")
+            log.error(f"[{self.node_name}] Failed to connect to API: {e}", exc_info=True)
             self.is_available = False
+            # Clean up session if initialization failed
+            if self.session:
+                await self.session.close()
+                self.session = None
     
     async def stop(self):
         """Clean up the API client."""
@@ -65,18 +81,36 @@ class StorjNodeAPIClient:
             log.info(f"[{self.node_name}] API client connection closed")
     
     async def _get(self, path: str) -> Optional[Dict[str, Any]]:
-        """Generic GET request to API endpoint."""
-        if not self.session or not self.is_available:
+        """Generic GET request to API endpoint with redirect support."""
+        if not self.session:
+            log.debug(f"[{self.node_name}] No session available for {path}")
             return None
         
+        # Note: During start(), is_available is not yet set, so we skip this check during init
+        # if not self.is_available:
+        #     return None
+        
+        # Ensure path has trailing slash (Storj API requirement)
+        if not path.endswith('/'):
+            path = path + '/'
+        
         url = f"{self.api_endpoint}{path}"
+        log.debug(f"[{self.node_name}] Requesting {url}")
+        
         try:
-            async with self.session.get(url) as resp:
+            # Allow redirects (Storj API uses 301 for trailing slash)
+            async with self.session.get(url, allow_redirects=True, max_redirects=2) as resp:
+                log.debug(f"[{self.node_name}] API status: {resp.status} for {url}")
+                
                 if resp.status == 200:
-                    return await resp.json()
+                    json_data = await resp.json()
+                    log.debug(f"[{self.node_name}] API returned JSON with {len(json_data)} keys")
+                    return json_data
                 else:
+                    response_text = await resp.text()
                     log.warning(
-                        f"[{self.node_name}] API returned status {resp.status} for {path}"
+                        f"[{self.node_name}] API returned status {resp.status} for {path}. "
+                        f"Response preview: {response_text[:200]}"
                     )
                     return None
         except asyncio.TimeoutError:
@@ -96,8 +130,7 @@ class StorjNodeAPIClient:
         """
         Get general dashboard data.
         
-        Returns dict with keys: nodeID, wallet, diskSpace, diskSpaceUsed, 
-        diskSpaceAvailable, bandwidth, etc.
+        Returns dict with keys: nodeID, wallet, diskSpace, satellites, bandwidth, etc.
         """
         return await self._get('/api/sno')
     

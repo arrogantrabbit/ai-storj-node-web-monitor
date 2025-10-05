@@ -211,6 +211,89 @@ async def websocket_handler(request):
                         )
                         payload = {"type": "reputation_data", "data": reputation_data}
                         await ws.send_json(payload)
+                    
+                    elif msg_type == 'get_latency_stats':
+                        # Phase 2.1: Get latency statistics
+                        view = data.get('view', ['Aggregate'])
+                        hours = data.get('hours', 1)
+                        nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
+                        
+                        loop = asyncio.get_running_loop()
+                        from .config import DATABASE_FILE
+                        from .performance_analyzer import blocking_get_latency_stats
+                        
+                        latency_data = await loop.run_in_executor(
+                            app['db_executor'],
+                            blocking_get_latency_stats,
+                            DATABASE_FILE,
+                            nodes_to_query,
+                            hours
+                        )
+                        payload = {"type": "latency_stats", "data": latency_data}
+                        await ws.send_json(payload)
+                    
+                    elif msg_type == 'get_latency_histogram':
+                        # Phase 2.1: Get latency histogram
+                        view = data.get('view', ['Aggregate'])
+                        hours = data.get('hours', 1)
+                        bucket_size = data.get('bucket_size_ms', 100)
+                        nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
+                        
+                        loop = asyncio.get_running_loop()
+                        from .config import DATABASE_FILE
+                        from .performance_analyzer import blocking_get_latency_histogram
+                        
+                        histogram_data = await loop.run_in_executor(
+                            app['db_executor'],
+                            blocking_get_latency_histogram,
+                            DATABASE_FILE,
+                            nodes_to_query,
+                            hours,
+                            bucket_size
+                        )
+                        payload = {"type": "latency_histogram", "data": histogram_data}
+                        await ws.send_json(payload)
+                    
+                    elif msg_type == 'get_storage_data':
+                        # Phase 2.2: Get current storage data
+                        view = data.get('view', ['Aggregate'])
+                        nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
+                        
+                        loop = asyncio.get_running_loop()
+                        from .config import DATABASE_FILE
+                        from .database import blocking_get_latest_storage
+                        
+                        storage_data = await loop.run_in_executor(
+                            app['db_executor'],
+                            blocking_get_latest_storage,
+                            DATABASE_FILE,
+                            nodes_to_query
+                        )
+                        payload = {"type": "storage_data", "data": storage_data}
+                        await ws.send_json(payload)
+                    
+                    elif msg_type == 'get_storage_history':
+                        # Phase 2.2: Get storage history
+                        node_name = data.get('node_name')
+                        days = data.get('days', 7)
+                        
+                        if not node_name:
+                            await ws.send_json({"type": "error", "message": "node_name required"})
+                            continue
+                        
+                        loop = asyncio.get_running_loop()
+                        from .config import DATABASE_FILE
+                        from .database import blocking_get_storage_history
+                        
+                        history_data = await loop.run_in_executor(
+                            app['db_executor'],
+                            blocking_get_storage_history,
+                            DATABASE_FILE,
+                            node_name,
+                            days
+                        )
+                        payload = {"type": "storage_history", "data": history_data}
+                        await ws.send_json(payload)
 
                 except Exception:
                     log.error("Could not parse websocket message:", exc_info=True)
