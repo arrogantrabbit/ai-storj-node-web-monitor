@@ -65,6 +65,24 @@ ENABLE_WEBHOOK_NOTIFICATIONS = False  # Enable webhook notifications (not implem
 DB_ALERTS_RETENTION_DAYS = 90  # How many days of alert history to keep
 DB_INSIGHTS_RETENTION_DAYS = 90  # How many days of insights to keep
 DB_ANALYTICS_RETENTION_DAYS = 180  # How many days of analytics baselines to keep
+# --- Financial Tracking Configuration (Phase 5) ---
+ENABLE_FINANCIAL_TRACKING = True  # Enable financial tracking and earnings calculations
+PRICING_EGRESS_PER_TB = 7.00  # USD per TB egress
+PRICING_STORAGE_PER_TB_MONTH = 1.50  # USD per TB-month storage
+PRICING_REPAIR_PER_TB = 10.00  # USD per TB repair traffic
+PRICING_AUDIT_PER_TB = 10.00  # USD per TB audit traffic
+OPERATOR_SHARE_EGRESS = 0.45  # 45% operator share for egress
+OPERATOR_SHARE_STORAGE = 0.50  # 50% operator share for storage
+OPERATOR_SHARE_REPAIR = 0.45  # 45% operator share for repair
+OPERATOR_SHARE_AUDIT = 0.45  # 45% operator share for audit
+HELD_AMOUNT_MONTHS_1_TO_3 = 0.75  # 75% held for months 1-3
+HELD_AMOUNT_MONTHS_4_TO_6 = 0.50  # 50% held for months 4-6
+HELD_AMOUNT_MONTHS_7_TO_9 = 0.25  # 25% held for months 7-9
+HELD_AMOUNT_MONTHS_10_TO_15 = 0.00  # 0% held for months 10-15
+HELD_AMOUNT_MONTH_16_PLUS = 0.00  # 0% held for month 16+, plus 50% of accumulated held amount returned
+NODE_MONTHLY_COSTS = {}  # Optional: {'node_name': monthly_cost_usd} for profitability analysis
+DB_EARNINGS_RETENTION_DAYS = 365  # How many days of earnings estimates to keep
+
 
 # --- Global Constants ---
 SATELLITE_NAMES = {'121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1',

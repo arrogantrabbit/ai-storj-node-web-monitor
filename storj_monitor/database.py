@@ -202,6 +202,58 @@ def init_db():
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_baselines_node_metric ON analytics_baselines (node_name, metric_name);')
     
+    # --- Earnings Estimates Table (Phase 5) ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS earnings_estimates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME NOT NULL,
+            node_name TEXT NOT NULL,
+            satellite TEXT NOT NULL,
+            period TEXT NOT NULL,
+            egress_bytes INTEGER,
+            egress_earnings_gross REAL,
+            egress_earnings_net REAL,
+            storage_bytes_hour INTEGER,
+            storage_earnings_gross REAL,
+            storage_earnings_net REAL,
+            repair_bytes INTEGER,
+            repair_earnings_gross REAL,
+            repair_earnings_net REAL,
+            audit_bytes INTEGER,
+            audit_earnings_gross REAL,
+            audit_earnings_net REAL,
+            total_earnings_gross REAL,
+            total_earnings_net REAL,
+            held_amount REAL,
+            node_age_months INTEGER,
+            held_percentage REAL
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_earnings_node_time ON earnings_estimates (node_name, timestamp);')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_earnings_satellite ON earnings_estimates (satellite);')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_earnings_period ON earnings_estimates (period, timestamp);')
+    
+    # --- Payout History Table (Phase 5) ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS payout_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME NOT NULL,
+            node_name TEXT NOT NULL,
+            satellite TEXT NOT NULL,
+            period TEXT NOT NULL,
+            actual_payout REAL NOT NULL,
+            estimated_payout REAL,
+            variance REAL,
+            variance_percent REAL,
+            payout_address TEXT,
+            transaction_hash TEXT,
+            notes TEXT
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_payout_node_time ON payout_history (node_name, timestamp);')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_payout_satellite ON payout_history (satellite);')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_payout_period ON payout_history (period);')
+    
     conn.commit()
     conn.close()
     log.info("Database schema is valid and ready.")
@@ -290,9 +342,35 @@ def blocking_hourly_aggregation(node_names: List[str]):
                 log.info(f"[AGGREGATOR] Wrote hourly stats for node '{node_name}' at {hour_start_iso}.")
 
 
-def blocking_db_prune(db_path, events_retention_days, hashstore_retention_days):
+def blocking_db_prune(db_path, events_retention_days, hashstore_retention_days,
+                     earnings_retention_days=None, alerts_retention_days=None,
+                     insights_retention_days=None, analytics_retention_days=None):
+    """
+    Prune old data from the database based on retention policies.
+    
+    Args:
+        db_path: Path to database file
+        events_retention_days: Days to retain event data
+        hashstore_retention_days: Days to retain hashstore compaction history
+        earnings_retention_days: Days to retain earnings estimates (defaults to config)
+        alerts_retention_days: Days to retain alerts (defaults to config)
+        insights_retention_days: Days to retain insights (defaults to config)
+        analytics_retention_days: Days to retain analytics baselines (defaults to config)
+    """
+    # Import retention settings from config
+    from .config import (DB_EARNINGS_RETENTION_DAYS, DB_ALERTS_RETENTION_DAYS,
+                        DB_INSIGHTS_RETENTION_DAYS, DB_ANALYTICS_RETENTION_DAYS)
+    
+    # Use config defaults if not specified
+    earnings_retention_days = earnings_retention_days or DB_EARNINGS_RETENTION_DAYS
+    alerts_retention_days = alerts_retention_days or DB_ALERTS_RETENTION_DAYS
+    insights_retention_days = insights_retention_days or DB_INSIGHTS_RETENTION_DAYS
+    analytics_retention_days = analytics_retention_days or DB_ANALYTICS_RETENTION_DAYS
+    
     log.info(
-        f"[DB_PRUNER] Starting database pruning task. Retaining last {events_retention_days} days of events and {hashstore_retention_days} days of compaction history.")
+        f"[DB_PRUNER] Starting database pruning task. Retention: events={events_retention_days}d, "
+        f"hashstore={hashstore_retention_days}d, earnings={earnings_retention_days}d, "
+        f"alerts={alerts_retention_days}d, insights={insights_retention_days}d, analytics={analytics_retention_days}d")
 
     with sqlite3.connect(db_path, timeout=30, detect_types=0) as conn:
         cursor = conn.cursor()
@@ -329,6 +407,70 @@ def blocking_db_prune(db_path, events_retention_days, hashstore_retention_days):
             log.info(f"Successfully pruned {count} old hashstore compaction record(s).")
         else:
             log.info("No old hashstore compaction records found to prune.")
+        
+        # Prune earnings_estimates table (Phase 5)
+        earnings_cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            days=earnings_retention_days)
+        earnings_cutoff_iso = earnings_cutoff_date.isoformat()
+        log.info(f"Finding earnings estimates older than {earnings_cutoff_iso} to delete...")
+        cursor.execute("SELECT COUNT(*) FROM earnings_estimates WHERE timestamp < ?", (earnings_cutoff_iso,))
+        count = cursor.fetchone()[0]
+
+        if count > 0:
+            log.warning(f"Deleting {count} old earnings estimate(s) from the database...")
+            cursor.execute("DELETE FROM earnings_estimates WHERE timestamp < ?", (earnings_cutoff_iso,))
+            conn.commit()
+            log.info(f"Successfully pruned {count} old earnings estimate(s).")
+        else:
+            log.info("No old earnings estimates found to prune.")
+        
+        # Prune alerts table (Phase 4)
+        alerts_cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            days=alerts_retention_days)
+        alerts_cutoff_iso = alerts_cutoff_date.isoformat()
+        log.info(f"Finding alerts older than {alerts_cutoff_iso} to delete...")
+        cursor.execute("SELECT COUNT(*) FROM alerts WHERE timestamp < ?", (alerts_cutoff_iso,))
+        count = cursor.fetchone()[0]
+
+        if count > 0:
+            log.warning(f"Deleting {count} old alert(s) from the database...")
+            cursor.execute("DELETE FROM alerts WHERE timestamp < ?", (alerts_cutoff_iso,))
+            conn.commit()
+            log.info(f"Successfully pruned {count} old alert(s).")
+        else:
+            log.info("No old alerts found to prune.")
+        
+        # Prune insights table (Phase 4)
+        insights_cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            days=insights_retention_days)
+        insights_cutoff_iso = insights_cutoff_date.isoformat()
+        log.info(f"Finding insights older than {insights_cutoff_iso} to delete...")
+        cursor.execute("SELECT COUNT(*) FROM insights WHERE timestamp < ?", (insights_cutoff_iso,))
+        count = cursor.fetchone()[0]
+
+        if count > 0:
+            log.warning(f"Deleting {count} old insight(s) from the database...")
+            cursor.execute("DELETE FROM insights WHERE timestamp < ?", (insights_cutoff_iso,))
+            conn.commit()
+            log.info(f"Successfully pruned {count} old insight(s).")
+        else:
+            log.info("No old insights found to prune.")
+        
+        # Prune analytics_baselines table (Phase 4) - based on last_updated
+        analytics_cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            days=analytics_retention_days)
+        analytics_cutoff_iso = analytics_cutoff_date.isoformat()
+        log.info(f"Finding analytics baselines older than {analytics_cutoff_iso} to delete...")
+        cursor.execute("SELECT COUNT(*) FROM analytics_baselines WHERE last_updated < ?", (analytics_cutoff_iso,))
+        count = cursor.fetchone()[0]
+
+        if count > 0:
+            log.warning(f"Deleting {count} old analytics baseline(s) from the database...")
+            cursor.execute("DELETE FROM analytics_baselines WHERE last_updated < ?", (analytics_cutoff_iso,))
+            conn.commit()
+            log.info(f"Successfully pruned {count} old analytics baseline(s).")
+        else:
+            log.info("No old analytics baselines found to prune.")
 
 
 def get_historical_stats(view: List[str], all_nodes_state: Dict[str, Any]) -> List[Dict]:
@@ -1398,4 +1540,268 @@ def blocking_get_latest_storage_with_forecast(
         
     except Exception:
         log.error("Failed to get latest storage with forecast:", exc_info=True)
+        return []
+
+
+# --- Financial Tracking Functions (Phase 5) ---
+
+def blocking_write_earnings_estimate(db_path: str, estimate: Dict[str, Any]) -> bool:
+    """
+    Write an earnings estimate to the database.
+    
+    Args:
+        db_path: Path to database file
+        estimate: Earnings estimate data dict
+    
+    Returns:
+        True if successful
+    """
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO earnings_estimates
+                (timestamp, node_name, satellite, period, egress_bytes, egress_earnings_gross,
+                 egress_earnings_net, storage_bytes_hour, storage_earnings_gross, storage_earnings_net,
+                 repair_bytes, repair_earnings_gross, repair_earnings_net, audit_bytes,
+                 audit_earnings_gross, audit_earnings_net, total_earnings_gross, total_earnings_net,
+                 held_amount, node_age_months, held_percentage)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                estimate['timestamp'].isoformat(),
+                estimate['node_name'],
+                estimate['satellite'],
+                estimate['period'],
+                estimate.get('egress_bytes'),
+                estimate.get('egress_earnings_gross'),
+                estimate.get('egress_earnings_net'),
+                estimate.get('storage_bytes_hour'),
+                estimate.get('storage_earnings_gross'),
+                estimate.get('storage_earnings_net'),
+                estimate.get('repair_bytes'),
+                estimate.get('repair_earnings_gross'),
+                estimate.get('repair_earnings_net'),
+                estimate.get('audit_bytes'),
+                estimate.get('audit_earnings_gross'),
+                estimate.get('audit_earnings_net'),
+                estimate.get('total_earnings_gross'),
+                estimate.get('total_earnings_net'),
+                estimate.get('held_amount'),
+                estimate.get('node_age_months'),
+                estimate.get('held_percentage')
+            ))
+            conn.commit()
+        log.info(f"Successfully wrote earnings estimate for {estimate['node_name']}/{estimate['satellite']}")
+        return True
+    except Exception:
+        log.error("Failed to write earnings estimate to DB:", exc_info=True)
+        return False
+
+
+def blocking_get_earnings_estimates(
+    db_path: str,
+    node_names: List[str] = None,
+    satellite: str = None,
+    period: str = None,
+    days: int = 30
+) -> List[Dict[str, Any]]:
+    """
+    Get earnings estimates with optional filters.
+    
+    Args:
+        db_path: Path to database file
+        node_names: Optional list of node names to filter
+        satellite: Optional satellite to filter
+        period: Optional period to filter (e.g., '2025-01')
+        days: Number of days of history to retrieve
+    
+    Returns:
+        List of earnings estimates
+    """
+    try:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+        cutoff_iso = cutoff.isoformat()
+        
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            where_clauses = ["timestamp >= ?"]
+            params = [cutoff_iso]
+            
+            if node_names:
+                placeholders = ','.join('?' for _ in node_names)
+                where_clauses.append(f"node_name IN ({placeholders})")
+                params.extend(node_names)
+            
+            if satellite:
+                where_clauses.append("satellite = ?")
+                params.append(satellite)
+            
+            if period:
+                where_clauses.append("period = ?")
+                params.append(period)
+            
+            query = f"""
+                SELECT * FROM earnings_estimates
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY timestamp DESC
+            """
+            
+            results = conn.execute(query, params).fetchall()
+            return [dict(row) for row in results]
+    except Exception:
+        log.error("Failed to get earnings estimates:", exc_info=True)
+        return []
+
+
+def blocking_get_latest_earnings(
+    db_path: str,
+    node_names: List[str],
+    period: str = None
+) -> List[Dict[str, Any]]:
+    """
+    Get the most recent earnings estimates for specified nodes.
+    
+    Args:
+        db_path: Path to database file
+        node_names: List of node names
+        period: Optional period filter (e.g., '2025-01' for current month)
+    
+    Returns:
+        List of latest earnings estimates per node per satellite
+    """
+    if not node_names:
+        return []
+    
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            placeholders = ','.join('?' for _ in node_names)
+            
+            if period:
+                query = f"""
+                    SELECT e1.*
+                    FROM earnings_estimates e1
+                    INNER JOIN (
+                        SELECT node_name, satellite, MAX(timestamp) as max_timestamp
+                        FROM earnings_estimates
+                        WHERE node_name IN ({placeholders}) AND period = ?
+                        GROUP BY node_name, satellite
+                    ) e2 ON e1.node_name = e2.node_name
+                        AND e1.satellite = e2.satellite
+                        AND e1.timestamp = e2.max_timestamp
+                    ORDER BY e1.node_name, e1.satellite
+                """
+                params = [*node_names, period]
+            else:
+                query = f"""
+                    SELECT e1.*
+                    FROM earnings_estimates e1
+                    INNER JOIN (
+                        SELECT node_name, satellite, MAX(timestamp) as max_timestamp
+                        FROM earnings_estimates
+                        WHERE node_name IN ({placeholders})
+                        GROUP BY node_name, satellite
+                    ) e2 ON e1.node_name = e2.node_name
+                        AND e1.satellite = e2.satellite
+                        AND e1.timestamp = e2.max_timestamp
+                    ORDER BY e1.node_name, e1.satellite
+                """
+                params = node_names
+            
+            results = [dict(row) for row in conn.execute(query, params).fetchall()]
+            return results
+    except Exception:
+        log.error("Failed to get latest earnings:", exc_info=True)
+        return []
+
+
+def blocking_write_payout_history(db_path: str, payout: Dict[str, Any]) -> bool:
+    """
+    Write a payout record to the database.
+    
+    Args:
+        db_path: Path to database file
+        payout: Payout data dict
+    
+    Returns:
+        True if successful
+    """
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO payout_history
+                (timestamp, node_name, satellite, period, actual_payout, estimated_payout,
+                 variance, variance_percent, payout_address, transaction_hash, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                payout['timestamp'].isoformat(),
+                payout['node_name'],
+                payout['satellite'],
+                payout['period'],
+                payout['actual_payout'],
+                payout.get('estimated_payout'),
+                payout.get('variance'),
+                payout.get('variance_percent'),
+                payout.get('payout_address'),
+                payout.get('transaction_hash'),
+                payout.get('notes')
+            ))
+            conn.commit()
+        log.info(f"Successfully wrote payout history for {payout['node_name']}/{payout['satellite']}")
+        return True
+    except Exception:
+        log.error("Failed to write payout history to DB:", exc_info=True)
+        return False
+
+
+def blocking_get_payout_history(
+    db_path: str,
+    node_names: List[str] = None,
+    satellite: str = None,
+    months: int = 12
+) -> List[Dict[str, Any]]:
+    """
+    Get payout history with optional filters.
+    
+    Args:
+        db_path: Path to database file
+        node_names: Optional list of node names to filter
+        satellite: Optional satellite to filter
+        months: Number of months of history to retrieve
+    
+    Returns:
+        List of payout records
+    """
+    try:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=months * 30)
+        cutoff_iso = cutoff.isoformat()
+        
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            where_clauses = ["timestamp >= ?"]
+            params = [cutoff_iso]
+            
+            if node_names:
+                placeholders = ','.join('?' for _ in node_names)
+                where_clauses.append(f"node_name IN ({placeholders})")
+                params.extend(node_names)
+            
+            if satellite:
+                where_clauses.append("satellite = ?")
+                params.append(satellite)
+            
+            query = f"""
+                SELECT * FROM payout_history
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY timestamp DESC
+            """
+            
+            results = conn.execute(query, params).fetchall()
+            return [dict(row) for row in results]
+    except Exception:
+        log.error("Failed to get payout history:", exc_info=True)
         return []
