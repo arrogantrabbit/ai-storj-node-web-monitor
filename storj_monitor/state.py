@@ -85,10 +85,14 @@ class IncrementalStats:
             # Update hot pieces
             piece_id = event['piece_id']
             if piece_id not in self.hot_pieces:
-                self.hot_pieces[piece_id] = {'count': 0, 'size': 0}
+                self.hot_pieces[piece_id] = {'count': 0, 'size': 0, 'total_transferred': 0}
             hot_piece = self.hot_pieces[piece_id]
             hot_piece['count'] += 1
-            hot_piece['size'] += size
+            # Track the maximum size seen for this piece (actual piece size)
+            if size > hot_piece['size']:
+                hot_piece['size'] = size
+            # Track cumulative data transferred for this piece
+            hot_piece['total_transferred'] += size
 
             # Update country stats
             country = event['location']['country']
@@ -225,7 +229,7 @@ class IncrementalStats:
                         range_str = f"[{count} unique address{'es' if count > 1 else ''}]"
                         final_msg = final_msg.replace('#', range_str, 1)
             final_errors.append({'reason': final_msg, 'count': data['count']})
-        top_pieces = [{'id': k, 'count': v['count'], 'size': v['size']} for k, v in
+        top_pieces = [{'id': k, 'count': v['count'], 'size': v['size'], 'total_transferred': v['total_transferred']} for k, v in
                       heapq.nlargest(10, self.hot_pieces.items(), key=lambda item: item[1]['count'])]
         return {"type": "stats_update",
                 "first_event_iso": first_event_ts.isoformat(),
