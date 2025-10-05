@@ -133,8 +133,8 @@ def detect_slow_operations(
                 'timestamp': event.get('timestamp'),
                 'action': event.get('action'),
                 'duration_ms': duration,
-                'piece_id': event.get('piece_id', '')[:25] + '...',
-                'satellite_id': event.get('satellite_id', '')[:12] + '...',
+                'piece_id': event.get('piece_id', ''),
+                'satellite_id': event.get('satellite_id', ''),
                 'status': event.get('status'),
                 'size': event.get('size'),
                 'node_name': event.get('node_name')

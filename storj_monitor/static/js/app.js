@@ -300,16 +300,18 @@ function updateLatencyCard(data) {
         tbody.innerHTML = data.slow_operations.map(op => {
             const satName = SATELLITE_NAMES[op.satellite_id] || op.satellite_id?.substring(0, 12) || 'Unknown';
             const time = new Date(op.timestamp).toLocaleTimeString();
+            const pieceId = op.piece_id ? (op.piece_id.length > 30 ? op.piece_id.substring(0, 30) + '...' : op.piece_id) : 'N/A';
             return `<tr>
                 <td>${time}</td>
                 <td>${op.action}</td>
                 <td class="numeric ${getLatencyClass(op.duration_ms)}">${formatMs(op.duration_ms)}</td>
                 <td>${satName}</td>
+                <td class="piece-id">${pieceId}</td>
                 <td>${op.status}</td>
             </tr>`;
         }).join('');
     } else {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No slow operations detected</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No slow operations detected</td></tr>';
     }
 }
 
