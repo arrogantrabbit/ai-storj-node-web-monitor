@@ -36,6 +36,7 @@ let storageState = {
     range: '7d', // 1d, 3d, 7d, 14d, 30d
     cachedData: null // Cache storage data for immediate range switching
 };
+window.storageState = storageState; // Make globally accessible for charts
 let cardVisibilityState = {};
 let livePerformanceBins = {};
 let maxHistoricalTimestampByView = {};

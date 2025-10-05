@@ -375,32 +375,60 @@ export function updateStorageHistoryChart(historyData) {
     storageHistoryChartInstance.data.datasets[1].hidden = !hasUsedData;
     storageHistoryChartInstance.data.datasets[2].hidden = !hasAvailableData;
     
-    // Dynamically adjust time unit and axis bounds based on data range
+    // HYBRID APPROACH: Adaptive axis behavior based on range selection
     if (sortedTimestamps.length > 0) {
         const firstTimestamp = sortedTimestamps[0];
         const lastTimestamp = sortedTimestamps[sortedTimestamps.length - 1];
-        const rangeMs = lastTimestamp - firstTimestamp;
-        const rangeDays = rangeMs / (1000 * 60 * 60 * 24);
+        const actualRangeMs = lastTimestamp - firstTimestamp;
+        const actualRangeDays = actualRangeMs / (1000 * 60 * 60 * 24);
         
-        // With sparse data (1-2 points), create an artificial time range for better display
-        if (sortedTimestamps.length <= 2 || rangeDays < 0.1) {
-            // For single or very close points, create a 6-hour window centered on the data
+        // Get the user's selected range from global state
+        const selectedRange = window.storageState?.range || '7d';
+        const selectedRangeDays = {
+            '1d': 1, '3d': 3, '7d': 7, '14d': 14, '30d': 30
+        }[selectedRange] || 7;
+        
+        // HYBRID STRATEGY:
+        // - For 1d: Zoom in on data (better detail)
+        // - For 3d+: Show full range (better context)
+        const shouldZoomIn = selectedRangeDays <= 1 && actualRangeDays < 0.1;
+        
+        if (shouldZoomIn) {
+            // SHORT RANGE MODE: Zoom in on sparse data for detail
             const centerTime = (firstTimestamp + lastTimestamp) / 2;
             const threeHours = 3 * 60 * 60 * 1000;
             storageHistoryChartInstance.options.scales.x.min = new Date(centerTime - threeHours);
             storageHistoryChartInstance.options.scales.x.max = new Date(centerTime + threeHours);
             storageHistoryChartInstance.options.scales.x.time.unit = 'hour';
             storageHistoryChartInstance.options.scales.x.ticks.stepSize = 1;
+        } else if (actualRangeDays < selectedRangeDays * 0.1) {
+            // LONG RANGE MODE: Show full selected range for context
+            const now = Date.now();
+            const rangeMs = selectedRangeDays * 24 * 60 * 60 * 1000;
+            storageHistoryChartInstance.options.scales.x.min = new Date(now - rangeMs);
+            storageHistoryChartInstance.options.scales.x.max = new Date(now);
+            
+            // Set appropriate time unit based on selected range
+            if (selectedRangeDays <= 3) {
+                storageHistoryChartInstance.options.scales.x.time.unit = 'day';
+                storageHistoryChartInstance.options.scales.x.ticks.stepSize = 1;
+            } else if (selectedRangeDays <= 14) {
+                storageHistoryChartInstance.options.scales.x.time.unit = 'day';
+                storageHistoryChartInstance.options.scales.x.ticks.stepSize = 2;
+            } else {
+                storageHistoryChartInstance.options.scales.x.time.unit = 'day';
+                storageHistoryChartInstance.options.scales.x.ticks.stepSize = Math.ceil(selectedRangeDays / 7);
+            }
         } else {
-            // Clear artificial bounds for real data ranges
+            // AUTO MODE: Data spans enough of the selected range
             storageHistoryChartInstance.options.scales.x.min = undefined;
             storageHistoryChartInstance.options.scales.x.max = undefined;
             storageHistoryChartInstance.options.scales.x.ticks.stepSize = undefined;
             
             // Adjust time unit based on actual data range
-            if (rangeDays < 1) {
+            if (actualRangeDays < 1) {
                 storageHistoryChartInstance.options.scales.x.time.unit = 'hour';
-            } else if (rangeDays < 7) {
+            } else if (actualRangeDays < 7) {
                 storageHistoryChartInstance.options.scales.x.time.unit = 'day';
             } else {
                 storageHistoryChartInstance.options.scales.x.time.unit = 'day';
