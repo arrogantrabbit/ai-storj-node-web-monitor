@@ -232,12 +232,22 @@ export function createStorageHistoryChart() {
                 x: {
                     type: 'time',
                     time: {
-                        unit: 'day',
-                        tooltipFormat: 'PP'
+                        unit: 'hour',
+                        displayFormats: {
+                            hour: 'MMM d, HH:mm',
+                            day: 'MMM d'
+                        },
+                        tooltipFormat: 'PP pp'
                     },
                     title: {
                         display: true,
                         text: 'Date'
+                    },
+                    ticks: {
+                        autoSkip: true,
+                        maxTicksLimit: 10,
+                        maxRotation: 45,
+                        minRotation: 0
                     }
                 },
                 y: {
@@ -297,16 +307,21 @@ export function updateStorageHistoryChart(historyData) {
     }
     
     // Aggregate data across selected nodes by timestamp
+    // Round timestamps to nearest 5 minutes to group data from different nodes
     const aggregatedData = {};
+    const BUCKET_SIZE_MS = 5 * 60 * 1000; // 5 minutes
     
     nodesToDisplay.forEach(nodeName => {
         const nodeHistory = storageHistoryByNode[nodeName];
         if (!nodeHistory) return;
         
         nodeHistory.forEach(item => {
-            const timestamp = new Date(item.timestamp).getTime();
-            if (!aggregatedData[timestamp]) {
-                aggregatedData[timestamp] = {
+            const rawTimestamp = new Date(item.timestamp).getTime();
+            // Round to nearest bucket (5-minute intervals)
+            const bucketedTimestamp = Math.round(rawTimestamp / BUCKET_SIZE_MS) * BUCKET_SIZE_MS;
+            
+            if (!aggregatedData[bucketedTimestamp]) {
+                aggregatedData[bucketedTimestamp] = {
                     used_bytes: 0,
                     trash_bytes: 0,
                     available_bytes: 0,
@@ -316,15 +331,15 @@ export function updateStorageHistoryChart(historyData) {
             }
             
             if (item.used_bytes != null) {
-                aggregatedData[timestamp].used_bytes += item.used_bytes;
-                aggregatedData[timestamp].hasUsedData = true;
+                aggregatedData[bucketedTimestamp].used_bytes += item.used_bytes;
+                aggregatedData[bucketedTimestamp].hasUsedData = true;
             }
             if (item.trash_bytes != null) {
-                aggregatedData[timestamp].trash_bytes += item.trash_bytes;
+                aggregatedData[bucketedTimestamp].trash_bytes += item.trash_bytes;
             }
             if (item.available_bytes != null) {
-                aggregatedData[timestamp].available_bytes += item.available_bytes;
-                aggregatedData[timestamp].hasAvailableData = true;
+                aggregatedData[bucketedTimestamp].available_bytes += item.available_bytes;
+                aggregatedData[bucketedTimestamp].hasAvailableData = true;
             }
         });
     });
@@ -359,6 +374,23 @@ export function updateStorageHistoryChart(historyData) {
     storageHistoryChartInstance.data.datasets[0].hidden = !hasUsedData;
     storageHistoryChartInstance.data.datasets[1].hidden = !hasUsedData;
     storageHistoryChartInstance.data.datasets[2].hidden = !hasAvailableData;
+    
+    // Dynamically adjust time unit based on data range
+    if (sortedTimestamps.length > 0) {
+        const firstTimestamp = sortedTimestamps[0];
+        const lastTimestamp = sortedTimestamps[sortedTimestamps.length - 1];
+        const rangeMs = lastTimestamp - firstTimestamp;
+        const rangeDays = rangeMs / (1000 * 60 * 60 * 24);
+        
+        // Adjust time unit based on actual data range
+        if (rangeDays < 1) {
+            storageHistoryChartInstance.options.scales.x.time.unit = 'hour';
+        } else if (rangeDays < 7) {
+            storageHistoryChartInstance.options.scales.x.time.unit = 'day';
+        } else {
+            storageHistoryChartInstance.options.scales.x.time.unit = 'day';
+        }
+    }
     
     storageHistoryChartInstance.update();
 }
