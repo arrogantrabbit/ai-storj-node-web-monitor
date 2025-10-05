@@ -536,19 +536,20 @@ function renderAlertsPanel() {
 
 // --- Phase 6: Financial Tracking Functions ---
 
-function calculateDaysUntilPayout() {
+function calculateDaysSinceLastPayout() {
     const now = new Date();
     const payoutDay = 10; // Payout on the 10th of each month
     const currentDay = now.getDate();
     
-    if (currentDay < payoutDay) {
-        // Payout is this month
-        return payoutDay - currentDay;
+    if (currentDay >= payoutDay) {
+        // Last payout was this month
+        return currentDay - payoutDay;
     } else {
-        // Payout is next month
-        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, payoutDay);
-        const diffTime = nextMonth - now;
-        return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        // Last payout was last month
+        const lastMonth = new Date(now.getFullYear(), now.getMonth(), payoutDay);
+        lastMonth.setMonth(lastMonth.getMonth() - 1);
+        const diffTime = now - lastMonth;
+        return Math.floor(diffTime / (1000 * 60 * 60 * 24));
     }
 }
 
@@ -663,6 +664,8 @@ function updateEarningsCard(data) {
         document.getElementById('earnings-held').textContent = '$0.00';
         document.getElementById('earnings-payout-days').textContent = '-- days';
         document.getElementById('satellite-earnings-list').innerHTML = '<p class="no-alerts-message">No earnings data available</p>';
+        // Clear breakdown bars when no data
+        updateEarningsBreakdown({ egress: 0, storage: 0, repair: 0, audit: 0 });
         return;
     }
     
@@ -689,11 +692,11 @@ function updateEarningsCard(data) {
     }
     document.getElementById('earnings-forecast').textContent = `$${forecast.toFixed(2)}`;
     
-    // Update days until payout
-    const daysUntilPayout = calculateDaysUntilPayout();
-    document.getElementById('earnings-payout-days').textContent = `${daysUntilPayout} days`;
+    // Update days since last payout
+    const daysSinceLastPayout = calculateDaysSinceLastPayout();
+    document.getElementById('earnings-payout-days').textContent = `${daysSinceLastPayout} days`;
     
-    // Update breakdown
+    // Update breakdown with actual data
     updateEarningsBreakdown({
         egress: aggregated.egress,
         storage: aggregated.storage,

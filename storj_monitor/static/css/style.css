@@ -887,6 +887,7 @@ body.map-maximized { overflow: hidden; }
 
 .breakdown-fill {
     height: 100%;
+    display: block;
     transition: width 0.3s ease;
 }
 

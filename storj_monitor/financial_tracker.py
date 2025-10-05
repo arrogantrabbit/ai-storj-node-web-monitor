@@ -116,8 +116,17 @@ class FinancialTracker:
                     now = datetime.datetime.now(datetime.timezone.utc)
                     months = (now.year - started_at.year) * 12 + (now.month - started_at.month)
                     self.node_start_date = started_at
-                    log.info(f"[{self.node_name}] Node age from API: {months} months")
-                    return max(1, months)  # At least 1 month
+                    
+                    # Calculate more accurate age including days
+                    days_diff = (now - started_at).days
+                    months = max(1, months)  # At least 1 month
+                    
+                    log.info(
+                        f"[{self.node_name}] Node started: {started_at.date()} "
+                        f"({days_diff} days ago = {months} months, held rate: "
+                        f"{self.calculate_held_percentage(months)*100:.0f}%)"
+                    )
+                    return months
             except Exception as e:
                 log.warning(f"[{self.node_name}] Could not get node age from API: {e}")
         
@@ -222,15 +231,23 @@ class FinancialTracker:
         
         estimates = []
         
-        # Always get satellites from database - API payout endpoint doesn't provide satellite-level breakdown
+        # Get satellites from database first (most reliable)
         satellites_to_process = await loop.run_in_executor(
             executor,
             self._get_satellites_from_db,
             db_path
         )
         
+        # If no satellites in database (new node), try to get from API
+        if not satellites_to_process and api_data:
+            # Try to extract satellites from API data
+            if 'currentMonthExpectations' in api_data:
+                satellites_to_process = list(api_data.get('currentMonthExpectations', {}).keys())
+                if satellites_to_process:
+                    log.info(f"[{self.node_name}] Using {len(satellites_to_process)} satellites from API (no events in DB yet)")
+        
         if not satellites_to_process:
-            log.warning(f"[{self.node_name}] No satellites found in database for earnings calculation")
+            log.warning(f"[{self.node_name}] No satellites found in database or API for earnings calculation")
             return []
         
         for satellite in satellites_to_process:
@@ -316,7 +333,10 @@ class FinancialTracker:
                     "SELECT DISTINCT satellite_id FROM events WHERE node_name = ?",
                     (self.node_name,)
                 )
-                return [row[0] for row in cursor.fetchall()]
+                satellites = [row[0] for row in cursor.fetchall()]
+                if satellites:
+                    log.debug(f"[{self.node_name}] Found {len(satellites)} satellites in database")
+                return satellites
         except Exception as e:
             log.error(f"[{self.node_name}] Failed to get satellites from DB: {e}")
             return []
@@ -409,7 +429,13 @@ class FinancialTracker:
         satellite: str,
         period: str
     ) -> Tuple[int, float, float]:
-        """Blocking wrapper for calculate_storage_earnings."""
+        """
+        Calculate storage earnings for a specific satellite by proportionally
+        allocating total storage earnings based on the satellite's share of traffic.
+        
+        Note: Storage snapshots are per-node, not per-satellite. We allocate
+        storage earnings proportionally based on each satellite's traffic share.
+        """
         import sqlite3
         import calendar
         try:
@@ -429,8 +455,8 @@ class FinancialTracker:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 
-                # Get storage snapshots for the period
-                query = """
+                # First, get total storage earnings for the node
+                query_snapshots = """
                     SELECT timestamp, used_bytes
                     FROM storage_snapshots
                     WHERE node_name = ?
@@ -441,25 +467,22 @@ class FinancialTracker:
                 """
                 
                 snapshots = cursor.execute(
-                    query,
+                    query_snapshots,
                     (self.node_name, period_start_iso, period_end_iso)
                 ).fetchall()
                 
                 if not snapshots:
                     return (0, 0.0, 0.0)
                 
-                # Calculate byte-hours using trapezoidal integration
+                # Calculate total byte-hours for the node
                 total_byte_hours = 0
                 for i in range(len(snapshots) - 1):
                     t1 = datetime.datetime.fromisoformat(snapshots[i]['timestamp'])
                     t2 = datetime.datetime.fromisoformat(snapshots[i + 1]['timestamp'])
                     hours_diff = (t2 - t1).total_seconds() / 3600
-                    
-                    # Average storage between snapshots (trapezoidal rule)
                     avg_bytes = (snapshots[i]['used_bytes'] + snapshots[i + 1]['used_bytes']) / 2
                     total_byte_hours += avg_bytes * hours_diff
                 
-                # Handle the last snapshot to end of period
                 if snapshots:
                     last_snapshot = snapshots[-1]
                     last_time = datetime.datetime.fromisoformat(last_snapshot['timestamp'])
@@ -467,17 +490,87 @@ class FinancialTracker:
                         hours_remaining = (period_end - last_time).total_seconds() / 3600
                         total_byte_hours += last_snapshot['used_bytes'] * hours_remaining
                 
-                # Convert to GB-hours
+                # Calculate total storage earnings
                 gb_hours = total_byte_hours / (1024 ** 3)
-                
-                # Calculate earnings
                 hours_in_month = days_in_month * 24
                 tb_months = gb_hours / (1024 * hours_in_month)
+                total_storage_gross = tb_months * PRICING_STORAGE_PER_TB_MONTH
+                total_storage_net = total_storage_gross * OPERATOR_SHARE_STORAGE
                 
-                storage_gross = tb_months * PRICING_STORAGE_PER_TB_MONTH
-                storage_net = storage_gross * OPERATOR_SHARE_STORAGE
+                # Get this satellite's traffic share to proportionally allocate storage
+                query_satellite_traffic = """
+                    SELECT SUM(size) as satellite_bytes
+                    FROM events
+                    WHERE node_name = ?
+                        AND satellite_id = ?
+                        AND timestamp >= ?
+                        AND timestamp < ?
+                        AND status = 'success'
+                """
                 
-                return (int(total_byte_hours), storage_gross, storage_net)
+                satellite_result = cursor.execute(
+                    query_satellite_traffic,
+                    (self.node_name, satellite, period_start_iso, period_end_iso)
+                ).fetchone()
+                
+                satellite_bytes = satellite_result['satellite_bytes'] or 0
+                
+                # Get total traffic for all satellites
+                query_total_traffic = """
+                    SELECT SUM(size) as total_bytes
+                    FROM events
+                    WHERE node_name = ?
+                        AND timestamp >= ?
+                        AND timestamp < ?
+                        AND status = 'success'
+                """
+                
+                total_result = cursor.execute(
+                    query_total_traffic,
+                    (self.node_name, period_start_iso, period_end_iso)
+                ).fetchone()
+                
+                total_bytes = total_result['total_bytes'] or 0
+                
+                # Calculate proportional allocation
+                if total_bytes > 0:
+                    proportion = satellite_bytes / total_bytes
+                    allocated_gross = total_storage_gross * proportion
+                    allocated_net = total_storage_net * proportion
+                    allocated_byte_hours = int(total_byte_hours * proportion)
+                    
+                    log.debug(
+                        f"[{self.node_name}] Storage allocation for {SATELLITE_NAMES.get(satellite, satellite[:8])}: "
+                        f"{proportion:.1%} ({satellite_bytes / (1024**4):.2f} TB / {total_bytes / (1024**4):.2f} TB) = "
+                        f"${allocated_net:.4f}"
+                    )
+                else:
+                    # No traffic data - split evenly across satellites found
+                    # This is a fallback for very new nodes
+                    query_satellite_count = """
+                        SELECT COUNT(DISTINCT satellite_id) as sat_count
+                        FROM events
+                        WHERE node_name = ?
+                            AND timestamp >= ?
+                            AND timestamp < ?
+                    """
+                    count_result = cursor.execute(
+                        query_satellite_count,
+                        (self.node_name, period_start_iso, period_end_iso)
+                    ).fetchone()
+                    
+                    sat_count = count_result['sat_count'] or 1
+                    proportion = 1.0 / max(sat_count, 1)
+                    allocated_gross = total_storage_gross * proportion
+                    allocated_net = total_storage_net * proportion
+                    allocated_byte_hours = int(total_byte_hours * proportion)
+                    
+                    log.debug(
+                        f"[{self.node_name}] Storage allocation for {SATELLITE_NAMES.get(satellite, satellite[:8])}: "
+                        f"equal split ({proportion:.1%}) = ${allocated_net:.4f}"
+                    )
+                
+                return (allocated_byte_hours, allocated_gross, allocated_net)
                 
         except Exception as e:
             log.error(f"[{self.node_name}] Failed to calculate storage earnings: {e}")
@@ -577,7 +670,7 @@ class FinancialTracker:
             now = datetime.datetime.now(datetime.timezone.utc)
             period = now.strftime('%Y-%m')
             
-            estimates = await self.calculate_monthly_earnings(db_path, period, loop)
+            estimates = await self.calculate_monthly_earnings(db_path, period, loop, executor)
             
             if estimates:
                 # Write estimates to database
@@ -598,7 +691,7 @@ class FinancialTracker:
                 
                 self.last_poll_time = now
             else:
-                log.warning(f"[{self.node_name}] No earnings estimates calculated")
+                log.warning(f"[{self.node_name}] No earnings estimates calculated - possibly no events in database yet")
                 
         except Exception as e:
             log.error(f"[{self.node_name}] Error tracking earnings: {e}", exc_info=True)
