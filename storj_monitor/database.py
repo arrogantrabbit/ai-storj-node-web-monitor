@@ -3,7 +3,7 @@ import logging
 import datetime
 from typing import List, Dict, Any, Optional
 import json
-from .config import DATABASE_FILE, DB_EVENTS_RETENTION_DAYS, DB_HASHSTORE_RETENTION_DAYS, HISTORICAL_HOURS_TO_SHOW
+from .config import DATABASE_FILE, HISTORICAL_HOURS_TO_SHOW
 
 log = logging.getLogger("StorjMonitor.Database")
 
@@ -400,10 +400,10 @@ def blocking_get_historical_performance(events: List[Dict[str, Any]], points: in
         if event.get('status') == 'success':
             category, size = event.get('category'), event.get('size', 0)
             if category == 'get':
-                bucket['egress_bytes'] += size;
+                bucket['egress_bytes'] += size
                 bucket['egress_pieces'] += 1
             elif category == 'put':
-                bucket['ingress_bytes'] += size;
+                bucket['ingress_bytes'] += size
                 bucket['ingress_pieces'] += 1
 
     sparse_results = []
@@ -470,7 +470,7 @@ def blocking_get_aggregated_performance(node_names: List[str], time_window_hours
 
     sparse_results = []
     with sqlite3.connect(DATABASE_FILE, timeout=20, detect_types=0) as conn:
-        conn.row_factory = sqlite3.Row;
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         if time_window_hours > 6:
             query = f"""
@@ -683,7 +683,7 @@ def load_initial_state_from_db(nodes_config: Dict[str, Dict[str, Any]]):
                     node_state['live_events'].append(event)
                     rehydrated_events += 1
                 except Exception:
-                    log.error(f"Failed to process a database row for re-hydration.", exc_info=True)
+                    log.error("Failed to process a database row for re-hydration.", exc_info=True)
 
             initial_state[node_name] = node_state
     return initial_state

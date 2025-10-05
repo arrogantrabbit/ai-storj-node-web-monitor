@@ -6,8 +6,7 @@ Manages alert generation, evaluation, and notification.
 import asyncio
 import logging
 import datetime
-from typing import Dict, List, Any, Optional, Set
-from collections import deque
+from typing import Dict, List, Any, Optional
 
 log = logging.getLogger("StorjMonitor.AlertManager")
 
@@ -252,7 +251,7 @@ class AlertManager:
                     'storage_critical',
                     'critical',
                     f'Storage Critical: {used_percent:.1f}% Full',
-                    f'Storage is critically full. Add capacity immediately to avoid service interruption.',
+                    'Storage is critically full. Add capacity immediately to avoid service interruption.',
                     {'used_percent': used_percent}
                 )
             elif used_percent >= STORAGE_WARNING_PERCENT:
@@ -261,7 +260,7 @@ class AlertManager:
                     'storage_warning',
                     'warning',
                     f'Storage Warning: {used_percent:.1f}% Full',
-                    f'Storage is approaching capacity. Consider adding more disk space.',
+                    'Storage is approaching capacity. Consider adding more disk space.',
                     {'used_percent': used_percent}
                 )
             
@@ -289,7 +288,7 @@ class AlertManager:
                         'latency_critical',
                         'critical',
                         f'Critical Latency: {p99:.0f}ms',
-                        f'P99 latency is critically high. Check system resources and network.',
+                        'P99 latency is critically high. Check system resources and network.',
                         {'p99_ms': p99}
                     )
                 elif p99 >= LATENCY_WARNING_MS:
@@ -298,7 +297,7 @@ class AlertManager:
                         'latency_warning',
                         'warning',
                         f'High Latency: {p99:.0f}ms',
-                        f'P99 latency is elevated. Monitor for performance issues.',
+                        'P99 latency is elevated. Monitor for performance issues.',
                         {'p99_ms': p99}
                     )
             

@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import time
-from datetime import timedelta
 
 from .state import app_state
 from .config import DB_WRITE_BATCH_INTERVAL_SECONDS, STATS_WINDOW_MINUTES, HOURLY_AGG_INTERVAL_MINUTES, \

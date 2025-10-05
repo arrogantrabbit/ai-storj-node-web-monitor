@@ -12,7 +12,6 @@ from .state import app_state
 from .tasks import start_background_tasks, cleanup_background_tasks
 from . import database
 from .config import SERVER_HOST, SERVER_PORT, PERFORMANCE_INTERVAL_SECONDS
-from .websocket_utils import robust_broadcast
 
 log = logging.getLogger("StorjMonitor.Server")
 

@@ -3,7 +3,6 @@ Anomaly Detection for Storj Node Monitor - Phase 4
 Detects unusual patterns and behaviors in node operations.
 """
 
-import asyncio
 import logging
 import datetime
 from typing import Dict, List, Any, Optional
@@ -254,7 +253,7 @@ class AnomalyDetector:
                         'node_name': node_name,
                         'insight_type': 'latency_spike',
                         'severity': anomaly['severity'],
-                        'title': f'Latency Spike Detected',
+                        'title': 'Latency Spike Detected',
                         'description': f'Median latency is unusually high: {p50:.0f}ms (Z-score: {anomaly["z_score"]:.2f})',
                         'category': 'performance',
                         'confidence': anomaly['confidence'],
@@ -310,7 +309,7 @@ class AnomalyDetector:
                             'node_name': node_name,
                             'insight_type': 'bandwidth_spike',
                             'severity': 'info',
-                            'title': f'Unusual Egress Activity',
+                            'title': 'Unusual Egress Activity',
                             'description': f'Egress bandwidth is unusually high: {egress_mbps:.2f} Mbps',
                             'category': 'bandwidth',
                             'confidence': anomaly['confidence'],
@@ -325,7 +324,7 @@ class AnomalyDetector:
                             'node_name': node_name,
                             'insight_type': 'bandwidth_drop',
                             'severity': 'warning',
-                            'title': f'Low Egress Activity',
+                            'title': 'Low Egress Activity',
                             'description': f'Egress bandwidth is unusually low: {egress_mbps:.2f} Mbps',
                             'category': 'bandwidth',
                             'confidence': anomaly['confidence'],
@@ -351,7 +350,7 @@ class AnomalyDetector:
                         'node_name': node_name,
                         'insight_type': 'upload_activity_drop',
                         'severity': 'info',
-                        'title': f'Reduced Upload Activity',
+                        'title': 'Reduced Upload Activity',
                         'description': f'Ingress bandwidth is unusually low: {ingress_mbps:.2f} Mbps',
                         'category': 'bandwidth',
                         'confidence': anomaly['confidence'],

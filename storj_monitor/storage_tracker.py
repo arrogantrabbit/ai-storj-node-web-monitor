@@ -8,8 +8,7 @@ downtime from full disks.
 import asyncio
 import logging
 import datetime
-from typing import Dict, Any, List, Optional
-import statistics
+from typing import Dict, Any, Optional
 
 from .config import (
     NODE_API_POLL_INTERVAL,

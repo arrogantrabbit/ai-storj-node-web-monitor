@@ -6,7 +6,7 @@ import os
 import re
 import threading
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 import geoip2.database
 from watchdog.observers import Observer
@@ -381,7 +381,7 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
                     app_state['websocket_event_queue'].append(websocket_event)
 
                 if app_state['db_write_queue'].full():
-                    log.warning(f"Database write queue is full. Pausing log processing to allow DB to catch up.")
+                    log.warning("Database write queue is full. Pausing log processing to allow DB to catch up.")
                 await app_state['db_write_queue'].put(event)
 
             elif parsed['type'] == 'hashstore_begin':
@@ -465,20 +465,20 @@ def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queu
                 st = os.stat(log_path)
                 if st.st_ino != current_inode:
                     log.warning(f"Log rotation by inode change detected for '{log_path}'. Re-opening.")
-                    f.close();
-                    f = None;
+                    f.close()
+                    f = None
                     continue
                 if f.tell() > st.st_size:
                     log.warning(f"Log truncation detected for '{log_path}'. Seeking to start.")
                     f.seek(0)
             except FileNotFoundError:
                 log.warning(f"Log file '{log_path}' disappeared. Will attempt to re-open.")
-                f.close();
+                f.close()
                 f = None
             except Exception as e:
                 log.error(f"Error checking log status for '{log_path}': {e}. Re-opening.", exc_info=True)
-                f.close();
-                f = None;
+                f.close()
+                f = None
                 shutdown_event.wait(5)
     finally:
         observer.stop()

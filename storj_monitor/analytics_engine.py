@@ -8,7 +8,6 @@ import logging
 import datetime
 from typing import Dict, List, Any, Optional, Tuple
 import statistics
-import math
 
 log = logging.getLogger("StorjMonitor.Analytics")
 

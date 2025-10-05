@@ -240,7 +240,7 @@ def ingest_log_file(node_name: str, log_path: str):
             success = database.blocking_write_storage_snapshot(config.DATABASE_FILE, snapshot)
             if not success:
                 log.error(f"Failed to write storage snapshot at {snapshot['timestamp']}")
-        log.info(f"Storage snapshots written successfully.")
+        log.info("Storage snapshots written successfully.")
     else:
         log.warning("No storage snapshots were collected during ingestion. This might mean:")
         log.warning("  1. The log file doesn't contain DEBUG-level entries with 'Available Space'")

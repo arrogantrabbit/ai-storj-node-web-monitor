@@ -6,10 +6,9 @@ and slow operations.
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import statistics
 
-from .config import DATABASE_FILE
 
 log = logging.getLogger("StorjMonitor.PerformanceAnalyzer")
 

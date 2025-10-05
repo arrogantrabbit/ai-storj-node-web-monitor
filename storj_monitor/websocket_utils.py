@@ -2,7 +2,6 @@ import asyncio
 import logging
 from typing import Optional
 
-from .state import app_state
 
 log = logging.getLogger("StorjMonitor.WebsocketUtils")
 
