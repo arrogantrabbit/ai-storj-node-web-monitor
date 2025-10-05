@@ -326,20 +326,49 @@ export function updateStorageHistoryChart(historyData) {
                     trash_bytes: 0,
                     available_bytes: 0,
                     hasUsedData: false,
-                    hasAvailableData: false
+                    hasAvailableData: false,
+                    nodeData: {}  // Track latest value per node to avoid double-counting
                 };
             }
             
-            if (item.used_bytes != null) {
-                aggregatedData[bucketedTimestamp].used_bytes += item.used_bytes;
-                aggregatedData[bucketedTimestamp].hasUsedData = true;
-            }
-            if (item.trash_bytes != null) {
-                aggregatedData[bucketedTimestamp].trash_bytes += item.trash_bytes;
-            }
-            if (item.available_bytes != null) {
-                aggregatedData[bucketedTimestamp].available_bytes += item.available_bytes;
-                aggregatedData[bucketedTimestamp].hasAvailableData = true;
+            const bucket = aggregatedData[bucketedTimestamp];
+            
+            // For each node, only keep the LATEST snapshot in this bucket
+            if (!bucket.nodeData[nodeName] || rawTimestamp > bucket.nodeData[nodeName].timestamp) {
+                // If we already had data for this node in this bucket, subtract it first
+                if (bucket.nodeData[nodeName]) {
+                    const oldData = bucket.nodeData[nodeName];
+                    if (oldData.used_bytes != null) {
+                        bucket.used_bytes -= oldData.used_bytes;
+                    }
+                    if (oldData.trash_bytes != null) {
+                        bucket.trash_bytes -= oldData.trash_bytes;
+                    }
+                    if (oldData.available_bytes != null) {
+                        bucket.available_bytes -= oldData.available_bytes;
+                    }
+                }
+                
+                // Store this snapshot for this node
+                bucket.nodeData[nodeName] = {
+                    timestamp: rawTimestamp,
+                    used_bytes: item.used_bytes,
+                    trash_bytes: item.trash_bytes,
+                    available_bytes: item.available_bytes
+                };
+                
+                // Add new data
+                if (item.used_bytes != null) {
+                    bucket.used_bytes += item.used_bytes;
+                    bucket.hasUsedData = true;
+                }
+                if (item.trash_bytes != null) {
+                    bucket.trash_bytes += item.trash_bytes;
+                }
+                if (item.available_bytes != null) {
+                    bucket.available_bytes += item.available_bytes;
+                    bucket.hasAvailableData = true;
+                }
             }
         });
     });
