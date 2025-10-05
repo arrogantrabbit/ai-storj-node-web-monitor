@@ -39,6 +39,7 @@ let chartUpdateTimer = null;
 let hashstoreMasterData = [];
 let hashstoreFilters = { satellite: 'all', store: 'all' };
 let hashstoreSort = { column: 'last_run_iso', direction: 'desc' };
+let latencyTimeWindow = { firstIso: null, lastIso: null };
 let ws;
 
 // --- Helper Functions ---
@@ -259,12 +260,37 @@ function updateStorageHealthCard(data) {
 
 function updateLatencyCard(data) {
     if (!isCardVisible('latency-card')) return;
+    
     if (!data || !data.statistics) {
         document.getElementById('latency-p50').textContent = 'N/A';
         document.getElementById('latency-p95').textContent = 'N/A';
         document.getElementById('latency-p99').textContent = 'N/A';
         document.getElementById('latency-mean').textContent = 'N/A';
         return;
+    }
+    
+    // Calculate time window from slow operations data
+    const formatTime = date => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    let timeWindowStr = "(Last 1 Hour)";
+    
+    if (data.slow_operations && data.slow_operations.length > 0) {
+        const timestamps = data.slow_operations.map(op => new Date(op.timestamp)).sort((a, b) => a - b);
+        const firstTime = timestamps[0];
+        const lastTime = timestamps[timestamps.length - 1];
+        timeWindowStr = `(${formatTime(firstTime)} - ${formatTime(lastTime)})`;
+        latencyTimeWindow.firstIso = firstTime.toISOString();
+        latencyTimeWindow.lastIso = lastTime.toISOString();
+    } else if (latencyTimeWindow.firstIso && latencyTimeWindow.lastIso) {
+        // Use previously stored time window if no new slow operations
+        timeWindowStr = `(${formatTime(new Date(latencyTimeWindow.firstIso))} - ${formatTime(new Date(latencyTimeWindow.lastIso))})`;
+    }
+    
+    // Update title with time interval
+    const latencyTitle = document.querySelector('#latency-card .card-title');
+    if (latencyTitle) {
+        const viewName = currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate' ? '' :
+            ` (${currentNodeView.length === 1 ? currentNodeView[0] : currentNodeView.length + ' nodes'})`;
+        latencyTitle.textContent = `Operation Latency Analytics${viewName} ${timeWindowStr}`;
     }
     
     const getLatencyClass = (ms) => {
