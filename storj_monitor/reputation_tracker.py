@@ -45,8 +45,12 @@ async def track_reputation(
         alerts = []
         timestamp = datetime.datetime.now(datetime.timezone.utc)
         
-        # The API returns a list of satellites directly
-        if isinstance(satellites_data, list):
+        # The API returns a dict with satellite IDs as keys
+        if isinstance(satellites_data, dict):
+            # Convert dict to list of satellite data objects
+            satellites_list = list(satellites_data.values())
+        elif isinstance(satellites_data, list):
+            # Also support list format in case API changes
             satellites_list = satellites_data
         else:
             log.error(f"[{node_name}] Unexpected satellites data format: {type(satellites_data)}")
