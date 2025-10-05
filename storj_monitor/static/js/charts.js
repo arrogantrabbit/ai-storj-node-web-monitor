@@ -359,7 +359,14 @@ export function createLatencyHistogramChart() {
 
 export function updateLatencyHistogramChart(histogramData) {
     if (!latencyHistogramChartInstance) createLatencyHistogramChart();
-    if (!histogramData || histogramData.length === 0) return;
+    
+    if (!histogramData || histogramData.length === 0) {
+        // Clear the chart when there's no data
+        latencyHistogramChartInstance.data.labels = [];
+        latencyHistogramChartInstance.data.datasets[0].data = [];
+        latencyHistogramChartInstance.update();
+        return;
+    }
     
     // histogramData is an array of buckets from backend
     const labels = histogramData.map(bucket => bucket.label || `${bucket.bucket_start_ms}-${bucket.bucket_end_ms}ms`);

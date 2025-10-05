@@ -266,28 +266,30 @@ function updateStorageHealthCard(data) {
 function updateLatencyCard(data) {
     if (!isCardVisible('latency-card')) return;
     
-    if (!data || !data.statistics) {
+    // Helper to clear stats with message
+    const clearStatsWithMessage = (message) => {
         document.getElementById('latency-p50').textContent = 'N/A';
+        document.getElementById('latency-p50').className = 'stat-value';
         document.getElementById('latency-p95').textContent = 'N/A';
+        document.getElementById('latency-p95').className = 'stat-value';
         document.getElementById('latency-p99').textContent = 'N/A';
+        document.getElementById('latency-p99').className = 'stat-value';
         document.getElementById('latency-mean').textContent = 'N/A';
+        document.getElementById('latency-mean').className = 'stat-value';
         
-        // Show helpful message in slow operations table
         const tbody = document.getElementById('slow-operations-body');
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 20px;">No latency data available for this time window.<br><small style="color: #888;">Tip: Enable DEBUG logging on Storj nodes for duration tracking.</small></td></tr>';
+        tbody.innerHTML = message;
+    };
+    
+    if (!data || !data.statistics) {
+        clearStatsWithMessage('<tr><td colspan="6" style="text-align: center; padding: 20px;">No latency data available for this time window.<br><small style="color: #888;">Tip: Enable DEBUG logging on Storj nodes for duration tracking.</small></td></tr>');
         return;
     }
     
     // Check if we have any actual data
     const allStats = data.statistics.all || {};
     if (!allStats.count || allStats.count === 0) {
-        document.getElementById('latency-p50').textContent = 'N/A';
-        document.getElementById('latency-p95').textContent = 'N/A';
-        document.getElementById('latency-p99').textContent = 'N/A';
-        document.getElementById('latency-mean').textContent = 'N/A';
-        
-        const tbody = document.getElementById('slow-operations-body');
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 20px;">No operations with latency data found in this time window.<br><small style="color: #888;">Operations: ' + (data.total_operations || 0) + ' total, ' + (data.operations_with_latency || 0) + ' with latency data</small></td></tr>';
+        clearStatsWithMessage('<tr><td colspan="6" style="text-align: center; padding: 20px;">No operations with latency data found in this time window.<br><small style="color: #888;">Operations: ' + (data.total_operations || 0) + ' total, ' + (data.operations_with_latency || 0) + ' with latency data</small></td></tr>');
         return;
     }
     
@@ -324,23 +326,44 @@ function updateLatencyCard(data) {
     const formatMs = (ms) => ms < 1000 ? `${ms.toFixed(0)}ms` : `${(ms/1000).toFixed(2)}s`;
     
     // Use 'all' category statistics
-    const stats = allStats;
-    const p50 = document.getElementById('latency-p50');
-    const p95 = document.getElementById('latency-p95');
-    const p99 = document.getElementById('latency-p99');
-    const mean = document.getElementById('latency-mean');
+    // Use allStats for display
+    const p50Elem = document.getElementById('latency-p50');
+    const p95Elem = document.getElementById('latency-p95');
+    const p99Elem = document.getElementById('latency-p99');
+    const meanElem = document.getElementById('latency-mean');
     
-    p50.textContent = stats.p50 ? formatMs(stats.p50) : 'N/A';
-    p50.className = `stat-value ${stats.p50 ? getLatencyClass(stats.p50) : ''}`;
+    // Force update by setting values even if they haven't changed
+    if (allStats.p50 != null && allStats.p50 > 0) {
+        p50Elem.textContent = formatMs(allStats.p50);
+        p50Elem.className = `stat-value ${getLatencyClass(allStats.p50)}`;
+    } else {
+        p50Elem.textContent = 'N/A';
+        p50Elem.className = 'stat-value';
+    }
     
-    p95.textContent = stats.p95 ? formatMs(stats.p95) : 'N/A';
-    p95.className = `stat-value ${stats.p95 ? getLatencyClass(stats.p95) : ''}`;
+    if (allStats.p95 != null && allStats.p95 > 0) {
+        p95Elem.textContent = formatMs(allStats.p95);
+        p95Elem.className = `stat-value ${getLatencyClass(allStats.p95)}`;
+    } else {
+        p95Elem.textContent = 'N/A';
+        p95Elem.className = 'stat-value';
+    }
     
-    p99.textContent = stats.p99 ? formatMs(stats.p99) : 'N/A';
-    p99.className = `stat-value ${stats.p99 ? getLatencyClass(stats.p99) : ''}`;
+    if (allStats.p99 != null && allStats.p99 > 0) {
+        p99Elem.textContent = formatMs(allStats.p99);
+        p99Elem.className = `stat-value ${getLatencyClass(allStats.p99)}`;
+    } else {
+        p99Elem.textContent = 'N/A';
+        p99Elem.className = 'stat-value';
+    }
     
-    mean.textContent = stats.mean ? formatMs(stats.mean) : 'N/A';
-    mean.className = `stat-value ${stats.mean ? getLatencyClass(stats.mean) : ''}`;
+    if (allStats.mean != null && allStats.mean > 0) {
+        meanElem.textContent = formatMs(allStats.mean);
+        meanElem.className = `stat-value ${getLatencyClass(allStats.mean)}`;
+    } else {
+        meanElem.textContent = 'N/A';
+        meanElem.className = 'stat-value';
+    }
     
     // Update slow operations table
     const tbody = document.getElementById('slow-operations-body');
