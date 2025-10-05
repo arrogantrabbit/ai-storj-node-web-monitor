@@ -49,7 +49,7 @@ class IncrementalStats:
     # Hot pieces tracking
     hot_pieces: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
-    # Last processed event index for incremental updates (per-node tracking)
+    # Last processed event index per node for incremental updates
     last_processed_indices: Dict[str, int] = field(default_factory=dict)
 
     def get_or_create_satellite(self, sat_id: str) -> Dict[str, int]:
