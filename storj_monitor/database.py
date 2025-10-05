@@ -1319,6 +1319,34 @@ def blocking_get_latest_storage_with_forecast(
                              for h in valid_history]  # Convert to days
                 used_bytes = [h['used_bytes'] for h in valid_history]
                 
+                # Validate time span: require at least 1 hour of data for meaningful regression
+                time_span_days = max(timestamps) - min(timestamps)
+                if time_span_days < (1.0 / 24.0):  # Less than 1 hour
+                    growth_rates[f'{days}d'] = {
+                        'growth_rate_bytes_per_day': None,
+                        'growth_rate_gb_per_day': None,
+                        'days_until_full': None,
+                        'data_points': len(valid_history),
+                        'reason': 'insufficient_timespan'
+                    }
+                    continue
+                
+                # Validate data variance: check if data is essentially flat
+                mean_used = sum(used_bytes) / len(used_bytes)
+                if mean_used > 0:
+                    variance = sum((x - mean_used) ** 2 for x in used_bytes) / len(used_bytes)
+                    std_dev = variance ** 0.5
+                    # If standard deviation is < 0.1% of mean, data is too flat for meaningful slope
+                    if std_dev < (mean_used * 0.001):
+                        growth_rates[f'{days}d'] = {
+                            'growth_rate_bytes_per_day': 0,
+                            'growth_rate_gb_per_day': 0,
+                            'days_until_full': None,
+                            'data_points': len(valid_history),
+                            'reason': 'data_too_flat'
+                        }
+                        continue
+                
                 n = len(timestamps)
                 sum_x = sum(timestamps)
                 sum_y = sum(used_bytes)
