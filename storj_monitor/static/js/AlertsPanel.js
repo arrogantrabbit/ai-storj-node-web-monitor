@@ -24,25 +24,20 @@ class AlertsPanel {
     }
 
     createAlertBadge() {
-        const header = document.querySelector('.header-card');
-        if (!header) return;
+        const headerControls = document.querySelector('.header-controls');
+        if (!headerControls) return;
 
         const badge = document.createElement('div');
         badge.id = 'alert-badge';
         badge.className = 'alert-badge';
         badge.innerHTML = `
             <button id="alerts-toggle" class="btn-icon" title="Alerts & Insights">
-                🔔 <span id="alert-count" class="badge">0</span>
+                🔔 <span id="alert-count" class="badge hidden">0</span>
             </button>
         `;
         
-        // Insert before options menu
-        const optionsMenu = header.querySelector('#options-menu');
-        if (optionsMenu) {
-            header.insertBefore(badge, optionsMenu);
-        } else {
-            header.appendChild(badge);
-        }
+        // Append to header controls (will be to the right of Options button)
+        headerControls.appendChild(badge);
 
         // Add click handler
         document.getElementById('alerts-toggle').addEventListener('click', () => {
@@ -91,11 +86,10 @@ class AlertsPanel {
                 <!-- Insights Tab -->
                 <div id="insights-tab" class="tab-content">
                     <div class="insights-filter">
-                        <select id="insights-timeframe">
-                            <option value="24">Last 24 hours</option>
-                            <option value="72">Last 3 days</option>
-                            <option value="168">Last week</option>
-                        </select>
+                        <small>Range:</small>
+                        <a href="#" class="toggle-link active" data-hours="24">24h</a> |
+                        <a href="#" class="toggle-link" data-hours="72">3d</a> |
+                        <a href="#" class="toggle-link" data-hours="168">7d</a>
                     </div>
                     <div id="insights-list" class="insights-list">
                         <div class="empty-state">No insights available</div>
@@ -131,9 +125,21 @@ class AlertsPanel {
             });
         });
 
-        // Insights timeframe
-        document.getElementById('insights-timeframe').addEventListener('change', (e) => {
-            this.fetchInsights(parseInt(e.target.value));
+        // Insights timeframe links
+        document.querySelectorAll('#insights-tab .toggle-link').forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const hours = parseInt(e.target.dataset.hours);
+                
+                // Update active state
+                document.querySelectorAll('#insights-tab .toggle-link').forEach(l => {
+                    l.classList.remove('active');
+                });
+                e.target.classList.add('active');
+                
+                // Fetch insights
+                this.fetchInsights(hours);
+            });
         });
 
         // Close on escape

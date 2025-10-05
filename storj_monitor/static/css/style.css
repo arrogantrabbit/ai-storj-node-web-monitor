@@ -1,6 +1,6 @@
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color: 0.3s, color: 0.3s; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color 0.3s, color 0.3s; }
 .container { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; max-width: 1800px; margin: auto; }
-.card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color: 0.3s, grid-column 0.3s ease, grid-row 0.3s ease; }
+.card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s, grid-column 0.3s ease, grid-row 0.3s ease; }
 .header-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 0; flex-wrap: wrap; gap: 20px; }
 h1 { margin: 0; font-size: 1.8em; color: #1c1e21; }
 
@@ -362,13 +362,21 @@ body.map-maximized { overflow: hidden; }
 .alert-badge {
     position: relative;
     display: inline-block;
-    margin-right: 10px;
 }
 
 .alert-badge .btn-icon {
     position: relative;
     padding: 8px 12px;
     font-size: 16px;
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.alert-badge .btn-icon:hover {
+    background: #e9ecef;
 }
 
 .alert-badge .badge {
@@ -426,6 +434,7 @@ body.map-maximized { overflow: hidden; }
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    transition: background-color 0.3s, border-color 0.3s;
 }
 
 .alerts-panel.hidden {
@@ -445,6 +454,22 @@ body.map-maximized { overflow: hidden; }
 .alerts-panel-header h3 {
     margin: 0;
     font-size: 18px;
+    border-bottom: none;
+}
+
+.alerts-panel-header .btn-icon {
+    background: none;
+    border: none;
+    color: white;
+    cursor: pointer;
+    font-size: 20px;
+    padding: 0;
+    line-height: 1;
+    transition: opacity 0.2s;
+}
+
+.alerts-panel-header .btn-icon:hover {
+    opacity: 0.8;
 }
 
 .alerts-panel-tabs {
@@ -504,17 +529,12 @@ body.map-maximized { overflow: hidden; }
     margin-bottom: 15px;
     padding-bottom: 10px;
     border-bottom: 1px solid #eee;
+    font-size: 0.9em;
 }
 
 .alerts-filter label {
     margin-right: 15px;
     font-size: 13px;
-}
-
-.insights-filter select {
-    padding: 5px 10px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
 }
 
 .alerts-list,
@@ -530,7 +550,7 @@ body.map-maximized { overflow: hidden; }
     border: 1px solid #ddd;
     border-radius: 6px;
     background: white;
-    transition: all 0.3s;
+    transition: all 0.3s, background-color 0.3s, border-color 0.3s;
 }
 
 .alert-item:hover,
@@ -670,6 +690,135 @@ body.map-maximized { overflow: hidden; }
     padding: 40px 20px;
     color: #999;
     font-size: 14px;
+}
+
+/* Dark mode for Alerts Panel */
+@media (prefers-color-scheme: dark) {
+    .alert-badge .btn-icon {
+        background: #343a40;
+        border-color: #495057;
+        color: #e0e0e0;
+    }
+
+    .alert-badge .btn-icon:hover {
+        background: #495057;
+    }
+
+    .alerts-panel {
+        background: #1e1e1e;
+        border-color: #444;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+
+    .alerts-panel-header {
+        background: #2a2a2a;
+        border-bottom-color: #444;
+    }
+
+    .alerts-panel-header .btn-icon {
+        color: #e0e0e0;
+    }
+
+    .alerts-panel-header .btn-icon:hover {
+        opacity: 1;
+        color: #fff;
+    }
+
+    .alerts-panel-tabs {
+        background: #252525;
+        border-bottom-color: #444;
+    }
+
+    .alerts-panel-tabs .tab-btn {
+        color: #aaa;
+    }
+
+    .alerts-panel-tabs .tab-btn:hover {
+        background: #333;
+    }
+
+    .alerts-panel-tabs .tab-btn.active {
+        background: #1e1e1e;
+        color: #4dabf7;
+        border-bottom-color: #4dabf7;
+    }
+
+    .alerts-panel-tabs .tab-btn .badge {
+        background: #555;
+    }
+
+    .alerts-filter label,
+    .insights-filter {
+        color: #e0e0e0;
+    }
+
+    .insights-filter {
+        border-bottom-color: #444;
+    }
+
+    .alert-item,
+    .insight-item {
+        background: #252525;
+        border-color: #444;
+    }
+
+    .alert-item:hover,
+    .insight-item:hover {
+        box-shadow: 0 2px 8px rgba(255,255,255,0.1);
+    }
+
+    .alert-item.severity-critical {
+        background: #2d1a1a;
+        border-left-color: #ef4444;
+    }
+
+    .alert-item.severity-warning {
+        background: #2d2514;
+        border-left-color: #f59e0b;
+    }
+
+    .alert-item.severity-info {
+        background: #1a2534;
+        border-left-color: #3b82f6;
+    }
+
+    .alert-title,
+    .insight-title {
+        color: #e0e0e0;
+    }
+
+    .alert-message,
+    .insight-description {
+        color: #bbb;
+    }
+
+    .alert-meta,
+    .insight-meta {
+        color: #777;
+    }
+
+    .alert-node,
+    .insight-node {
+        color: #4dabf7;
+    }
+
+    .meta-item,
+    .insight-category {
+        background: #333;
+        color: #aaa;
+    }
+
+    .btn-acknowledge {
+        background: #27ae60;
+    }
+
+    .btn-acknowledge:hover {
+        background: #2ecc71;
+    }
+
+    .empty-state {
+        color: #666;
+    }
 }
 
 /* Responsive adjustments */
