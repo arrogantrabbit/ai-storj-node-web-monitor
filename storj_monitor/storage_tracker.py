@@ -203,9 +203,16 @@ async def calculate_storage_forecast(
             return None
         
         # Calculate growth rate using linear regression
-        timestamps = [(datetime.datetime.fromisoformat(h['timestamp']).timestamp() / 86400) 
-                     for h in history]  # Convert to days
-        used_bytes = [h['used_bytes'] for h in history]
+        # Filter out records with None used_bytes (from log-based snapshots)
+        valid_history = [h for h in history if h.get('used_bytes') is not None]
+        
+        if len(valid_history) < 2:
+            # Not enough valid data for forecast (log-based data doesn't have used_bytes)
+            return None
+        
+        timestamps = [(datetime.datetime.fromisoformat(h['timestamp']).timestamp() / 86400)
+                     for h in valid_history]  # Convert to days
+        used_bytes = [h['used_bytes'] for h in valid_history]
         
         # Simple linear regression
         n = len(timestamps)

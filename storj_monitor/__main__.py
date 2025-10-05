@@ -136,10 +136,17 @@ def ingest_log_file(node_name: str, log_path: str):
     geoip_cache = {}
     events_to_write = []
     hashstore_records_to_write = []
+    storage_snapshots_to_write = []
     active_compactions = {}
+    
+    # Storage tracking during ingestion (based on log timestamps, not arrival time)
+    last_storage_sample_timestamp = None
+    last_available_space = None
+    STORAGE_SAMPLE_INTERVAL_SECONDS = 300  # 5 minutes
 
     traffic_event_count = 0
     hashstore_event_count = 0
+    storage_sample_count = 0
     line_count = 0
 
     with open(log_path, 'r', errors='ignore') as f:
@@ -154,6 +161,47 @@ def ingest_log_file(node_name: str, log_path: str):
 
             if parsed['type'] == 'traffic_event':
                 events_to_write.append(parsed['data'])
+            elif parsed['type'] == 'operation_start':
+                # Extract storage data from operation_start events during ingestion
+                available_space = parsed.get('available_space')
+                if available_space:
+                    current_timestamp = parsed['timestamp']
+                    
+                    # Sample based on log timestamp (not arrival time like live mode)
+                    should_sample = False
+                    if last_storage_sample_timestamp is None:
+                        # First sample
+                        should_sample = True
+                    else:
+                        time_since_last_sample = (current_timestamp - last_storage_sample_timestamp).total_seconds()
+                        if time_since_last_sample >= STORAGE_SAMPLE_INTERVAL_SECONDS:
+                            # Check if space changed significantly (>1GB)
+                            if last_available_space is None or abs(available_space - last_available_space) > 1024**3:
+                                should_sample = True
+                    
+                    if should_sample:
+                        last_storage_sample_timestamp = current_timestamp
+                        last_available_space = available_space
+                        
+                        # Create storage snapshot
+                        snapshot = {
+                            'timestamp': current_timestamp,
+                            'node_name': node_name,
+                            'available_bytes': available_space,
+                            'total_bytes': None,
+                            'used_bytes': None,
+                            'trash_bytes': None,
+                            'used_percent': None,
+                            'trash_percent': None,
+                            'available_percent': None,
+                            'source': 'logs'
+                        }
+                        storage_snapshots_to_write.append(snapshot)
+                        storage_sample_count += 1
+                        
+                        # Debug logging every 10 samples
+                        if storage_sample_count % 10 == 1:
+                            log.info(f"Storage sample #{storage_sample_count}: {available_space / (1024**4):.2f} TB at {current_timestamp}")
             elif parsed['type'] == 'hashstore_begin':
                 active_compactions[parsed['key']] = parsed['timestamp']
             elif parsed['type'] == 'hashstore_end':
@@ -178,8 +226,31 @@ def ingest_log_file(node_name: str, log_path: str):
         log.info(f"Writing {len(hashstore_records_to_write)} hashstore records...")
         database.blocking_batch_write_hashstore_ingest(config.DATABASE_FILE, hashstore_records_to_write)
         hashstore_event_count = len(hashstore_records_to_write)
+    
+    if storage_snapshots_to_write:
+        log.info(f"Writing {len(storage_snapshots_to_write)} storage snapshots from log data...")
+        # Show first and last sample for verification
+        if storage_snapshots_to_write:
+            first = storage_snapshots_to_write[0]
+            last = storage_snapshots_to_write[-1]
+            log.info(f"  First sample: {first['available_bytes'] / (1024**4):.2f} TB at {first['timestamp']}")
+            log.info(f"  Last sample: {last['available_bytes'] / (1024**4):.2f} TB at {last['timestamp']}")
+        
+        for snapshot in storage_snapshots_to_write:
+            success = database.blocking_write_storage_snapshot(config.DATABASE_FILE, snapshot)
+            if not success:
+                log.error(f"Failed to write storage snapshot at {snapshot['timestamp']}")
+        log.info(f"Storage snapshots written successfully.")
+    else:
+        log.warning("No storage snapshots were collected during ingestion. This might mean:")
+        log.warning("  1. The log file doesn't contain DEBUG-level entries with 'Available Space'")
+        log.warning("  2. The log format has changed")
+        log.warning("  Make sure your log contains lines like: 'DEBUG piecestore upload started ... \"Available Space\": 14540395224064'")
 
-    log.info(f"Ingestion complete. Total lines processed: {line_count}. Traffic events ingested: {traffic_event_count}. Hashstore records ingested: {hashstore_event_count}.")
+    log.info(f"Ingestion complete. Total lines processed: {line_count}. "
+             f"Traffic events ingested: {traffic_event_count}. "
+             f"Hashstore records ingested: {hashstore_event_count}. "
+             f"Storage samples ingested: {storage_sample_count}.")
     geoip_reader.close()
 
 

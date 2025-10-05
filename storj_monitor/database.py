@@ -1204,11 +1204,21 @@ def blocking_get_latest_storage(
         List of latest storage snapshots
     """
     if not node_names:
+        log.debug("blocking_get_latest_storage: No node names provided")
         return []
     
     try:
         with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
             conn.row_factory = sqlite3.Row
+            
+            # First check if we have any storage data at all
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM storage_snapshots WHERE node_name IN ({})".format(','.join('?' * len(node_names))), node_names)
+            count = cursor.fetchone()[0]
+            log.info(f"blocking_get_latest_storage: Found {count} storage snapshot(s) for nodes {node_names}")
+            
+            if count == 0:
+                return []
             
             placeholders = ','.join('?' for _ in node_names)
             query = f"""
@@ -1225,6 +1235,10 @@ def blocking_get_latest_storage(
             """
             
             results = [dict(row) for row in conn.execute(query, node_names).fetchall()]
+            log.info(f"blocking_get_latest_storage: Returning {len(results)} result(s)")
+            if results:
+                for r in results:
+                    log.info(f"  Node: {r['node_name']}, Available: {r.get('available_bytes', 0) / (1024**4):.2f} TB, Timestamp: {r['timestamp']}")
             return results
     except Exception:
         log.error("Failed to get latest storage:", exc_info=True)

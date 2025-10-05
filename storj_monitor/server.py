@@ -259,6 +259,8 @@ async def websocket_handler(request):
                         view = data.get('view', ['Aggregate'])
                         nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
                         
+                        log.info(f"Storage data request received for view: {view}, querying nodes: {nodes_to_query}")
+                        
                         loop = asyncio.get_running_loop()
                         from .config import DATABASE_FILE
                         from .database import blocking_get_latest_storage
@@ -269,8 +271,15 @@ async def websocket_handler(request):
                             DATABASE_FILE,
                             nodes_to_query
                         )
+                        
+                        log.info(f"Storage data query returned {len(storage_data) if storage_data else 0} result(s)")
+                        if storage_data:
+                            for item in storage_data:
+                                log.info(f"  Sending to client: Node={item.get('node_name')}, Available={item.get('available_bytes', 0) / (1024**4):.2f} TB")
+                        
                         payload = {"type": "storage_data", "data": storage_data}
                         await ws.send_json(payload)
+                        log.info("Storage data payload sent to client")
                     
                     elif msg_type == 'get_storage_history':
                         # Phase 2.2: Get storage history

@@ -214,6 +214,14 @@ export function createStorageHistoryChart() {
                     backgroundColor: 'rgba(245, 158, 11, 0.1)',
                     fill: true,
                     tension: 0.3
+                },
+                {
+                    label: 'Available Space',
+                    data: [],
+                    borderColor: '#22c55e',
+                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                    fill: true,
+                    tension: 0.3
                 }
             ]
         },
@@ -265,18 +273,40 @@ export function updateStorageHistoryChart(historyData) {
     if (!storageHistoryChartInstance) createStorageHistoryChart();
     if (!historyData || historyData.length === 0) return;
     
-    const usedData = historyData.map(item => ({
-        x: new Date(item.timestamp),
-        y: item.used_bytes
-    }));
+    // Check if we have API data (used_bytes) or log data (available_bytes)
+    const hasUsedData = historyData.some(item => item.used_bytes != null);
+    const hasAvailableData = historyData.some(item => item.available_bytes != null);
     
-    const trashData = historyData.map(item => ({
-        x: new Date(item.timestamp),
-        y: item.trash_bytes
-    }));
+    const usedData = historyData
+        .filter(item => item.used_bytes != null)
+        .map(item => ({
+            x: new Date(item.timestamp),
+            y: item.used_bytes
+        }));
+    
+    const trashData = historyData
+        .filter(item => item.trash_bytes != null)
+        .map(item => ({
+            x: new Date(item.timestamp),
+            y: item.trash_bytes
+        }));
+    
+    const availableData = historyData
+        .filter(item => item.available_bytes != null)
+        .map(item => ({
+            x: new Date(item.timestamp),
+            y: item.available_bytes
+        }));
     
     storageHistoryChartInstance.data.datasets[0].data = usedData;
     storageHistoryChartInstance.data.datasets[1].data = trashData;
+    storageHistoryChartInstance.data.datasets[2].data = availableData;
+    
+    // Hide datasets that have no data
+    storageHistoryChartInstance.data.datasets[0].hidden = !hasUsedData;
+    storageHistoryChartInstance.data.datasets[1].hidden = !hasUsedData;
+    storageHistoryChartInstance.data.datasets[2].hidden = !hasAvailableData;
+    
     storageHistoryChartInstance.update();
 }
 
