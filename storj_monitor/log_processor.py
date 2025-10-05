@@ -13,7 +13,8 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from .state import app_state
-from .server import robust_broadcast, get_active_compactions_payload
+from .websocket_utils import robust_broadcast
+from .server import get_active_compactions_payload
 from .database import blocking_write_hashstore_log
 
 log = logging.getLogger("StorjMonitor.LogProcessor")
