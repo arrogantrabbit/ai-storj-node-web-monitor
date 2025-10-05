@@ -271,6 +271,23 @@ function updateLatencyCard(data) {
         document.getElementById('latency-p95').textContent = 'N/A';
         document.getElementById('latency-p99').textContent = 'N/A';
         document.getElementById('latency-mean').textContent = 'N/A';
+        
+        // Show helpful message in slow operations table
+        const tbody = document.getElementById('slow-operations-body');
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 20px;">No latency data available for this time window.<br><small style="color: #888;">Tip: Enable DEBUG logging on Storj nodes for duration tracking.</small></td></tr>';
+        return;
+    }
+    
+    // Check if we have any actual data
+    const allStats = data.statistics.all || {};
+    if (!allStats.count || allStats.count === 0) {
+        document.getElementById('latency-p50').textContent = 'N/A';
+        document.getElementById('latency-p95').textContent = 'N/A';
+        document.getElementById('latency-p99').textContent = 'N/A';
+        document.getElementById('latency-mean').textContent = 'N/A';
+        
+        const tbody = document.getElementById('slow-operations-body');
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 20px;">No operations with latency data found in this time window.<br><small style="color: #888;">Operations: ' + (data.total_operations || 0) + ' total, ' + (data.operations_with_latency || 0) + ' with latency data</small></td></tr>';
         return;
     }
     
@@ -307,7 +324,7 @@ function updateLatencyCard(data) {
     const formatMs = (ms) => ms < 1000 ? `${ms.toFixed(0)}ms` : `${(ms/1000).toFixed(2)}s`;
     
     // Use 'all' category statistics
-    const stats = data.statistics.all || {};
+    const stats = allStats;
     const p50 = document.getElementById('latency-p50');
     const p95 = document.getElementById('latency-p95');
     const p99 = document.getElementById('latency-p99');

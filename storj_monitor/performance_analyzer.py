@@ -173,8 +173,31 @@ def blocking_get_latency_stats(
         with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
             conn.row_factory = sqlite3.Row
             
-            # Query events with duration data
+            # First check total events vs events with duration for diagnostics
             placeholders = ','.join('?' for _ in node_names)
+            diagnostic_query = f"""
+                SELECT
+                    node_name,
+                    COUNT(*) as total_events,
+                    SUM(CASE WHEN duration_ms IS NOT NULL AND duration_ms > 0 THEN 1 ELSE 0 END) as events_with_duration
+                FROM events
+                WHERE node_name IN ({placeholders})
+                  AND timestamp >= ?
+                GROUP BY node_name
+            """
+            
+            diagnostics = conn.execute(diagnostic_query, (*node_names, cutoff_iso)).fetchall()
+            for diag in diagnostics:
+                node = diag['node_name']
+                total = diag['total_events']
+                with_duration = diag['events_with_duration']
+                if total > 0:
+                    percentage = (with_duration / total) * 100
+                    log.info(f"[{node}] Latency data: {with_duration}/{total} events ({percentage:.1f}%) have duration_ms")
+                    if with_duration == 0 and total > 100:
+                        log.warning(f"[{node}] No duration data available - check if Storj node logs include duration field or enable DEBUG logging")
+            
+            # Query events with duration data
             query = f"""
                 SELECT timestamp, action, status, size, piece_id, satellite_id,
                        duration_ms, node_name
