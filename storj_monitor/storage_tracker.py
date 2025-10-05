@@ -170,9 +170,10 @@ async def calculate_storage_forecast(
     current_available: int
 ) -> Optional[Dict[str, Any]]:
     """
-    Calculate storage growth rate and forecast when disk will be full.
+    Calculate storage growth rates and forecast when disk will be full.
     
-    Uses linear regression on recent snapshots.
+    Uses linear regression on recent snapshots with multiple time windows
+    (1 day, 7 days, 30 days) for better insight into recent vs long-term trends.
     
     Args:
         app: Application context
@@ -180,7 +181,7 @@ async def calculate_storage_forecast(
         current_available: Current available space in bytes
     
     Returns:
-        Dict with growth rate and days until full
+        Dict with growth rates for multiple time windows and days until full
     """
     try:
         from .database import blocking_get_storage_history
@@ -188,60 +189,95 @@ async def calculate_storage_forecast(
         
         loop = asyncio.get_running_loop()
         
-        # Get last 7 days of history for growth rate calculation
-        history = await loop.run_in_executor(
+        # Get 30 days of history (maximum window we need)
+        history_30d = await loop.run_in_executor(
             app['db_executor'],
             blocking_get_storage_history,
             DATABASE_FILE,
             node_name,
-            7  # days parameter (positional, not keyword)
+            30
         )
         
-        if len(history) < 2:
+        if len(history_30d) < 2:
             # Not enough data for forecast
-            log.info(f"[{node_name}] Insufficient storage history for growth rate calculation: {len(history)} records (need 2+)")
+            log.info(f"[{node_name}] Insufficient storage history for growth rate calculation: {len(history_30d)} records (need 2+)")
             return None
         
-        # Calculate growth rate using linear regression
         # Filter out records with None used_bytes (from log-based snapshots)
-        valid_history = [h for h in history if h.get('used_bytes') is not None]
+        valid_history_30d = [h for h in history_30d if h.get('used_bytes') is not None]
         
-        if len(valid_history) < 2:
-            # Not enough valid data for forecast (log-based data doesn't have used_bytes)
-            log.warning(f"[{node_name}] Cannot calculate growth rate: {len(valid_history)} records with used_bytes out of {len(history)} total. "
+        if len(valid_history_30d) < 2:
+            # Not enough valid data for forecast
+            log.warning(f"[{node_name}] Cannot calculate growth rate: {len(valid_history_30d)} records with used_bytes out of {len(history_30d)} total. "
                        f"Growth rate requires API-based storage data (not log-based). Enable storage polling via NODE_API_URL config.")
             return None
         
-        timestamps = [(datetime.datetime.fromisoformat(h['timestamp']).timestamp() / 86400)
-                     for h in valid_history]  # Convert to days
-        used_bytes = [h['used_bytes'] for h in valid_history]
+        # Calculate growth rates for multiple time windows
+        time_windows = [1, 7, 30]  # days
+        growth_rates = {}
         
-        # Simple linear regression
-        n = len(timestamps)
-        sum_x = sum(timestamps)
-        sum_y = sum(used_bytes)
-        sum_xy = sum(x * y for x, y in zip(timestamps, used_bytes))
-        sum_x2 = sum(x * x for x in timestamps)
+        for days in time_windows:
+            # Filter history to the specified window
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+            valid_history = [h for h in valid_history_30d
+                           if datetime.datetime.fromisoformat(h['timestamp']) >= cutoff]
+            
+            if len(valid_history) < 2:
+                # Not enough data for this window
+                growth_rates[f'{days}d'] = {
+                    'growth_rate_bytes_per_day': None,
+                    'growth_rate_gb_per_day': None,
+                    'days_until_full': None,
+                    'data_points': len(valid_history)
+                }
+                continue
+            
+            # Calculate linear regression for this window
+            timestamps = [(datetime.datetime.fromisoformat(h['timestamp']).timestamp() / 86400)
+                         for h in valid_history]  # Convert to days
+            used_bytes = [h['used_bytes'] for h in valid_history]
+            
+            n = len(timestamps)
+            sum_x = sum(timestamps)
+            sum_y = sum(used_bytes)
+            sum_xy = sum(x * y for x, y in zip(timestamps, used_bytes))
+            sum_x2 = sum(x * x for x in timestamps)
+            
+            # Calculate slope (bytes per day)
+            denominator = (n * sum_x2) - (sum_x * sum_x)
+            if denominator == 0:
+                growth_rates[f'{days}d'] = {
+                    'growth_rate_bytes_per_day': None,
+                    'growth_rate_gb_per_day': None,
+                    'days_until_full': None,
+                    'data_points': n
+                }
+                continue
+            
+            slope = ((n * sum_xy) - (sum_x * sum_y)) / denominator
+            
+            # Calculate days until full for this growth rate
+            if slope <= 0:
+                days_until_full = None
+            else:
+                days_until_full = current_available / slope
+            
+            growth_rates[f'{days}d'] = {
+                'growth_rate_bytes_per_day': round(slope) if slope > 0 else 0,
+                'growth_rate_gb_per_day': round(slope / (1024**3), 2) if slope > 0 else 0,
+                'days_until_full': round(days_until_full, 1) if days_until_full else None,
+                'data_points': n
+            }
         
-        # Calculate slope (bytes per day)
-        denominator = (n * sum_x2) - (sum_x * sum_x)
-        if denominator == 0:
-            return None
-        
-        slope = ((n * sum_xy) - (sum_x * sum_y)) / denominator
-        
-        # Calculate days until full
-        if slope <= 0:
-            # Disk usage is stable or decreasing
-            days_until_full = None
-        else:
-            days_until_full = current_available / slope
+        # Use 7-day window as the primary forecast for alerts
+        primary_rate = growth_rates.get('7d', {})
         
         return {
-            'growth_rate_bytes_per_day': round(slope),
-            'growth_rate_gb_per_day': round(slope / (1024**3), 2),
-            'days_until_full': round(days_until_full, 1) if days_until_full else None,
-            'data_points': n
+            'growth_rate_bytes_per_day': primary_rate.get('growth_rate_bytes_per_day'),
+            'growth_rate_gb_per_day': primary_rate.get('growth_rate_gb_per_day'),
+            'days_until_full': primary_rate.get('days_until_full'),
+            'data_points': primary_rate.get('data_points', 0),
+            'growth_rates': growth_rates  # Include all time windows
         }
         
     except Exception as e:

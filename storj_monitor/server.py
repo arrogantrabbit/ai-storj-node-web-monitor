@@ -254,21 +254,23 @@ async def websocket_handler(request):
                         await ws.send_json(payload)
                     
                     elif msg_type == 'get_storage_data':
-                        # Phase 2.2: Get current storage data
+                        # Phase 2.2: Get current storage data with configurable growth rate window
                         view = data.get('view', ['Aggregate'])
+                        days = data.get('days', 7)  # Default to 7 days if not specified
                         nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
                         
-                        log.info(f"Storage data request received for view: {view}, querying nodes: {nodes_to_query}")
+                        log.info(f"Storage data request received for view: {view}, nodes: {nodes_to_query}, days window: {days}")
                         
                         loop = asyncio.get_running_loop()
                         from .config import DATABASE_FILE
-                        from .database import blocking_get_latest_storage
+                        from .database import blocking_get_latest_storage_with_forecast
                         
                         storage_data = await loop.run_in_executor(
                             app['db_executor'],
-                            blocking_get_latest_storage,
+                            blocking_get_latest_storage_with_forecast,
                             DATABASE_FILE,
-                            nodes_to_query
+                            nodes_to_query,
+                            days
                         )
                         
                         log.info(f"Storage data query returned {len(storage_data) if storage_data else 0} result(s)")

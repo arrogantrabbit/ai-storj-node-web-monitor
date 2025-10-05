@@ -70,7 +70,17 @@
         </div>
 
         <div id="storage-health-card" class="card">
-            <h3 class="card-title">Storage Health & Capacity</h3>
+            <div class="chart-header">
+                <h3 class="card-title">Storage Health & Capacity</h3>
+                <div id="storage-range-toggles" style="text-align: right; font-size: 0.9em;">
+                    <small>Growth Rate Window:</small>
+                    <a href="#" class="toggle-link" data-range="1d">1d</a> |
+                    <a href="#" class="toggle-link" data-range="3d">3d</a> |
+                    <a href="#" class="toggle-link active" data-range="7d">7d</a> |
+                    <a href="#" class="toggle-link" data-range="14d">14d</a> |
+                    <a href="#" class="toggle-link" data-range="30d">30d</a>
+                </div>
+            </div>
             <div class="card-content">
                 <div id="storage-stats" class="stats-grid">
                     <div class="stat">

@@ -32,6 +32,10 @@ let performanceState = {
 let latencyState = {
     range: '1h' // 30m, 1h, 6h, 12h, 24h
 };
+let storageState = {
+    range: '7d', // 1d, 3d, 7d, 14d, 30d
+    cachedData: null // Cache storage data for immediate range switching
+};
 let cardVisibilityState = {};
 let livePerformanceBins = {};
 let maxHistoricalTimestampByView = {};
@@ -271,23 +275,39 @@ function updateStorageHealthCard(data) {
     document.getElementById('storage-used-percent').textContent = `${usedPercent.toFixed(1)}%`;
     document.getElementById('storage-available').textContent = formatBytes(totalAvailableBytes);
     
-    // Calculate aggregate growth rate and days until full
-    // Sum growth rates from all nodes that have valid data
-    let totalGrowthRatePerDay = 0;
-    let nodesWithGrowthData = 0;
+    // Map UI range selection to backend time windows
+    // Backend provides: 1d, 7d, 30d
+    // UI offers: 1d, 3d, 7d, 14d, 30d
+    const rangeToWindow = {
+        '1d': '1d',
+        '3d': '7d',   // Use 7d as closest available
+        '7d': '7d',
+        '14d': '7d',  // Use 7d as closest available
+        '30d': '30d'
+    };
+    
+    const selectedWindow = rangeToWindow[storageState.range] || '7d';
+    
+    // Calculate aggregate growth rate for the selected window
+    let totalGrowthRate = 0;
+    let nodesWithData = 0;
     
     data.forEach(node => {
-        if (node.growth_rate_bytes_per_day != null && node.growth_rate_bytes_per_day > 0) {
-            totalGrowthRatePerDay += node.growth_rate_bytes_per_day;
-            nodesWithGrowthData++;
+        if (node.growth_rates && node.growth_rates[selectedWindow]) {
+            const rate = node.growth_rates[selectedWindow].growth_rate_bytes_per_day;
+            if (rate != null && rate > 0) {
+                totalGrowthRate += rate;
+                nodesWithData++;
+            }
         }
     });
     
-    if (nodesWithGrowthData > 0 && totalGrowthRatePerDay > 0) {
-        document.getElementById('storage-growth-rate').textContent = `${formatBytes(totalGrowthRatePerDay)}/day`;
+    if (nodesWithData > 0 && totalGrowthRate > 0) {
+        document.getElementById('storage-growth-rate').textContent = `${formatBytes(totalGrowthRate)}/day`;
         
+        // Calculate days until full using the selected growth rate
         if (totalAvailableBytes > 0) {
-            const daysUntilFull = Math.floor(totalAvailableBytes / totalGrowthRatePerDay);
+            const daysUntilFull = Math.floor(totalAvailableBytes / totalGrowthRate);
             document.getElementById('storage-days-until-full').textContent =
                 daysUntilFull > 365 ? '>365 days' : `~${daysUntilFull} days`;
         } else {
@@ -581,7 +601,11 @@ function handleWebSocketMessage(data) {
             }
             break;
         case 'latency_histogram': charts.updateLatencyHistogramChart(data.data); break;
-        case 'storage_data': updateStorageHealthCard(data.data); break;
+        case 'storage_data':
+            // Cache the storage data for immediate range switching
+            storageState.cachedData = data.data;
+            updateStorageHealthCard(data.data);
+            break;
         case 'storage_history': charts.updateStorageHistoryChart(data.data); break;
         case 'reputation_alerts': updateAlertsPanel(data.alerts, 'reputation'); break;
         case 'storage_alerts': updateAlertsPanel(data.alerts, 'storage'); break;
@@ -636,6 +660,27 @@ function setupEventListeners() {
             }));
         }
     });
+    document.getElementById('storage-range-toggles').addEventListener('click', function(e) {
+        e.preventDefault();
+        const newRange = e.target.getAttribute('data-range');
+        if (!newRange || newRange === storageState.range) return;
+        storageState.range = newRange;
+        document.querySelectorAll('#storage-range-toggles .toggle-link').forEach(el => el.classList.remove('active'));
+        e.target.classList.add('active');
+        
+        // Immediately update display with cached data if available
+        if (storageState.cachedData) {
+            updateStorageHealthCard(storageState.cachedData);
+        }
+        
+        // Still request fresh data from server for accuracy
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'get_storage_data',
+                view: currentNodeView
+            }));
+        }
+    });
     document.getElementById('node-selector').addEventListener('click', function(e) {
         e.preventDefault();
         if (!e.target.hasAttribute('data-view')) return;
@@ -672,9 +717,11 @@ function setupEventListeners() {
                 hours: latencyHours
             }));
             
+            const storageDays = { '1d': 1, '3d': 3, '7d': 7, '14d': 14, '30d': 30 }[storageState.range];
             ws.send(JSON.stringify({
                 type: 'get_storage_data',
-                view: currentNodeView
+                view: currentNodeView,
+                days: storageDays
             }));
         }
     });
@@ -769,9 +816,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }));
             
             // Request storage data every 5 minutes
+            const storageDays = { '1d': 1, '3d': 3, '7d': 7, '14d': 14, '30d': 30 }[storageState.range];
             ws.send(JSON.stringify({
                 type: 'get_storage_data',
-                view: currentNodeView
+                view: currentNodeView,
+                days: storageDays
             }));
         }
     }, 60000); // Every minute

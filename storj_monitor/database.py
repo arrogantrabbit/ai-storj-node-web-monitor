@@ -1243,3 +1243,131 @@ def blocking_get_latest_storage(
     except Exception:
         log.error("Failed to get latest storage:", exc_info=True)
         return []
+
+
+def blocking_get_latest_storage_with_forecast(
+    db_path: str,
+    node_names: List[str],
+    days_window: int = 7
+) -> List[Dict[str, Any]]:
+    """
+    Get the most recent storage data for specified nodes with growth rate forecasts
+    for multiple time windows (1 day, 7 days, 30 days).
+    
+    Args:
+        db_path: Path to database file
+        node_names: List of node names
+        days_window: Legacy parameter, kept for compatibility but now calculates all windows
+    
+    Returns:
+        List of latest storage snapshots with multi-window forecast data
+    """
+    if not node_names:
+        log.debug("blocking_get_latest_storage_with_forecast: No node names provided")
+        return []
+    
+    try:
+        # Get latest snapshots
+        latest_storage = blocking_get_latest_storage(db_path, node_names)
+        
+        if not latest_storage:
+            return []
+        
+        # Calculate growth rate forecasts for each node using multiple time windows
+        for storage in latest_storage:
+            node_name = storage['node_name']
+            available_bytes = storage.get('available_bytes', 0)
+            
+            # Get 30 days of history (maximum window we need)
+            history_30d = blocking_get_storage_history(db_path, node_name, 30)
+            
+            # Filter to only API-based snapshots with used_bytes
+            valid_history_30d = [h for h in history_30d if h.get('used_bytes') is not None]
+            
+            if len(valid_history_30d) < 2:
+                # Not enough data for forecast
+                storage['growth_rate_bytes_per_day'] = None
+                storage['growth_rate_gb_per_day'] = None
+                storage['days_until_full'] = None
+                storage['forecast_data_points'] = len(valid_history_30d)
+                storage['growth_rates'] = {}
+                continue
+            
+            # Calculate growth rates for multiple time windows
+            import datetime
+            time_windows = [1, 7, 30]  # days
+            growth_rates = {}
+            
+            for days in time_windows:
+                # Filter history to the specified window
+                cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+                valid_history = [h for h in valid_history_30d
+                               if datetime.datetime.fromisoformat(h['timestamp']) >= cutoff]
+                
+                if len(valid_history) < 2:
+                    # Not enough data for this window
+                    growth_rates[f'{days}d'] = {
+                        'growth_rate_bytes_per_day': None,
+                        'growth_rate_gb_per_day': None,
+                        'days_until_full': None,
+                        'data_points': len(valid_history)
+                    }
+                    continue
+                
+                # Calculate linear regression for this window
+                timestamps = [(datetime.datetime.fromisoformat(h['timestamp']).timestamp() / 86400)
+                             for h in valid_history]  # Convert to days
+                used_bytes = [h['used_bytes'] for h in valid_history]
+                
+                n = len(timestamps)
+                sum_x = sum(timestamps)
+                sum_y = sum(used_bytes)
+                sum_xy = sum(x * y for x, y in zip(timestamps, used_bytes))
+                sum_x2 = sum(x * x for x in timestamps)
+                
+                # Calculate slope (bytes per day)
+                denominator = (n * sum_x2) - (sum_x * sum_x)
+                if denominator == 0:
+                    growth_rates[f'{days}d'] = {
+                        'growth_rate_bytes_per_day': None,
+                        'growth_rate_gb_per_day': None,
+                        'days_until_full': None,
+                        'data_points': n
+                    }
+                    continue
+                
+                slope = ((n * sum_xy) - (sum_x * sum_y)) / denominator
+                
+                # Calculate days until full for this growth rate
+                if slope <= 0:
+                    days_until_full = None
+                elif available_bytes > 0:
+                    days_until_full = available_bytes / slope
+                else:
+                    days_until_full = None
+                
+                growth_rates[f'{days}d'] = {
+                    'growth_rate_bytes_per_day': round(slope) if slope > 0 else 0,
+                    'growth_rate_gb_per_day': round(slope / (1024**3), 2) if slope > 0 else 0,
+                    'days_until_full': round(days_until_full, 1) if days_until_full else None,
+                    'data_points': n
+                }
+                
+                log.debug(f"[{node_name}] {days}d window: {growth_rates[f'{days}d']['growth_rate_gb_per_day']} GB/day "
+                         f"using {n} points")
+            
+            # Use 7-day window as the primary forecast for backward compatibility
+            primary_rate = growth_rates.get('7d', {})
+            storage['growth_rate_bytes_per_day'] = primary_rate.get('growth_rate_bytes_per_day')
+            storage['growth_rate_gb_per_day'] = primary_rate.get('growth_rate_gb_per_day')
+            storage['days_until_full'] = primary_rate.get('days_until_full')
+            storage['forecast_data_points'] = primary_rate.get('data_points', 0)
+            
+            # Add all time windows
+            storage['growth_rates'] = growth_rates
+        
+        return latest_storage
+        
+    except Exception:
+        log.error("Failed to get latest storage with forecast:", exc_info=True)
+        return []
