@@ -294,6 +294,62 @@ async def websocket_handler(request):
                         )
                         payload = {"type": "storage_history", "data": history_data}
                         await ws.send_json(payload)
+                    
+                    elif msg_type == 'get_active_alerts':
+                        # Phase 4: Get active alerts
+                        view = data.get('view', ['Aggregate'])
+                        nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
+                        
+                        if 'alert_manager' in app:
+                            alerts = await app['alert_manager'].get_active_alerts(nodes_to_query)
+                            payload = {"type": "active_alerts", "data": alerts}
+                            await ws.send_json(payload)
+                        else:
+                            await ws.send_json({"type": "error", "message": "Alert manager not initialized"})
+                    
+                    elif msg_type == 'acknowledge_alert':
+                        # Phase 4: Acknowledge an alert
+                        alert_id = data.get('alert_id')
+                        
+                        if not alert_id:
+                            await ws.send_json({"type": "error", "message": "alert_id required"})
+                            continue
+                        
+                        if 'alert_manager' in app:
+                            success = await app['alert_manager'].acknowledge_alert(alert_id)
+                            payload = {"type": "alert_acknowledge_result", "success": success, "alert_id": alert_id}
+                            await ws.send_json(payload)
+                        else:
+                            await ws.send_json({"type": "error", "message": "Alert manager not initialized"})
+                    
+                    elif msg_type == 'get_insights':
+                        # Phase 4: Get recent insights
+                        view = data.get('view', ['Aggregate'])
+                        hours = data.get('hours', 24)
+                        nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
+                        
+                        loop = asyncio.get_running_loop()
+                        from .config import DATABASE_FILE
+                        from .database import blocking_get_insights
+                        
+                        insights = await loop.run_in_executor(
+                            app['db_executor'],
+                            blocking_get_insights,
+                            DATABASE_FILE,
+                            nodes_to_query,
+                            hours
+                        )
+                        payload = {"type": "insights_data", "data": insights}
+                        await ws.send_json(payload)
+                    
+                    elif msg_type == 'get_alert_summary':
+                        # Phase 4: Get alert summary
+                        if 'alert_manager' in app:
+                            summary = app['alert_manager'].get_alert_summary()
+                            payload = {"type": "alert_summary", "data": summary}
+                            await ws.send_json(payload)
+                        else:
+                            await ws.send_json({"type": "alert_summary", "data": {"critical": 0, "warning": 0, "info": 0, "total": 0}})
 
                 except Exception:
                     log.error("Could not parse websocket message:", exc_info=True)

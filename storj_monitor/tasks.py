@@ -315,6 +315,11 @@ async def start_background_tasks(app):
         log.info(f"Enhanced monitoring enabled for {len(app['api_clients'])} node(s)")
         app['tasks'].append(asyncio.create_task(reputation_polling_task(app)))  # Phase 1.3
         app['tasks'].append(asyncio.create_task(storage_polling_task(app)))  # Phase 2.2
+    
+    # Add alert evaluation task (Phase 4)
+    from .alert_manager import alert_evaluation_task
+    app['tasks'].append(asyncio.create_task(alert_evaluation_task(app)))
+    log.info("Alert evaluation task initialized")
 
 
 async def cleanup_background_tasks(app):

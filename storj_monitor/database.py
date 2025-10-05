@@ -144,6 +144,64 @@ def init_db():
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_storage_node_time ON storage_snapshots (node_name, timestamp);')
     
+    # --- Alerts Table (Phase 4) ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME NOT NULL,
+            node_name TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            acknowledged INTEGER DEFAULT 0,
+            acknowledged_at DATETIME,
+            resolved INTEGER DEFAULT 0,
+            resolved_at DATETIME,
+            metadata TEXT
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_alerts_node_time ON alerts (node_name, timestamp);')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (acknowledged, resolved, timestamp);')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts (severity, timestamp);')
+    
+    # --- Insights Table (Phase 4) ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS insights (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME NOT NULL,
+            node_name TEXT NOT NULL,
+            insight_type TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            category TEXT,
+            confidence REAL,
+            acknowledged INTEGER DEFAULT 0,
+            metadata TEXT
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_insights_node_time ON insights (node_name, timestamp);')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_insights_type ON insights (insight_type, timestamp);')
+    
+    # --- Analytics Baselines Table (Phase 4) ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS analytics_baselines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_name TEXT NOT NULL,
+            metric_name TEXT NOT NULL,
+            window_hours INTEGER NOT NULL,
+            mean_value REAL,
+            std_dev REAL,
+            min_value REAL,
+            max_value REAL,
+            sample_count INTEGER,
+            last_updated DATETIME NOT NULL,
+            UNIQUE(node_name, metric_name, window_hours)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_baselines_node_metric ON analytics_baselines (node_name, metric_name);')
+    
     conn.commit()
     conn.close()
     log.info("Database schema is valid and ready.")
@@ -855,6 +913,276 @@ def blocking_get_storage_history(
     except Exception:
         log.error("Failed to get storage history:", exc_info=True)
         return []
+
+
+# --- Alert Management Functions (Phase 4) ---
+
+def blocking_write_alert(db_path: str, alert: Dict[str, Any]) -> bool:
+    """
+    Write an alert to the database.
+    
+    Args:
+        db_path: Path to database file
+        alert: Alert data dict
+    
+    Returns:
+        True if successful
+    """
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO alerts
+                (timestamp, node_name, alert_type, severity, title, message, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                alert['timestamp'].isoformat(),
+                alert['node_name'],
+                alert['alert_type'],
+                alert['severity'],
+                alert['title'],
+                alert['message'],
+                json.dumps(alert.get('metadata', {}))
+            ))
+            conn.commit()
+        log.info(f"Successfully wrote alert for {alert['node_name']}: {alert['title']}")
+        return True
+    except Exception:
+        log.error("Failed to write alert to DB:", exc_info=True)
+        return False
+
+
+def blocking_get_active_alerts(db_path: str, node_names: List[str] = None) -> List[Dict[str, Any]]:
+    """
+    Get active (unacknowledged and unresolved) alerts.
+    
+    Args:
+        db_path: Path to database file
+        node_names: Optional list of node names to filter
+    
+    Returns:
+        List of active alerts
+    """
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            if node_names:
+                placeholders = ','.join('?' for _ in node_names)
+                query = f"""
+                    SELECT * FROM alerts
+                    WHERE node_name IN ({placeholders})
+                      AND acknowledged = 0
+                      AND resolved = 0
+                    ORDER BY timestamp DESC
+                """
+                results = conn.execute(query, node_names).fetchall()
+            else:
+                query = """
+                    SELECT * FROM alerts
+                    WHERE acknowledged = 0 AND resolved = 0
+                    ORDER BY timestamp DESC
+                """
+                results = conn.execute(query).fetchall()
+            
+            return [dict(row) for row in results]
+    except Exception:
+        log.error("Failed to get active alerts:", exc_info=True)
+        return []
+
+
+def blocking_acknowledge_alert(db_path: str, alert_id: int) -> bool:
+    """Acknowledge an alert."""
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE alerts
+                SET acknowledged = 1, acknowledged_at = ?
+                WHERE id = ?
+            ''', (datetime.datetime.now(datetime.timezone.utc).isoformat(), alert_id))
+            conn.commit()
+        return True
+    except Exception:
+        log.error(f"Failed to acknowledge alert {alert_id}:", exc_info=True)
+        return False
+
+
+def blocking_resolve_alert(db_path: str, alert_id: int) -> bool:
+    """Resolve an alert."""
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE alerts
+                SET resolved = 1, resolved_at = ?
+                WHERE id = ?
+            ''', (datetime.datetime.now(datetime.timezone.utc).isoformat(), alert_id))
+            conn.commit()
+        return True
+    except Exception:
+        log.error(f"Failed to resolve alert {alert_id}:", exc_info=True)
+        return False
+
+
+def blocking_get_alert_history(
+    db_path: str,
+    node_name: str,
+    hours: int = 24,
+    include_resolved: bool = True
+) -> List[Dict[str, Any]]:
+    """Get alert history for a node."""
+    try:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+        cutoff_iso = cutoff.isoformat()
+        
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            if include_resolved:
+                query = """
+                    SELECT * FROM alerts
+                    WHERE node_name = ? AND timestamp >= ?
+                    ORDER BY timestamp DESC
+                """
+            else:
+                query = """
+                    SELECT * FROM alerts
+                    WHERE node_name = ? AND timestamp >= ? AND resolved = 0
+                    ORDER BY timestamp DESC
+                """
+            
+            results = conn.execute(query, (node_name, cutoff_iso)).fetchall()
+            return [dict(row) for row in results]
+    except Exception:
+        log.error("Failed to get alert history:", exc_info=True)
+        return []
+
+
+# --- Insights Functions (Phase 4) ---
+
+def blocking_write_insight(db_path: str, insight: Dict[str, Any]) -> bool:
+    """Write an insight to the database."""
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO insights
+                (timestamp, node_name, insight_type, severity, title, description,
+                 category, confidence, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                insight['timestamp'].isoformat(),
+                insight['node_name'],
+                insight['insight_type'],
+                insight['severity'],
+                insight['title'],
+                insight['description'],
+                insight.get('category'),
+                insight.get('confidence'),
+                json.dumps(insight.get('metadata', {}))
+            ))
+            conn.commit()
+        return True
+    except Exception:
+        log.error("Failed to write insight to DB:", exc_info=True)
+        return False
+
+
+def blocking_get_insights(
+    db_path: str,
+    node_names: List[str] = None,
+    hours: int = 24
+) -> List[Dict[str, Any]]:
+    """Get recent insights."""
+    try:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+        cutoff_iso = cutoff.isoformat()
+        
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            if node_names:
+                placeholders = ','.join('?' for _ in node_names)
+                query = f"""
+                    SELECT * FROM insights
+                    WHERE node_name IN ({placeholders}) AND timestamp >= ?
+                    ORDER BY timestamp DESC
+                """
+                results = conn.execute(query, (*node_names, cutoff_iso)).fetchall()
+            else:
+                query = """
+                    SELECT * FROM insights
+                    WHERE timestamp >= ?
+                    ORDER BY timestamp DESC
+                """
+                results = conn.execute(query, (cutoff_iso,)).fetchall()
+            
+            return [dict(row) for row in results]
+    except Exception:
+        log.error("Failed to get insights:", exc_info=True)
+        return []
+
+
+# --- Analytics Baseline Functions (Phase 4) ---
+
+def blocking_update_baseline(
+    db_path: str,
+    node_name: str,
+    metric_name: str,
+    window_hours: int,
+    stats: Dict[str, float]
+) -> bool:
+    """Update or create a baseline for a metric."""
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO analytics_baselines
+                (node_name, metric_name, window_hours, mean_value, std_dev,
+                 min_value, max_value, sample_count, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                node_name,
+                metric_name,
+                window_hours,
+                stats['mean'],
+                stats['std_dev'],
+                stats['min'],
+                stats['max'],
+                stats['count'],
+                datetime.datetime.now(datetime.timezone.utc).isoformat()
+            ))
+            conn.commit()
+        return True
+    except Exception:
+        log.error(f"Failed to update baseline for {metric_name}:", exc_info=True)
+        return False
+
+
+def blocking_get_baseline(
+    db_path: str,
+    node_name: str,
+    metric_name: str,
+    window_hours: int = 168  # 7 days default
+) -> Optional[Dict[str, Any]]:
+    """Get baseline statistics for a metric."""
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            query = """
+                SELECT * FROM analytics_baselines
+                WHERE node_name = ? AND metric_name = ? AND window_hours = ?
+            """
+            result = conn.execute(query, (node_name, metric_name, window_hours)).fetchone()
+            
+            if result:
+                return dict(result)
+            return None
+    except Exception:
+        log.error(f"Failed to get baseline for {metric_name}:", exc_info=True)
+        return None
 
 
 def blocking_get_latest_storage(

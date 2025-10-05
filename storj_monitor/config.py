@@ -48,6 +48,24 @@ STORAGE_FORECAST_CRITICAL_DAYS = 7  # Critical if full within 7 days
 LATENCY_WARNING_MS = 5000  # 5 seconds
 LATENCY_CRITICAL_MS = 10000  # 10 seconds
 
+# --- Analytics & Anomaly Detection Configuration (Phase 4) ---
+ENABLE_ANOMALY_DETECTION = True  # Enable anomaly detection
+ANOMALY_ZSCORE_THRESHOLD = 3.0  # Z-score threshold for anomaly detection
+ANOMALY_BASELINE_DAYS = 7  # Days of historical data for baseline calculation
+ALERT_EVALUATION_INTERVAL_MINUTES = 5  # How often to evaluate alert conditions
+ALERT_COOLDOWN_MINUTES = 15  # Minimum time between duplicate alerts
+ANALYTICS_BASELINE_UPDATE_HOURS = 24  # How often to update statistical baselines
+
+# --- Notification Settings (Phase 4) ---
+ENABLE_BROWSER_NOTIFICATIONS = True  # Enable browser push notifications
+ENABLE_EMAIL_NOTIFICATIONS = False  # Enable email notifications (not implemented yet)
+ENABLE_WEBHOOK_NOTIFICATIONS = False  # Enable webhook notifications (not implemented yet)
+
+# --- Data Retention (Phase 4) ---
+DB_ALERTS_RETENTION_DAYS = 90  # How many days of alert history to keep
+DB_INSIGHTS_RETENTION_DAYS = 90  # How many days of insights to keep
+DB_ANALYTICS_RETENTION_DAYS = 180  # How many days of analytics baselines to keep
+
 # --- Global Constants ---
 SATELLITE_NAMES = {'121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1',
                    '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1',
