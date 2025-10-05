@@ -44,6 +44,8 @@ let hashstoreFilters = { satellite: 'all', store: 'all' };
 let hashstoreSort = { column: 'last_run_iso', direction: 'desc' };
 let latencyTimeWindow = { firstIso: null, lastIso: null };
 let ws;
+window.ws = null;  // Global reference for AlertsPanel
+window.currentView = ['Aggregate'];  // Global reference for AlertsPanel
 
 // --- Helper Functions ---
 function formatBytes(bytes, decimals = 2) { if (!bytes || bytes === 0) return '0 Bytes'; const k = 1024; const dm = decimals < 0 ? 0 : decimals; const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']; const i = Math.floor(Math.log(bytes) / Math.log(k)); return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]; }
@@ -484,6 +486,30 @@ function handleWebSocketMessage(data) {
         case 'storage_history': charts.updateStorageHistoryChart(data.data); break;
         case 'reputation_alerts': updateAlertsPanel(data.alerts, 'reputation'); break;
         case 'storage_alerts': updateAlertsPanel(data.alerts, 'storage'); break;
+        
+        // Phase 4: AlertsPanel integration
+        case 'active_alerts':
+            if (window.alertsPanel) {
+                window.alertsPanel.updateAlerts(data.data);
+            }
+            break;
+        case 'new_alert':
+            if (window.alertsPanel) {
+                window.alertsPanel.handleNewAlert(data.alert);
+            }
+            break;
+        case 'insights_data':
+            if (window.alertsPanel) {
+                window.alertsPanel.updateInsights(data.data);
+            }
+            break;
+        case 'alert_summary':
+            // Optional: Update UI with summary counts
+            console.log('Alert summary:', data.data);
+            break;
+        case 'alert_acknowledge_result':
+            console.log('Alert acknowledged:', data.alert_id, data.success);
+            break;
     }
 }
 
@@ -519,6 +545,7 @@ function setupEventListeners() {
         const isAggregate = clickedView === 'Aggregate';
         if (isAggregate) { currentNodeView = ['Aggregate']; } else { if (currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate') { currentNodeView = [clickedView]; } else { const index = currentNodeView.indexOf(clickedView); if (index > -1) { currentNodeView.splice(index, 1); } else { currentNodeView.push(clickedView); } } }
         if (!isAggregate) { if (currentNodeView.length === 0 || currentNodeView.length === availableNodes.length) { currentNodeView = ['Aggregate']; } }
+        window.currentView = currentNodeView;  // Update global reference for AlertsPanel
         initializePerformanceDataStateForView(currentNodeView);
         renderNodeSelector();
         heatmap.clearData();
