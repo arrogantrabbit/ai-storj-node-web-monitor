@@ -58,6 +58,100 @@
              </div>
         </div>
 
+        <!-- Phase 3: Enhanced Monitoring Cards -->
+        
+        <div id="reputation-card" class="card">
+            <h3 class="card-title">Node Reputation Scores</h3>
+            <div class="card-content">
+                <div id="reputation-content">
+                    <p class="loading-message">Loading reputation data...</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="storage-health-card" class="card">
+            <h3 class="card-title">Storage Health & Capacity</h3>
+            <div class="card-content">
+                <div id="storage-stats" class="stats-grid">
+                    <div class="stat">
+                        <div id="storage-used-percent" class="stat-value">...%</div>
+                        <div class="stat-label">Disk Used</div>
+                    </div>
+                    <div class="stat">
+                        <div id="storage-available" class="stat-value">...</div>
+                        <div class="stat-label">Available Space</div>
+                    </div>
+                    <div class="stat">
+                        <div id="storage-growth-rate" class="stat-value">...</div>
+                        <div class="stat-label">Growth Rate</div>
+                    </div>
+                    <div class="stat">
+                        <div id="storage-days-until-full" class="stat-value">...</div>
+                        <div class="stat-label">Days Until Full</div>
+                    </div>
+                </div>
+                <div style="position: relative; height: 250px; margin-top: 20px;">
+                    <canvas id="storageHistoryChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div id="latency-card" class="card">
+            <h3 class="card-title">Operation Latency Analytics</h3>
+            <div class="card-content">
+                <div id="latency-stats" class="stats-grid" style="grid-template-columns: repeat(4, 1fr);">
+                    <div class="stat">
+                        <div id="latency-p50" class="stat-value">...</div>
+                        <div class="stat-label">p50 Latency</div>
+                    </div>
+                    <div class="stat">
+                        <div id="latency-p95" class="stat-value">...</div>
+                        <div class="stat-label">p95 Latency</div>
+                    </div>
+                    <div class="stat">
+                        <div id="latency-p99" class="stat-value">...</div>
+                        <div class="stat-label">p99 Latency</div>
+                    </div>
+                    <div class="stat">
+                        <div id="latency-mean" class="stat-value">...</div>
+                        <div class="stat-label">Mean Latency</div>
+                    </div>
+                </div>
+                <div style="position: relative; height: 250px; margin-top: 20px;">
+                    <canvas id="latencyHistogramChart"></canvas>
+                </div>
+                <div class="table-container" style="margin-top: 15px;">
+                    <h5>Slowest Recent Operations</h5>
+                    <table class="info-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Action</th>
+                                <th class="numeric">Duration</th>
+                                <th>Satellite</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="slow-operations-body">
+                            <tr><td colspan="5" style="text-align: center;">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="alerts-panel-card" class="card">
+            <div class="card-header-flex">
+                <h3 class="card-title">Active Alerts</h3>
+                <span id="alerts-badge" class="alerts-badge">0</span>
+            </div>
+            <div class="card-content">
+                <div id="alerts-container">
+                    <p class="no-alerts-message">No active alerts - all systems healthy ✓</p>
+                </div>
+            </div>
+        </div>
+
         <div id="performance-card" class="card">
             <div class="chart-header">
                 <h3 id="performance-title" class="card-title">Live Performance</h3>

@@ -216,6 +216,34 @@ sqlite3 storj_stats.db "SELECT * FROM storage_snapshots ORDER BY timestamp DESC 
 sqlite3 storj_stats.db "SELECT action, AVG(duration_ms) as avg_ms, MAX(duration_ms) as max_ms FROM events WHERE duration_ms IS NOT NULL GROUP BY action;"
 ```
 
+#### Enabling Latency Analytics
+
+**⚠️ Important:** Latency analytics require **DEBUG log level** on your Storj node.
+
+By default, Storj nodes log at INFO level, which includes operation completion messages but not start messages. To enable accurate latency tracking, the monitor calculates duration by measuring the time between "operation started" (DEBUG) and "operation completed" (INFO) messages.
+
+**To enable debug logging on your Storj node:**
+
+1. **Docker:** Add `--log.level=debug` to your docker run command:
+   ```bash
+   docker run ... storjlabs/storagenode:latest --log.level=debug
+   ```
+
+2. **Binary/Service:** Add `--log.level=debug` to your config or startup command:
+   ```bash
+   storagenode run --log.level=debug
+   ```
+
+3. **Verify debug logging is enabled:**
+   ```bash
+   # You should see "DEBUG" messages in your log
+   tail -f /path/to/storagenode.log | grep DEBUG
+   ```
+
+**Performance Impact:** Debug logging increases log volume by approximately 2-3x. Most node operators find this acceptable given the valuable performance insights gained.
+
+**Without debug logging:** The latency analytics card will show "N/A" for all metrics, as operation durations cannot be calculated.
+
 **Via WebSocket API (programmatically):**
 ```javascript
 // Get reputation data

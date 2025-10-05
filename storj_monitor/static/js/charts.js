@@ -186,3 +186,156 @@ export function updateHashstoreChart(data) {
     ];
     hashstoreChartInstance.update('none');
 }
+
+// --- Phase 3: Enhanced Monitoring Charts ---
+
+let storageHistoryChartInstance;
+let latencyHistogramChartInstance;
+
+export function createStorageHistoryChart() {
+    if (storageHistoryChartInstance) storageHistoryChartInstance.destroy();
+    const ctx = document.getElementById('storageHistoryChart').getContext('2d');
+    storageHistoryChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            datasets: [
+                {
+                    label: 'Used Space',
+                    data: [],
+                    borderColor: '#0ea5e9',
+                    backgroundColor: 'rgba(14, 165, 233, 0.1)',
+                    fill: true,
+                    tension: 0.3
+                },
+                {
+                    label: 'Trash Space',
+                    data: [],
+                    borderColor: '#f59e0b',
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    fill: true,
+                    tension: 0.3
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'day',
+                        tooltipFormat: 'PP'
+                    },
+                    title: {
+                        display: true,
+                        text: 'Date'
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Storage'
+                    },
+                    ticks: {
+                        callback: (value) => formatBytes(value, 0)
+                    }
+                }
+            },
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) label += ': ';
+                            if (context.parsed.y !== null) {
+                                label += formatBytes(context.parsed.y);
+                            }
+                            return label;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+export function updateStorageHistoryChart(historyData) {
+    if (!storageHistoryChartInstance) createStorageHistoryChart();
+    if (!historyData || historyData.length === 0) return;
+    
+    const usedData = historyData.map(item => ({
+        x: new Date(item.timestamp),
+        y: item.used_bytes
+    }));
+    
+    const trashData = historyData.map(item => ({
+        x: new Date(item.timestamp),
+        y: item.trash_bytes
+    }));
+    
+    storageHistoryChartInstance.data.datasets[0].data = usedData;
+    storageHistoryChartInstance.data.datasets[1].data = trashData;
+    storageHistoryChartInstance.update();
+}
+
+export function createLatencyHistogramChart() {
+    if (latencyHistogramChartInstance) latencyHistogramChartInstance.destroy();
+    const ctx = document.getElementById('latencyHistogramChart').getContext('2d');
+    latencyHistogramChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Operations',
+                data: [],
+                backgroundColor: '#0ea5e9'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Latency Range (ms)'
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Number of Operations'
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return `${context.parsed.y} operations`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+export function updateLatencyHistogramChart(histogramData) {
+    if (!latencyHistogramChartInstance) createLatencyHistogramChart();
+    if (!histogramData || histogramData.length === 0) return;
+    
+    // histogramData is an array of buckets from backend
+    const labels = histogramData.map(bucket => bucket.label || `${bucket.bucket_start_ms}-${bucket.bucket_end_ms}ms`);
+    const data = histogramData.map(bucket => bucket.count);
+    
+    latencyHistogramChartInstance.data.labels = labels;
+    latencyHistogramChartInstance.data.datasets[0].data = data;
+    latencyHistogramChartInstance.update();
+}

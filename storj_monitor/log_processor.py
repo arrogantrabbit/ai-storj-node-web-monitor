@@ -139,7 +139,7 @@ def parse_log_line(line: str, node_name: str, geoip_reader, geoip_cache: Dict) -
         if 'piecestore' not in line and 'hashstore' not in line:
             return None
 
-        log_level_part = "INFO" if "INFO" in line else "ERROR" if "ERROR" in line else None
+        log_level_part = "INFO" if "INFO" in line else "DEBUG" if "DEBUG" in line else "ERROR" if "ERROR" in line else None
         if not log_level_part: return None
 
         parts = line.split(log_level_part)
@@ -180,6 +180,17 @@ def parse_log_line(line: str, node_name: str, geoip_reader, geoip_cache: Dict) -
                 }
                 return {"type": "hashstore_end", "key": compaction_key, "timestamp": timestamp_obj,
                         "data": compaction_stats}
+            return None
+
+        # --- Check for operation start/completion messages (DEBUG level) ---
+        if "download started" in line or "upload started" in line:
+            # This is a start event - return it for tracking
+            piece_id = log_data.get("Piece ID")
+            sat_id = log_data.get("Satellite ID")
+            action = log_data.get("Action")
+            if all([piece_id, sat_id, action]):
+                return {"type": "operation_start", "piece_id": piece_id,
+                       "satellite_id": sat_id, "action": action, "timestamp": timestamp_obj}
             return None
 
         # --- Original Traffic Log Processing ---
@@ -242,6 +253,11 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
     geoip_cache = app_state['geoip_cache']
     node_state = app_state['nodes'][node_name]
     log.info(f"Log processor task started for node: {node_name}")
+    
+    # Track operation start times for duration calculation
+    # Key: (piece_id, satellite_id, action) -> arrival_time
+    operation_start_times = {}
+    MAX_TRACKED_OPERATIONS = 10000  # Prevent memory growth
 
     try:
         while True:
@@ -250,8 +266,30 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
             if not parsed:
                 continue
 
+            if parsed['type'] == 'operation_start':
+                # Store start time for this operation
+                key = (parsed['piece_id'], parsed['satellite_id'], parsed['action'])
+                operation_start_times[key] = arrival_time
+                
+                # Prevent unbounded growth
+                if len(operation_start_times) > MAX_TRACKED_OPERATIONS:
+                    # Remove oldest 20% of entries
+                    to_remove = len(operation_start_times) // 5
+                    for _ in range(to_remove):
+                        operation_start_times.pop(next(iter(operation_start_times)))
+                continue
+
             if parsed['type'] == 'traffic_event':
                 event = parsed['data']
+                
+                # Calculate duration from start time if available
+                if event['duration_ms'] is None:
+                    key = (event['piece_id'], event['satellite_id'], event['action'])
+                    start_time = operation_start_times.pop(key, None)
+                    if start_time is not None:
+                        duration_seconds = arrival_time - start_time
+                        event['duration_ms'] = int(duration_seconds * 1000)  # Convert to milliseconds
+                
                 if event['category'] != 'other':
                     node_state['unprocessed_performance_events'].append({
                         'ts_unix': event['ts_unix'], 'category': event['category'],

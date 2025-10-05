@@ -140,3 +140,219 @@ body.map-maximized { overflow: hidden; }
     #display-menu-dropdown { background: #2a2a2a; border-color: #555; }
     #display-menu-dropdown h5 { color: #fff; border-bottom-color: #444; }
 }
+
+/* --- Phase 3: Enhanced Monitoring Styles --- */
+
+/* Reputation Card */
+#reputation-content {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.reputation-satellite {
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #f8f9fa;
+}
+
+.reputation-satellite-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.reputation-satellite-name {
+    font-weight: 600;
+    font-size: 1.1em;
+}
+
+.reputation-scores {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 15px;
+}
+
+.reputation-score-item {
+    text-align: center;
+}
+
+.reputation-score-value {
+    font-size: 1.5em;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+}
+
+.reputation-score-label {
+    font-size: 0.85em;
+    color: #606770;
+    margin-top: 4px;
+}
+
+.trend-arrow {
+    font-size: 0.8em;
+    margin-left: 4px;
+}
+
+.trend-up { color: #22c55e; }
+.trend-down { color: #ef4444; }
+.trend-stable { color: #888; }
+
+/* Storage Health Card */
+.storage-capacity-bar {
+    width: 100%;
+    height: 30px;
+    background: #e0e0e0;
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    margin: 15px 0;
+}
+
+.storage-segment {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8em;
+    color: white;
+    font-weight: 600;
+}
+
+.storage-used { background: #0ea5e9; }
+.storage-trash { background: #f59e0b; }
+.storage-free { background: #22c55e; }
+
+/* Latency Card */
+#latency-stats .stat-value.latency-good { color: #22c55e; }
+#latency-stats .stat-value.latency-ok { color: #f59e0b; }
+#latency-stats .stat-value.latency-bad { color: #ef4444; }
+
+/* Alerts Panel */
+.alerts-badge {
+    background: #ef4444;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.9em;
+    font-weight: bold;
+    min-width: 24px;
+    text-align: center;
+}
+
+.alerts-badge.no-alerts {
+    background: #22c55e;
+}
+
+.alert-item {
+    padding: 12px;
+    margin-bottom: 10px;
+    border-radius: 6px;
+    border-left: 4px solid;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+}
+
+.alert-item.critical {
+    background: #fee;
+    border-color: #ef4444;
+}
+
+.alert-item.warning {
+    background: #fffbeb;
+    border-color: #f59e0b;
+}
+
+.alert-item.info {
+    background: #eff6ff;
+    border-color: #3b82f6;
+}
+
+.alert-content {
+    flex: 1;
+}
+
+.alert-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.alert-message {
+    font-size: 0.9em;
+    color: #606770;
+}
+
+.alert-time {
+    font-size: 0.8em;
+    color: #888;
+    margin-top: 4px;
+}
+
+.alert-dismiss {
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 1.2em;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.alert-dismiss:hover {
+    color: #333;
+}
+
+.no-alerts-message, .loading-message {
+    text-align: center;
+    color: #888;
+    padding: 20px;
+}
+
+/* Dark mode for Phase 3 components */
+@media (prefers-color-scheme: dark) {
+    .reputation-satellite {
+        background: #2a2a2a;
+        border-color: #444;
+    }
+    
+    .reputation-score-label {
+        color: #aaa;
+    }
+    
+    .storage-capacity-bar {
+        background: #333;
+    }
+    
+    .alert-item.critical {
+        background: #3d1a1a;
+        border-color: #ef4444;
+    }
+    
+    .alert-item.warning {
+        background: #3d2e1a;
+        border-color: #f59e0b;
+    }
+    
+    .alert-item.info {
+        background: #1a2a3d;
+        border-color: #3b82f6;
+    }
+    
+    .alert-message, .alert-time {
+        color: #aaa;
+    }
+    
+    .alert-dismiss:hover {
+        color: #fff;
+    }
+    
+    .no-alerts-message, .loading-message {
+        color: #666;
+    }
+}

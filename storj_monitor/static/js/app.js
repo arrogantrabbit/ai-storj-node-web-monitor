@@ -9,6 +9,10 @@ const TOGGLEABLE_CARDS = {
     'map-card': 'Live Traffic Heatmap',
     'stats-card': 'Overall Success Rates & Speed',
     'health-card': 'Node Health & History',
+    'reputation-card': 'Node Reputation Scores',
+    'storage-health-card': 'Storage Health & Capacity',
+    'latency-card': 'Operation Latency Analytics',
+    'alerts-panel-card': 'Active Alerts',
     'performance-card': 'Live Performance',
     'satellite-card': 'Traffic by Satellite',
     'analysis-card': 'Network & Error Analysis',
@@ -134,7 +138,7 @@ function reflowGrid() {
     if (perfVisible && satVisible) { setStyle('performance-card', '1 / 7', `${currentRow} / ${currentRow + 1}`); setStyle('satellite-card', '7 / 13', `${currentRow} / ${currentRow + 1}`); currentRow++; }
     else if (perfVisible) { setStyle('performance-card', '1 / -1', `${currentRow} / ${currentRow + 1}`); currentRow++; }
     else if (satVisible) { setStyle('satellite-card', '1 / -1', `${currentRow} / ${currentRow + 1}`); currentRow++; }
-    ['analysis-card', 'size-charts-card', 'active-compactions-card', 'hashstore-chart-card', 'hashstore-card'].forEach(cardId => {
+    ['reputation-card', 'storage-health-card', 'latency-card', 'alerts-panel-card', 'analysis-card', 'size-charts-card', 'active-compactions-card', 'hashstore-chart-card', 'hashstore-card'].forEach(cardId => {
         if (isVisible(cardId)) { setStyle(cardId, '1 / -1', `${currentRow} / ${currentRow + 1}`); currentRow++; }
     });
     if (mapVisible) {
@@ -182,6 +186,191 @@ function updateTitles(firstIso, lastIso) {
 function updateHistoricalTable(history) { const tbody = document.getElementById('history-body'); tbody.innerHTML = ''; if (!history || history.length === 0) { tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No historical data yet.</td></tr>'; return; } for (const hour of history) { const totalDl = hour.dl_success + hour.dl_fail, dlRate = totalDl > 0 ? (hour.dl_success / totalDl * 100) : 100; const totalUl = hour.ul_success + hour.ul_fail, ulRate = totalUl > 0 ? (hour.ul_success / totalUl * 100) : 100; const totalAudit = hour.audit_success + hour.audit_fail, auditRate = totalAudit > 0 ? (hour.audit_success / totalAudit * 100) : 100; const dlSpeed = hour.dl_mbps !== undefined ? hour.dl_mbps.toFixed(2) : '...'; const ulSpeed = hour.ul_mbps !== undefined ? hour.ul_mbps.toFixed(2) : '...'; const row = tbody.insertRow(); row.innerHTML = `<td>${new Date(hour.hour_timestamp).toLocaleTimeString([],{hour:'numeric'})}</td><td class="numeric ${getRateClass(dlRate)}">${dlRate.toFixed(2)}%</td><td class="numeric ${getRateClass(ulRate)}">${ulRate.toFixed(2)}%</td><td class="numeric ${getRateClass(auditRate)}">${auditRate.toFixed(2)}%</td><td class="numeric">${dlSpeed} Mbps</td><td class="numeric">${ulSpeed} Mbps</td>`; } }
 function updateAnalysisTables(data) { const errorBody = document.getElementById('error-body'); errorBody.innerHTML = ''; if (data.error_categories && data.error_categories.length > 0) { data.error_categories.forEach(e => { errorBody.innerHTML += `<tr><td class="reason-cell">${e.reason}</td><td class="numeric">${e.count}</td></tr>`; }); } else { errorBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No errors in this time window.</td></tr>'; } const piecesBody = document.getElementById('pieces-body'); piecesBody.innerHTML = ''; if (data.top_pieces && data.top_pieces.length > 0) { data.top_pieces.forEach(p => { piecesBody.innerHTML += `<tr><td class="piece-id">${p.id.substring(0,25)}...</td><td class="numeric">${p.count}</td><td class="numeric">${formatBytes(p.size)}</td></tr>`; }); } else { piecesBody.innerHTML = '<tr><td colspan="3" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesDlBody = document.getElementById('countries-dl-body'); countriesDlBody.innerHTML = ''; if (data.top_countries_dl && data.top_countries_dl.length > 0) { data.top_countries_dl.forEach(c => countriesDlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesDlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } const countriesUlBody = document.getElementById('countries-ul-body'); countriesUlBody.innerHTML = ''; if (data.top_countries_ul && data.top_countries_ul.length > 0) { data.top_countries_ul.forEach(c => countriesUlBody.innerHTML += `<tr><td>${c.country}</td><td class="numeric">${formatBytes(c.size)}</td></tr>`); } else { countriesUlBody.innerHTML = '<tr><td colspan="2" style="text-align: center;">No data in this time window.</td></tr>'; } }
 
+// --- Phase 3: Enhanced Monitoring Component Updates ---
+
+function updateReputationCard(data) {
+    if (!isCardVisible('reputation-card')) return;
+    const container = document.getElementById('reputation-content');
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p class="no-alerts-message">No reputation data available</p>';
+        return;
+    }
+    
+    let html = '';
+    data.forEach(item => {
+        const getScoreClass = (score) => {
+            if (score >= 95) return 'rate-good';
+            if (score >= 85) return 'rate-ok';
+            return 'rate-bad';
+        };
+        
+        const satName = SATELLITE_NAMES[item.satellite] || item.satellite.substring(0, 12);
+        html += `<div class="reputation-satellite">
+            <div class="reputation-satellite-header">
+                <div class="reputation-satellite-name">${satName}</div>
+                <small>Node: ${item.node_name}</small>
+            </div>
+            <div class="reputation-scores">
+                <div class="reputation-score-item">
+                    <div class="reputation-score-value ${getScoreClass(item.audit_score)}">
+                        ${item.audit_score ? item.audit_score.toFixed(2) : 'N/A'}%
+                    </div>
+                    <div class="reputation-score-label">Audit Score</div>
+                </div>
+                <div class="reputation-score-item">
+                    <div class="reputation-score-value ${getScoreClass(item.suspension_score)}">
+                        ${item.suspension_score ? item.suspension_score.toFixed(2) : 'N/A'}%
+                    </div>
+                    <div class="reputation-score-label">Suspension Score</div>
+                </div>
+                <div class="reputation-score-item">
+                    <div class="reputation-score-value ${getScoreClass(item.online_score)}">
+                        ${item.online_score ? item.online_score.toFixed(2) : 'N/A'}%
+                    </div>
+                    <div class="reputation-score-label">Online Score</div>
+                </div>
+            </div>
+        </div>`;
+    });
+    container.innerHTML = html;
+}
+
+function updateStorageHealthCard(data) {
+    if (!isCardVisible('storage-health-card')) return;
+    if (!data || data.length === 0) return;
+    
+    // Use first node's data (or aggregate if needed)
+    const storageData = data[0];
+    
+    document.getElementById('storage-used-percent').textContent =
+        storageData.used_percent ? `${storageData.used_percent.toFixed(1)}%` : 'N/A';
+    document.getElementById('storage-available').textContent =
+        storageData.available_bytes ? formatBytes(storageData.available_bytes) : 'N/A';
+    
+    // Request storage history for chart
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'get_storage_history',
+            node_name: storageData.node_name,
+            days: 7
+        }));
+    }
+}
+
+function updateLatencyCard(data) {
+    if (!isCardVisible('latency-card')) return;
+    if (!data || !data.statistics) {
+        document.getElementById('latency-p50').textContent = 'N/A';
+        document.getElementById('latency-p95').textContent = 'N/A';
+        document.getElementById('latency-p99').textContent = 'N/A';
+        document.getElementById('latency-mean').textContent = 'N/A';
+        return;
+    }
+    
+    const getLatencyClass = (ms) => {
+        if (ms < 1000) return 'latency-good';
+        if (ms < 5000) return 'latency-ok';
+        return 'latency-bad';
+    };
+    
+    const formatMs = (ms) => ms < 1000 ? `${ms.toFixed(0)}ms` : `${(ms/1000).toFixed(2)}s`;
+    
+    // Use 'all' category statistics
+    const stats = data.statistics.all || {};
+    const p50 = document.getElementById('latency-p50');
+    const p95 = document.getElementById('latency-p95');
+    const p99 = document.getElementById('latency-p99');
+    const mean = document.getElementById('latency-mean');
+    
+    p50.textContent = stats.p50 ? formatMs(stats.p50) : 'N/A';
+    p50.className = `stat-value ${stats.p50 ? getLatencyClass(stats.p50) : ''}`;
+    
+    p95.textContent = stats.p95 ? formatMs(stats.p95) : 'N/A';
+    p95.className = `stat-value ${stats.p95 ? getLatencyClass(stats.p95) : ''}`;
+    
+    p99.textContent = stats.p99 ? formatMs(stats.p99) : 'N/A';
+    p99.className = `stat-value ${stats.p99 ? getLatencyClass(stats.p99) : ''}`;
+    
+    mean.textContent = stats.mean ? formatMs(stats.mean) : 'N/A';
+    mean.className = `stat-value ${stats.mean ? getLatencyClass(stats.mean) : ''}`;
+    
+    // Update slow operations table
+    const tbody = document.getElementById('slow-operations-body');
+    if (data.slow_operations && data.slow_operations.length > 0) {
+        tbody.innerHTML = data.slow_operations.map(op => {
+            const satName = SATELLITE_NAMES[op.satellite_id] || op.satellite_id?.substring(0, 12) || 'Unknown';
+            const time = new Date(op.timestamp).toLocaleTimeString();
+            return `<tr>
+                <td>${time}</td>
+                <td>${op.action}</td>
+                <td class="numeric ${getLatencyClass(op.duration_ms)}">${formatMs(op.duration_ms)}</td>
+                <td>${satName}</td>
+                <td>${op.status}</td>
+            </tr>`;
+        }).join('');
+    } else {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No slow operations detected</td></tr>';
+    }
+}
+
+let activeAlerts = [];
+
+function updateAlertsPanel(alerts, type) {
+    if (!isCardVisible('alerts-panel-card')) return;
+    
+    // Merge new alerts with existing ones
+    if (alerts && alerts.length > 0) {
+        alerts.forEach(alert => {
+            alert.type = type;
+            alert.id = `${type}-${Date.now()}-${Math.random()}`;
+            alert.timestamp = new Date().toISOString();
+            // Check if similar alert already exists
+            const exists = activeAlerts.some(a =>
+                a.type === alert.type &&
+                a.node_name === alert.node_name &&
+                a.title === alert.title
+            );
+            if (!exists) {
+                activeAlerts.push(alert);
+            }
+        });
+    }
+    
+    renderAlertsPanel();
+}
+
+function renderAlertsPanel() {
+    const container = document.getElementById('alerts-container');
+    const badge = document.getElementById('alerts-badge');
+    
+    badge.textContent = activeAlerts.length;
+    badge.className = activeAlerts.length > 0 ? 'alerts-badge' : 'alerts-badge no-alerts';
+    
+    if (activeAlerts.length === 0) {
+        container.innerHTML = '<p class="no-alerts-message">No active alerts - all systems healthy ✓</p>';
+        return;
+    }
+    
+    const html = activeAlerts.map(alert => {
+        const time = new Date(alert.timestamp).toLocaleTimeString();
+        return `<div class="alert-item ${alert.severity}" data-alert-id="${alert.id}">
+            <div class="alert-content">
+                <div class="alert-title">${alert.title}</div>
+                <div class="alert-message">${alert.message}</div>
+                <div class="alert-time">${time} - ${alert.node_name}</div>
+            </div>
+            <button class="alert-dismiss" onclick="dismissAlert('${alert.id}')">×</button>
+        </div>`;
+    }).join('');
+    
+    container.innerHTML = html;
+}
+
+window.dismissAlert = function(alertId) {
+    activeAlerts = activeAlerts.filter(a => a.id !== alertId);
+    renderAlertsPanel();
+};
+
 // --- Active Compactions Logic ---
 let activeCompactionTimer = null;
 let currentActiveCompactions = [];
@@ -204,7 +393,7 @@ function processBatchedLogEntries(events) { if (!isCardVisible('map-card') || !e
 function processLivePerformanceUpdate(data) { const { node_name, bins } = data; const updateNodeBins = (targetNodeName) => { const maxTs = maxHistoricalTimestampByView[targetNodeName] || 0; if (!livePerformanceBins[targetNodeName]) { livePerformanceBins[targetNodeName] = {}; } const targetBins = livePerformanceBins[targetNodeName]; for (const ts in bins) { if (parseInt(ts, 10) <= maxTs) continue; if (!targetBins[ts]) { targetBins[ts] = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0 }; } const binData = bins[ts]; targetBins[ts].ingress_bytes += binData.ingress_bytes || 0; targetBins[ts].egress_bytes += binData.egress_bytes || 0; targetBins[ts].ingress_pieces += binData.ingress_pieces || 0; targetBins[ts].egress_pieces += binData.egress_pieces || 0; targetBins[ts].total_ops += binData.total_ops || 0; } const cutoff = Date.now() - (5 * 60 * 1000 + 5000); for (const ts in targetBins) { if (parseInt(ts, 10) < cutoff) delete targetBins[ts]; } }; updateNodeBins(node_name); updateNodeBins('Aggregate'); if (isCardVisible('performance-card') && performanceState.range === '5m') { const viewKey = currentNodeView.join(','); if (currentNodeView.length > 1 && currentNodeView.includes(node_name)) updateNodeBins(viewKey); clearTimeout(chartUpdateTimer); chartUpdateTimer = setTimeout(() => charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes), 250); } }
 
 // --- WebSocket Connection & Data Handling ---
-const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
+const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_reputation_data', view: currentNodeView })); ws.send(JSON.stringify({ type: 'get_latency_stats', view: currentNodeView, hours: 1 })); ws.send(JSON.stringify({ type: 'get_storage_data', view: currentNodeView })); } }, 1000); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update' && data.type !== 'log_entry_batch') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
 function handleWebSocketMessage(data) {
     switch(data.type) {
         case 'init':
@@ -246,6 +435,23 @@ function handleWebSocketMessage(data) {
         case 'hashstore_updated': console.log("[WebSocket] Hashstore data updated. Requesting new data."); requestHashstoreData(); break;
         case 'hashstore_stats_data': updateHashstorePanel(data.data); break;
         case 'active_compactions_update': updateActiveCompactions(data.compactions); break;
+        case 'reputation_data': updateReputationCard(data.data); break;
+        case 'latency_stats':
+            updateLatencyCard(data.data);
+            // Request histogram data
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'get_latency_histogram',
+                    view: currentNodeView,
+                    hours: 1
+                }));
+            }
+            break;
+        case 'latency_histogram': charts.updateLatencyHistogramChart(data.data); break;
+        case 'storage_data': updateStorageHealthCard(data.data); break;
+        case 'storage_history': charts.updateStorageHistoryChart(data.data); break;
+        case 'reputation_alerts': updateAlertsPanel(data.alerts, 'reputation'); break;
+        case 'storage_alerts': updateAlertsPanel(data.alerts, 'storage'); break;
     }
 }
 
@@ -340,9 +546,36 @@ document.addEventListener('DOMContentLoaded', () => {
     charts.createSatelliteChart();
     charts.createSizeBarChart();
     charts.createHashstoreChart();
+    charts.createStorageHistoryChart();
+    charts.createLatencyHistogramChart();
     connectionManager.connect();
     initializeDisplayMenu();
     setupEventListeners();
+    
+    // Request Phase 3 data periodically
+    setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            // Request reputation data every 5 minutes
+            ws.send(JSON.stringify({
+                type: 'get_reputation_data',
+                view: currentNodeView
+            }));
+            
+            // Request latency stats every minute
+            ws.send(JSON.stringify({
+                type: 'get_latency_stats',
+                view: currentNodeView,
+                hours: 1
+            }));
+            
+            // Request storage data every 5 minutes
+            ws.send(JSON.stringify({
+                type: 'get_storage_data',
+                view: currentNodeView
+            }));
+        }
+    }, 60000); // Every minute
+    
     handleThemeChange(darkModeMediaQuery.matches);
     darkModeMediaQuery.addEventListener('change', e => handleThemeChange(e.matches));
 });
