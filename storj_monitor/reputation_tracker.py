@@ -45,18 +45,31 @@ async def track_reputation(
         alerts = []
         timestamp = datetime.datetime.now(datetime.timezone.utc)
         
-        # The API returns a dict with satellite IDs as keys
+        # The API returns a dict with satellite IDs as keys, where each value is a list of satellite info
+        # Or it could return a list directly. Handle both cases.
+        satellites_list = []
+        
         if isinstance(satellites_data, dict):
-            # Convert dict to list of satellite data objects
-            satellites_list = list(satellites_data.values())
+            # Dict format: flatten all values into a single list
+            for value in satellites_data.values():
+                if isinstance(value, list):
+                    satellites_list.extend(value)
+                elif isinstance(value, dict):
+                    satellites_list.append(value)
         elif isinstance(satellites_data, list):
-            # Also support list format in case API changes
             satellites_list = satellites_data
         else:
             log.error(f"[{node_name}] Unexpected satellites data format: {type(satellites_data)}")
             return None
         
+        if not satellites_list:
+            log.warning(f"[{node_name}] No satellite data found")
+            return None
+        
         for sat_data in satellites_list:
+            if not isinstance(sat_data, dict):
+                log.warning(f"[{node_name}] Skipping non-dict satellite entry: {type(sat_data)}")
+                continue
             # Extract satellite ID
             sat_id = sat_data.get('id')
             if not sat_id:
