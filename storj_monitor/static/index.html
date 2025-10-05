@@ -172,6 +172,79 @@
                 </div>
             </div>
         </div>
+        <div id="earnings-card" class="card">
+            <div class="chart-header">
+                <h3 class="card-title">Financial Earnings</h3>
+                <div id="earnings-period-toggles" style="text-align: right; font-size: 0.9em;">
+                    <small>Period:</small>
+                    <a href="#" class="toggle-link active" data-period="current">Current</a> |
+                    <a href="#" class="toggle-link" data-period="previous">Previous</a> |
+                    <a href="#" class="toggle-link" data-period="12months">12 Months</a>
+                </div>
+            </div>
+            <div class="card-content">
+                <div id="earnings-summary" class="earnings-summary">
+                    <div class="earnings-stat">
+                        <div id="earnings-total" class="earnings-stat-value">$0.00</div>
+                        <div class="stat-label">Total Earnings</div>
+                    </div>
+                    <div class="earnings-stat">
+                        <div id="earnings-forecast" class="earnings-stat-value">$0.00</div>
+                        <div class="stat-label">Forecast (Month)</div>
+                    </div>
+                    <div class="earnings-stat">
+                        <div id="earnings-held" class="earnings-stat-value">$0.00</div>
+                        <div class="stat-label">Held Amount</div>
+                    </div>
+                    <div class="earnings-stat">
+                        <div id="earnings-payout-days" class="earnings-stat-value">-- days</div>
+                        <div class="stat-label">Days Until Payout</div>
+                    </div>
+                </div>
+                
+                <div id="earnings-breakdown" class="earnings-breakdown">
+                    <h5>Earnings Breakdown</h5>
+                    <div id="earnings-breakdown-list">
+                        <div class="earnings-breakdown-item">
+                            <span class="breakdown-label">Egress</span>
+                            <span class="breakdown-bar"><span class="breakdown-fill egress-fill" style="width: 0%"></span></span>
+                            <span class="breakdown-amount">$0.00</span>
+                            <span class="breakdown-percent">(0%)</span>
+                        </div>
+                        <div class="earnings-breakdown-item">
+                            <span class="breakdown-label">Storage</span>
+                            <span class="breakdown-bar"><span class="breakdown-fill storage-fill" style="width: 0%"></span></span>
+                            <span class="breakdown-amount">$0.00</span>
+                            <span class="breakdown-percent">(0%)</span>
+                        </div>
+                        <div class="earnings-breakdown-item">
+                            <span class="breakdown-label">Repair</span>
+                            <span class="breakdown-bar"><span class="breakdown-fill repair-fill" style="width: 0%"></span></span>
+                            <span class="breakdown-amount">$0.00</span>
+                            <span class="breakdown-percent">(0%)</span>
+                        </div>
+                        <div class="earnings-breakdown-item">
+                            <span class="breakdown-label">Audit</span>
+                            <span class="breakdown-bar"><span class="breakdown-fill audit-fill" style="width: 0%"></span></span>
+                            <span class="breakdown-amount">$0.00</span>
+                            <span class="breakdown-percent">(0%)</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="satellite-earnings" class="satellite-earnings">
+                    <h5>Per-Satellite Earnings</h5>
+                    <div id="satellite-earnings-list">
+                        <p class="loading-message">Loading earnings data...</p>
+                    </div>
+                </div>
+                
+                <div style="position: relative; height: 300px; margin-top: 20px;">
+                    <canvas id="earnings-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
 
         <div id="performance-card" class="card">
             <div class="chart-header">

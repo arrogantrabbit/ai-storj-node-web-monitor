@@ -828,4 +828,169 @@ body.map-maximized { overflow: hidden; }
         max-width: 400px;
         right: 5vw;
     }
+
+/* Phase 6: Financial Earnings Styles */
+
+.earnings-summary {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.earnings-stat {
+    text-align: center;
+}
+
+.earnings-stat-value {
+    font-size: 1.8em;
+    font-weight: bold;
+    color: #22c55e;
+}
+
+.earnings-breakdown {
+    margin-bottom: 20px;
+}
+
+.earnings-breakdown h5 {
+    margin-bottom: 10px;
+}
+
+.earnings-breakdown-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.breakdown-label {
+    min-width: 70px;
+    font-weight: 500;
+}
+
+.breakdown-bar {
+    flex: 1;
+    height: 20px;
+    background: #e0e0e0;
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+}
+
+.breakdown-fill {
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.breakdown-fill.egress-fill {
+    background: #0ea5e9;
+}
+
+.breakdown-fill.storage-fill {
+    background: #22c55e;
+}
+
+.breakdown-fill.repair-fill {
+    background: #f59e0b;
+}
+
+.breakdown-fill.audit-fill {
+    background: #a855f7;
+}
+
+.breakdown-amount {
+    min-width: 70px;
+    text-align: right;
+    font-weight: 600;
+}
+
+.breakdown-percent {
+    min-width: 50px;
+    text-align: right;
+    color: #888;
+    font-size: 0.9em;
+}
+
+.satellite-earnings {
+    margin-bottom: 20px;
+}
+
+.satellite-earnings h5 {
+    margin-bottom: 10px;
+}
+
+.satellite-earnings-item {
+    padding: 10px;
+    margin-bottom: 8px;
+    border-left: 3px solid #0ea5e9;
+    background: #f8f9fa;
+    border-radius: 4px;
+}
+
+.satellite-earnings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.satellite-earnings-total {
+    font-size: 1.1em;
+    font-weight: bold;
+    color: #22c55e;
+}
+
+.satellite-earnings-details {
+    font-size: 0.9em;
+    color: #666;
+}
+
+/* Responsive layout for earnings summary */
+@media (max-width: 1200px) {
+    .earnings-summary {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .earnings-summary {
+        grid-template-columns: 1fr;
+    }
+    
+    .breakdown-label {
+        min-width: 60px;
+    }
+    
+    .breakdown-amount {
+        min-width: 60px;
+    }
+}
+
+/* Dark mode for earnings card */
+@media (prefers-color-scheme: dark) {
+    .earnings-stat-value {
+        color: #34d399;
+    }
+    
+    .breakdown-bar {
+        background: #333;
+    }
+    
+    .breakdown-percent {
+        color: #888;
+    }
+    
+    .satellite-earnings-item {
+        background: #2a2a2a;
+        border-left-color: #4dabf7;
+    }
+    
+    .satellite-earnings-total {
+        color: #34d399;
+    }
+    
+    .satellite-earnings-details {
+        color: #aaa;
+    }
+}
 }

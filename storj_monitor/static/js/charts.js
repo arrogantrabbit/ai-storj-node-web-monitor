@@ -534,3 +534,188 @@ export function updateLatencyHistogramChart(histogramData) {
     latencyHistogramChartInstance.data.datasets[0].data = data;
     latencyHistogramChartInstance.update();
 }
+
+// --- Phase 6: Financial Tracking Charts ---
+
+let earningsHistoryChartInstance;
+let earningsBreakdownChartInstance;
+
+export function createEarningsHistoryChart() {
+    if (earningsHistoryChartInstance) earningsHistoryChartInstance.destroy();
+    const ctx = document.getElementById('earnings-chart').getContext('2d');
+    earningsHistoryChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            datasets: [
+                {
+                    label: 'Net Earnings',
+                    data: [],
+                    borderColor: '#22c55e',
+                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    borderWidth: 2
+                },
+                {
+                    label: 'Held Amount',
+                    data: [],
+                    borderColor: '#f59e0b',
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    fill: false,
+                    tension: 0.3,
+                    borderWidth: 2
+                },
+                {
+                    label: 'Gross Earnings',
+                    data: [],
+                    borderColor: '#0ea5e9',
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.3,
+                    borderWidth: 2,
+                    borderDash: [5, 5]
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'month',
+                        displayFormats: {
+                            month: 'MMM yyyy'
+                        },
+                        tooltipFormat: 'PP'
+                    },
+                    title: {
+                        display: true,
+                        text: 'Month'
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Earnings ($)'
+                    },
+                    ticks: {
+                        callback: (value) => {
+                            return '$' + value.toFixed(2);
+                        }
+                    }
+                }
+            },
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) label += ': ';
+                            if (context.parsed.y !== null) {
+                                label += '$' + context.parsed.y.toFixed(2);
+                            }
+                            return label;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+export function updateEarningsHistoryChart(historyData) {
+    if (!earningsHistoryChartInstance) createEarningsHistoryChart();
+    if (!historyData || historyData.length === 0) {
+        earningsHistoryChartInstance.data.datasets[0].data = [];
+        earningsHistoryChartInstance.data.datasets[1].data = [];
+        earningsHistoryChartInstance.data.datasets[2].data = [];
+        earningsHistoryChartInstance.update();
+        return;
+    }
+    
+    // Sort by date
+    const sortedData = [...historyData].sort((a, b) => 
+        new Date(a.period_start) - new Date(b.period_start)
+    );
+    
+    // Map data to chart datasets
+    const netEarnings = sortedData.map(item => ({
+        x: new Date(item.period_start),
+        y: item.total_earnings - item.held_amount
+    }));
+    
+    const heldAmount = sortedData.map(item => ({
+        x: new Date(item.period_start),
+        y: item.held_amount
+    }));
+    
+    const grossEarnings = sortedData.map(item => ({
+        x: new Date(item.period_start),
+        y: item.total_earnings
+    }));
+    
+    earningsHistoryChartInstance.data.datasets[0].data = netEarnings;
+    earningsHistoryChartInstance.data.datasets[1].data = heldAmount;
+    earningsHistoryChartInstance.data.datasets[2].data = grossEarnings;
+    earningsHistoryChartInstance.update();
+}
+
+export function createEarningsBreakdownChart() {
+    if (earningsBreakdownChartInstance) earningsBreakdownChartInstance.destroy();
+    const ctx = document.getElementById('earnings-breakdown-chart').getContext('2d');
+    earningsBreakdownChartInstance = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Egress', 'Storage', 'Repair', 'Audit'],
+            datasets: [{
+                data: [0, 0, 0, 0],
+                backgroundColor: [
+                    '#0ea5e9',  // Blue for Egress
+                    '#22c55e',  // Green for Storage
+                    '#f59e0b',  // Orange for Repair
+                    '#a855f7'   // Purple for Audit
+                ],
+                borderWidth: 2,
+                borderColor: '#fff'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'bottom'
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const label = context.label || '';
+                            const value = context.parsed || 0;
+                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                            const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                            return `${label}: $${value.toFixed(2)} (${percentage}%)`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+export function updateEarningsBreakdownChart(breakdownData) {
+    if (!earningsBreakdownChartInstance) createEarningsBreakdownChart();
+    if (!breakdownData) return;
+    
+    const data = [
+        breakdownData.egress || 0,
+        breakdownData.storage || 0,
+        breakdownData.repair || 0,
+        breakdownData.audit || 0
+    ];
+    
+    earningsBreakdownChartInstance.data.datasets[0].data = data;
+    earningsBreakdownChartInstance.update();
+}

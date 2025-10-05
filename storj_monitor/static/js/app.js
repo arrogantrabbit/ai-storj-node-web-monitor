@@ -13,6 +13,7 @@ const TOGGLEABLE_CARDS = {
     'storage-health-card': 'Storage Health & Capacity',
     'latency-card': 'Operation Latency Analytics',
     'alerts-panel-card': 'Active Alerts',
+    'earnings-card': 'Financial Earnings',
     'performance-card': 'Live Performance',
     'satellite-card': 'Traffic by Satellite',
     'analysis-card': 'Network & Error Analysis',
@@ -37,6 +38,10 @@ let storageState = {
     cachedData: null // Cache storage data for immediate range switching
 };
 window.storageState = storageState; // Make globally accessible for charts
+let earningsState = {
+    period: 'current', // current, previous, 12months
+    cachedData: null
+};
 let cardVisibilityState = {};
 let livePerformanceBins = {};
 let maxHistoricalTimestampByView = {};
@@ -149,7 +154,7 @@ function reflowGrid() {
     if (perfVisible && satVisible) { setStyle('performance-card', '1 / 7', `${currentRow} / ${currentRow + 1}`); setStyle('satellite-card', '7 / 13', `${currentRow} / ${currentRow + 1}`); currentRow++; }
     else if (perfVisible) { setStyle('performance-card', '1 / -1', `${currentRow} / ${currentRow + 1}`); currentRow++; }
     else if (satVisible) { setStyle('satellite-card', '1 / -1', `${currentRow} / ${currentRow + 1}`); currentRow++; }
-    ['reputation-card', 'storage-health-card', 'latency-card', 'alerts-panel-card', 'analysis-card', 'size-charts-card', 'active-compactions-card', 'hashstore-chart-card', 'hashstore-card'].forEach(cardId => {
+    ['reputation-card', 'storage-health-card', 'latency-card', 'alerts-panel-card', 'earnings-card', 'analysis-card', 'size-charts-card', 'active-compactions-card', 'hashstore-chart-card', 'hashstore-card'].forEach(cardId => {
         if (isVisible(cardId)) { setStyle(cardId, '1 / -1', `${currentRow} / ${currentRow + 1}`); currentRow++; }
     });
     if (mapVisible) {
@@ -529,6 +534,180 @@ function renderAlertsPanel() {
     container.innerHTML = html;
 }
 
+// --- Phase 6: Financial Tracking Functions ---
+
+function calculateDaysUntilPayout() {
+    const now = new Date();
+    const payoutDay = 10; // Payout on the 10th of each month
+    const currentDay = now.getDate();
+    
+    if (currentDay < payoutDay) {
+        // Payout is this month
+        return payoutDay - currentDay;
+    } else {
+        // Payout is next month
+        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, payoutDay);
+        const diffTime = nextMonth - now;
+        return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    }
+}
+
+function aggregateEarnings(earningsArray) {
+    if (!earningsArray || earningsArray.length === 0) {
+        return {
+            total_earnings: 0,
+            held_amount: 0,
+            egress: 0,
+            storage: 0,
+            repair: 0,
+            audit: 0
+        };
+    }
+    
+    return earningsArray.reduce((acc, item) => {
+        acc.total_earnings += item.total_earnings || 0;
+        acc.held_amount += item.held_amount || 0;
+        acc.egress += item.egress || 0;
+        acc.storage += item.storage || 0;
+        acc.repair += item.repair || 0;
+        acc.audit += item.audit || 0;
+        return acc;
+    }, {
+        total_earnings: 0,
+        held_amount: 0,
+        egress: 0,
+        storage: 0,
+        repair: 0,
+        audit: 0
+    });
+}
+
+function updateEarningsBreakdown(breakdown) {
+    const total = breakdown.egress + breakdown.storage + breakdown.repair + breakdown.audit;
+    
+    if (total === 0) {
+        document.querySelectorAll('.earnings-breakdown-item').forEach(item => {
+            item.querySelector('.breakdown-fill').style.width = '0%';
+            item.querySelector('.breakdown-amount').textContent = '$0.00';
+            item.querySelector('.breakdown-percent').textContent = '(0%)';
+        });
+        return;
+    }
+    
+    const categories = [
+        { selector: '.earnings-breakdown-item:nth-child(1)', value: breakdown.egress, label: 'egress' },
+        { selector: '.earnings-breakdown-item:nth-child(2)', value: breakdown.storage, label: 'storage' },
+        { selector: '.earnings-breakdown-item:nth-child(3)', value: breakdown.repair, label: 'repair' },
+        { selector: '.earnings-breakdown-item:nth-child(4)', value: breakdown.audit, label: 'audit' }
+    ];
+    
+    categories.forEach(cat => {
+        const item = document.querySelector(cat.selector);
+        if (!item) return;
+        
+        const percent = (cat.value / total * 100).toFixed(1);
+        item.querySelector('.breakdown-fill').style.width = `${percent}%`;
+        item.querySelector('.breakdown-amount').textContent = `$${cat.value.toFixed(2)}`;
+        item.querySelector('.breakdown-percent').textContent = `(${percent}%)`;
+    });
+}
+
+function updateSatelliteEarnings(satelliteEarnings) {
+    const container = document.getElementById('satellite-earnings-list');
+    
+    if (!satelliteEarnings || satelliteEarnings.length === 0) {
+        container.innerHTML = '<p class="no-alerts-message">No satellite earnings data available</p>';
+        return;
+    }
+    
+    let html = '';
+    satelliteEarnings.forEach(sat => {
+        const satName = SATELLITE_NAMES[sat.satellite_id] || sat.satellite_id.substring(0, 12);
+        const totalEarnings = sat.total_earnings || 0;
+        const heldAmount = sat.held_amount || 0;
+        const netEarnings = totalEarnings - heldAmount;
+        
+        html += `<div class="satellite-earnings-item">
+            <div class="satellite-earnings-header">
+                <strong>${satName}</strong>
+                <span class="satellite-earnings-total">$${totalEarnings.toFixed(2)}</span>
+            </div>
+            <div class="satellite-earnings-details">
+                <small>Net: $${netEarnings.toFixed(2)} | Held: $${heldAmount.toFixed(2)}</small>
+            </div>
+        </div>`;
+    });
+    
+    container.innerHTML = html;
+}
+
+function updateEarningsCard(data) {
+    if (!isCardVisible('earnings-card')) return;
+    
+    if (!data || !data.earnings) {
+        document.getElementById('earnings-total').textContent = '$0.00';
+        document.getElementById('earnings-forecast').textContent = '$0.00';
+        document.getElementById('earnings-held').textContent = '$0.00';
+        document.getElementById('earnings-payout-days').textContent = '-- days';
+        document.getElementById('satellite-earnings-list').innerHTML = '<p class="no-alerts-message">No earnings data available</p>';
+        return;
+    }
+    
+    // Aggregate earnings across all satellites
+    const aggregated = aggregateEarnings(data.earnings);
+    
+    // Update summary stats
+    document.getElementById('earnings-total').textContent = `$${aggregated.total_earnings.toFixed(2)}`;
+    document.getElementById('earnings-held').textContent = `$${aggregated.held_amount.toFixed(2)}`;
+    
+    // Calculate forecast (estimate for the month based on current progress)
+    let forecast = 0;
+    if (earningsState.period === 'current' && data.earnings.length > 0) {
+        const now = new Date();
+        const dayOfMonth = now.getDate();
+        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const progressRatio = dayOfMonth / daysInMonth;
+        
+        if (progressRatio > 0) {
+            forecast = aggregated.total_earnings / progressRatio;
+        }
+    } else {
+        forecast = aggregated.total_earnings;
+    }
+    document.getElementById('earnings-forecast').textContent = `$${forecast.toFixed(2)}`;
+    
+    // Update days until payout
+    const daysUntilPayout = calculateDaysUntilPayout();
+    document.getElementById('earnings-payout-days').textContent = `${daysUntilPayout} days`;
+    
+    // Update breakdown
+    updateEarningsBreakdown({
+        egress: aggregated.egress,
+        storage: aggregated.storage,
+        repair: aggregated.repair,
+        audit: aggregated.audit
+    });
+    
+    // Update per-satellite earnings
+    updateSatelliteEarnings(data.earnings);
+    
+    // Update historical chart if available
+    if (data.history && data.history.length > 0) {
+        charts.updateEarningsHistoryChart(data.history);
+    }
+}
+
+function requestEarningsData(period) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'get_earnings_data',
+            view: currentNodeView,
+            period: period || earningsState.period
+        }));
+    }
+}
+
+
 window.dismissAlert = function(alertId) {
     activeAlerts = activeAlerts.filter(a => a.id !== alertId);
     renderAlertsPanel();
@@ -556,7 +735,7 @@ function processBatchedLogEntries(events) { if (!isCardVisible('map-card') || !e
 function processLivePerformanceUpdate(data) { const { node_name, bins } = data; const updateNodeBins = (targetNodeName) => { const maxTs = maxHistoricalTimestampByView[targetNodeName] || 0; if (!livePerformanceBins[targetNodeName]) { livePerformanceBins[targetNodeName] = {}; } const targetBins = livePerformanceBins[targetNodeName]; for (const ts in bins) { if (parseInt(ts, 10) <= maxTs) continue; if (!targetBins[ts]) { targetBins[ts] = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0 }; } const binData = bins[ts]; targetBins[ts].ingress_bytes += binData.ingress_bytes || 0; targetBins[ts].egress_bytes += binData.egress_bytes || 0; targetBins[ts].ingress_pieces += binData.ingress_pieces || 0; targetBins[ts].egress_pieces += binData.egress_pieces || 0; targetBins[ts].total_ops += binData.total_ops || 0; } const cutoff = Date.now() - (5 * 60 * 1000 + 5000); for (const ts in targetBins) { if (parseInt(ts, 10) < cutoff) delete targetBins[ts]; } }; updateNodeBins(node_name); updateNodeBins('Aggregate'); if (isCardVisible('performance-card') && performanceState.range === '5m') { const viewKey = currentNodeView.join(','); if (currentNodeView.length > 1 && currentNodeView.includes(node_name)) updateNodeBins(viewKey); clearTimeout(chartUpdateTimer); chartUpdateTimer = setTimeout(() => charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes), 250); } }
 
 // --- WebSocket Connection & Data Handling ---
-const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_reputation_data', view: currentNodeView })); const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range]; ws.send(JSON.stringify({ type: 'get_latency_stats', view: currentNodeView, hours: latencyHours })); ws.send(JSON.stringify({ type: 'get_storage_data', view: currentNodeView })); } }, 1000); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update' && data.type !== 'log_entry_batch') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
+const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_reputation_data', view: currentNodeView })); const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range]; ws.send(JSON.stringify({ type: 'get_latency_stats', view: currentNodeView, hours: latencyHours })); ws.send(JSON.stringify({ type: 'get_storage_data', view: currentNodeView })); requestEarningsData(); } }, 1000); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update' && data.type !== 'log_entry_batch') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
 function handleWebSocketMessage(data) {
     switch(data.type) {
         case 'init':
@@ -643,6 +822,10 @@ function handleWebSocketMessage(data) {
             break;
         case 'alert_acknowledge_result':
             console.log('Alert acknowledged:', data.alert_id, data.success);
+            break;
+        case 'earnings_data':
+            earningsState.cachedData = data.data;
+            updateEarningsCard(data.data);
             break;
     }
 }
@@ -770,6 +953,9 @@ function setupEventListeners() {
                 view: currentNodeView,
                 days: storageDays
             }));
+            
+            // Request earnings data when switching nodes
+            requestEarningsData();
         }
     });
     const mapCard = document.getElementById('map-card'), toggleMapSizeBtn = document.getElementById('toggle-map-size-btn');
@@ -785,6 +971,17 @@ function setupEventListeners() {
             hashstoreSort.direction = ['node_name', 'satellite', 'store'].includes(column) ? 'asc' : 'desc';
         }
         renderHashstoreView();
+    });
+    
+    // Earnings period toggle
+    document.getElementById('earnings-period-toggles').addEventListener('click', function(e) {
+        e.preventDefault();
+        const newPeriod = e.target.getAttribute('data-period');
+        if (!newPeriod || newPeriod === earningsState.period) return;
+        earningsState.period = newPeriod;
+        document.querySelectorAll('#earnings-period-toggles .toggle-link').forEach(el => el.classList.remove('active'));
+        e.target.classList.add('active');
+        requestEarningsData(newPeriod);
     });
 }
 function renderNodeSelector() {
@@ -841,6 +1038,7 @@ document.addEventListener('DOMContentLoaded', () => {
     charts.createHashstoreChart();
     charts.createStorageHistoryChart();
     charts.createLatencyHistogramChart();
+    charts.createEarningsHistoryChart();
     connectionManager.connect();
     initializeDisplayMenu();
     setupEventListeners();
