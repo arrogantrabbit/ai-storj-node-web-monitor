@@ -392,7 +392,7 @@ async def websocket_handler(request):
                             forecast_info = None
                             if tracker:
                                 try:
-                                    forecast_info = await tracker.forecast_payout(DATABASE_FILE, period)
+                                    forecast_info = await tracker.forecast_payout(DATABASE_FILE, period, loop, app.get('db_executor'))
                                 except Exception as e:
                                     log.error(f"Failed to get forecast for {estimate['node_name']}: {e}")
                             
