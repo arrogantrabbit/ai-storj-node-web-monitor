@@ -8,7 +8,9 @@ and slow operations.
 import logging
 from typing import List, Dict, Any
 import statistics
-
+from .config import DB_CONNECTION_TIMEOUT, DB_MAX_RETRIES, DB_RETRY_BASE_DELAY, DB_RETRY_MAX_DELAY
+from .db_utils import retry_on_db_lock, get_optimized_connection
+import sqlite3
 
 log = logging.getLogger("StorjMonitor.PerformanceAnalyzer")
 
@@ -144,6 +146,7 @@ def detect_slow_operations(
     return slow_ops[:limit]
 
 
+@retry_on_db_lock(max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY)
 def blocking_get_latency_stats(
     db_path: str,
     node_names: List[str],
@@ -160,7 +163,6 @@ def blocking_get_latency_stats(
     Returns:
         Dict with latency statistics and slow operations
     """
-    import sqlite3
     import datetime
     
     if not node_names:
@@ -170,7 +172,7 @@ def blocking_get_latency_stats(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
         cutoff_iso = cutoff.isoformat()
         
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             # First check total events vs events with duration for diagnostics
@@ -243,6 +245,7 @@ def blocking_get_latency_stats(
         return {'statistics': {}, 'slow_operations': [], 'error': str(e)}
 
 
+@retry_on_db_lock(max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY)
 def blocking_get_latency_histogram(
     db_path: str,
     node_names: List[str],
@@ -261,7 +264,6 @@ def blocking_get_latency_histogram(
     Returns:
         List of histogram buckets with counts
     """
-    import sqlite3
     import datetime
     
     if not node_names:
@@ -271,7 +273,7 @@ def blocking_get_latency_histogram(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
         cutoff_iso = cutoff.isoformat()
         
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             placeholders = ','.join('?' for _ in node_names)
             
             # Query to create histogram buckets

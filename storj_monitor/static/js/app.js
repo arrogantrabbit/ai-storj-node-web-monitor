@@ -565,12 +565,12 @@ function aggregateEarnings(earningsArray) {
     }
     
     return earningsArray.reduce((acc, item) => {
-        acc.total_earnings += item.total_earnings || 0;
+        acc.total_earnings += item.total_net || 0;
         acc.held_amount += item.held_amount || 0;
-        acc.egress += item.egress || 0;
-        acc.storage += item.storage || 0;
-        acc.repair += item.repair || 0;
-        acc.audit += item.audit || 0;
+        acc.egress += item.breakdown?.egress || 0;
+        acc.storage += item.breakdown?.storage || 0;
+        acc.repair += item.breakdown?.repair || 0;
+        acc.audit += item.breakdown?.audit || 0;
         return acc;
     }, {
         total_earnings: 0,
@@ -595,10 +595,10 @@ function updateEarningsBreakdown(breakdown) {
     }
     
     const categories = [
-        { selector: '.earnings-breakdown-item:nth-child(1)', value: breakdown.egress, label: 'egress' },
-        { selector: '.earnings-breakdown-item:nth-child(2)', value: breakdown.storage, label: 'storage' },
-        { selector: '.earnings-breakdown-item:nth-child(3)', value: breakdown.repair, label: 'repair' },
-        { selector: '.earnings-breakdown-item:nth-child(4)', value: breakdown.audit, label: 'audit' }
+        { selector: '#earnings-breakdown-list .earnings-breakdown-item:nth-child(1)', value: breakdown.egress, label: 'egress' },
+        { selector: '#earnings-breakdown-list .earnings-breakdown-item:nth-child(2)', value: breakdown.storage, label: 'storage' },
+        { selector: '#earnings-breakdown-list .earnings-breakdown-item:nth-child(3)', value: breakdown.repair, label: 'repair' },
+        { selector: '#earnings-breakdown-list .earnings-breakdown-item:nth-child(4)', value: breakdown.audit, label: 'audit' }
     ];
     
     categories.forEach(cat => {
@@ -615,36 +615,49 @@ function updateEarningsBreakdown(breakdown) {
 function updateSatelliteEarnings(satelliteEarnings) {
     const container = document.getElementById('satellite-earnings-list');
     
+    if (!container) {
+        console.error('satellite-earnings-list container not found');
+        return;
+    }
+    
     if (!satelliteEarnings || satelliteEarnings.length === 0) {
-        container.innerHTML = '<p class="no-alerts-message">No satellite earnings data available</p>';
+        container.innerHTML = '<p class="no-alerts-message" style="text-align: center; padding: 20px; color: #888;">No satellite earnings data available</p>';
         return;
     }
     
     let html = '';
     satelliteEarnings.forEach(sat => {
-        const satName = SATELLITE_NAMES[sat.satellite_id] || sat.satellite_id.substring(0, 12);
-        const totalEarnings = sat.total_earnings || 0;
+        const satName = sat.satellite || 'Unknown';
+        const netEarnings = sat.total_net || 0;
         const heldAmount = sat.held_amount || 0;
-        const netEarnings = totalEarnings - heldAmount;
+        const grossEarnings = sat.total_gross || (netEarnings + heldAmount);
+        const nodeName = sat.node_name || '';
         
         html += `<div class="satellite-earnings-item">
             <div class="satellite-earnings-header">
                 <strong>${satName}</strong>
-                <span class="satellite-earnings-total">$${totalEarnings.toFixed(2)}</span>
+                <span class="satellite-earnings-total">$${netEarnings.toFixed(2)}</span>
             </div>
             <div class="satellite-earnings-details">
-                <small>Net: $${netEarnings.toFixed(2)} | Held: $${heldAmount.toFixed(2)}</small>
+                <small>Gross: $${grossEarnings.toFixed(2)} | Held: $${heldAmount.toFixed(2)}${nodeName ? ` | ${nodeName}` : ''}</small>
             </div>
         </div>`;
     });
     
-    container.innerHTML = html;
+    if (html) {
+        container.innerHTML = html;
+    } else {
+        container.innerHTML = '<p class="no-alerts-message" style="text-align: center; padding: 20px; color: #888;">No satellite earnings data available</p>';
+    }
 }
 
 function updateEarningsCard(data) {
     if (!isCardVisible('earnings-card')) return;
     
-    if (!data || !data.earnings) {
+    // Backend sends earnings as array directly, not wrapped in {earnings: [...]}
+    const earningsArray = Array.isArray(data) ? data : (data?.earnings || []);
+    
+    if (!earningsArray || earningsArray.length === 0) {
         document.getElementById('earnings-total').textContent = '$0.00';
         document.getElementById('earnings-forecast').textContent = '$0.00';
         document.getElementById('earnings-held').textContent = '$0.00';
@@ -654,7 +667,7 @@ function updateEarningsCard(data) {
     }
     
     // Aggregate earnings across all satellites
-    const aggregated = aggregateEarnings(data.earnings);
+    const aggregated = aggregateEarnings(earningsArray);
     
     // Update summary stats
     document.getElementById('earnings-total').textContent = `$${aggregated.total_earnings.toFixed(2)}`;
@@ -662,7 +675,7 @@ function updateEarningsCard(data) {
     
     // Calculate forecast (estimate for the month based on current progress)
     let forecast = 0;
-    if (earningsState.period === 'current' && data.earnings.length > 0) {
+    if (earningsState.period === 'current' && earningsArray.length > 0) {
         const now = new Date();
         const dayOfMonth = now.getDate();
         const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
@@ -689,11 +702,19 @@ function updateEarningsCard(data) {
     });
     
     // Update per-satellite earnings
-    updateSatelliteEarnings(data.earnings);
+    updateSatelliteEarnings(earningsArray);
     
-    // Update historical chart if available
-    if (data.history && data.history.length > 0) {
-        charts.updateEarningsHistoryChart(data.history);
+    // Request historical chart data
+    if (ws && ws.readyState === WebSocket.OPEN && earningsArray.length > 0) {
+        // Request history for each unique node
+        const uniqueNodes = [...new Set(earningsArray.map(e => e.node_name))];
+        uniqueNodes.forEach(nodeName => {
+            ws.send(JSON.stringify({
+                type: 'get_earnings_history',
+                node_name: nodeName,
+                days: 30
+            }));
+        });
     }
 }
 
@@ -826,6 +847,11 @@ function handleWebSocketMessage(data) {
         case 'earnings_data':
             earningsState.cachedData = data.data;
             updateEarningsCard(data.data);
+            break;
+        case 'earnings_history':
+            if (data.data && data.data.length > 0 && isCardVisible('earnings-card')) {
+                charts.updateEarningsHistoryChart(data.data);
+            }
             break;
     }
 }

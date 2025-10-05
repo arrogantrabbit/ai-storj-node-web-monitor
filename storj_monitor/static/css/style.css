@@ -828,6 +828,7 @@ body.map-maximized { overflow: hidden; }
         max-width: 400px;
         right: 5vw;
     }
+}
 
 /* Phase 6: Financial Earnings Styles */
 
@@ -835,46 +836,53 @@ body.map-maximized { overflow: hidden; }
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 20px;
-    margin-bottom: 20px;
+    margin-bottom: 25px;
+    width: 100%;
 }
 
 .earnings-stat {
     text-align: center;
+    padding: 10px;
 }
 
 .earnings-stat-value {
     font-size: 1.8em;
     font-weight: bold;
     color: #22c55e;
+    margin-bottom: 5px;
 }
 
 .earnings-breakdown {
-    margin-bottom: 20px;
+    margin-bottom: 25px;
+    clear: both;
 }
 
 .earnings-breakdown h5 {
-    margin-bottom: 10px;
+    margin-bottom: 12px;
+    font-size: 1em;
 }
 
 .earnings-breakdown-item {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-bottom: 8px;
+    gap: 12px;
+    margin-bottom: 10px;
 }
 
 .breakdown-label {
-    min-width: 70px;
+    min-width: 80px;
     font-weight: 500;
+    font-size: 0.95em;
 }
 
 .breakdown-bar {
     flex: 1;
-    height: 20px;
+    height: 24px;
     background: #e0e0e0;
     border-radius: 4px;
     overflow: hidden;
     position: relative;
+    min-width: 100px;
 }
 
 .breakdown-fill {
@@ -912,17 +920,19 @@ body.map-maximized { overflow: hidden; }
 }
 
 .satellite-earnings {
-    margin-bottom: 20px;
+    margin-bottom: 25px;
+    clear: both;
 }
 
 .satellite-earnings h5 {
-    margin-bottom: 10px;
+    margin-bottom: 12px;
+    font-size: 1em;
 }
 
 .satellite-earnings-item {
-    padding: 10px;
-    margin-bottom: 8px;
-    border-left: 3px solid #0ea5e9;
+    padding: 12px;
+    margin-bottom: 10px;
+    border-left: 4px solid #0ea5e9;
     background: #f8f9fa;
     border-radius: 4px;
 }
@@ -931,11 +941,11 @@ body.map-maximized { overflow: hidden; }
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
 }
 
 .satellite-earnings-total {
-    font-size: 1.1em;
+    font-size: 1.2em;
     font-weight: bold;
     color: #22c55e;
 }
@@ -943,6 +953,10 @@ body.map-maximized { overflow: hidden; }
 .satellite-earnings-details {
     font-size: 0.9em;
     color: #666;
+}
+
+#satellite-earnings-list {
+    min-height: 60px;
 }
 
 /* Responsive layout for earnings summary */
@@ -992,5 +1006,4 @@ body.map-maximized { overflow: hidden; }
     .satellite-earnings-details {
         color: #aaa;
     }
-}
 }

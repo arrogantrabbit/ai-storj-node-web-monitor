@@ -26,6 +26,14 @@ DB_EVENTS_RETENTION_DAYS = 2  # New: How many days of event data to keep
 DB_PRUNE_INTERVAL_HOURS = 6  # New: How often to run the pruner
 DB_HASHSTORE_RETENTION_DAYS = 180  # How many days of hashstore compaction history to keep
 
+# --- Database Concurrency Configuration ---
+DB_THREAD_POOL_SIZE = 10  # Increased from 5 to handle concurrent load
+DB_CONNECTION_TIMEOUT = 30.0  # Increased timeout for database operations (seconds)
+DB_MAX_RETRIES = 3  # Number of retry attempts for locked database
+DB_RETRY_BASE_DELAY = 0.5  # Base delay between retries (seconds)
+DB_RETRY_MAX_DELAY = 5.0  # Maximum delay between retries (seconds)
+DB_CONNECTION_POOL_SIZE = 5  # Connection pool size for read operations
+
 # --- API Integration Configuration (Phase 1) ---
 NODE_API_DEFAULT_PORT = 14002  # Default Storj node API port
 NODE_API_TIMEOUT = 10  # seconds

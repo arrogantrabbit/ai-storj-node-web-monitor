@@ -3,14 +3,16 @@ import logging
 import datetime
 from typing import List, Dict, Any, Optional
 import json
-from .config import DATABASE_FILE, HISTORICAL_HOURS_TO_SHOW
+from .config import (DATABASE_FILE, HISTORICAL_HOURS_TO_SHOW, DB_CONNECTION_TIMEOUT,
+                     DB_MAX_RETRIES, DB_RETRY_BASE_DELAY, DB_RETRY_MAX_DELAY)
+from .db_utils import retry_on_db_lock, get_optimized_connection
 
 log = logging.getLogger("StorjMonitor.Database")
 
 
 def init_db():
     log.info("Connecting to database and checking schema...")
-    conn = sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0)
+    conn = get_optimized_connection(DATABASE_FILE, timeout=DB_CONNECTION_TIMEOUT)
     cursor = conn.cursor()
 
     # Enable Write-Ahead Logging (WAL) mode for better concurrency. This is a persistent setting.
@@ -259,10 +261,11 @@ def init_db():
     log.info("Database schema is valid and ready.")
 
 
+@retry_on_db_lock(max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY)
 def blocking_write_hashstore_log(db_path: str, stats_dict: dict) -> bool:
     """Writes a single hashstore compaction event to the database. Returns True on success."""
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO hashstore_compaction_history
@@ -277,6 +280,7 @@ def blocking_write_hashstore_log(db_path: str, stats_dict: dict) -> bool:
         return False
 
 
+@retry_on_db_lock(max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY)
 def blocking_db_batch_write(db_path: str, events: list):
     """Optimized batch write with pre-allocated tuple creation."""
     if not events: return
@@ -295,7 +299,7 @@ def blocking_db_batch_write(db_path: str, events: list):
             e['error_reason'], e['node_name'], e.get('duration_ms')  # Phase 2.1: Include duration
         ))
 
-    with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+    with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
         cursor = conn.cursor()
         cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
         conn.commit()
@@ -309,7 +313,7 @@ def blocking_hourly_aggregation(node_names: List[str]):
     hour_start_iso = hour_start.isoformat()
     next_hour_start_iso = (hour_start + datetime.timedelta(hours=1)).isoformat()
 
-    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
+    with get_optimized_connection(DATABASE_FILE, timeout=DB_CONNECTION_TIMEOUT) as conn:
         conn.row_factory = sqlite3.Row
         for node_name in node_names:
             query = """
@@ -372,7 +376,7 @@ def blocking_db_prune(db_path, events_retention_days, hashstore_retention_days,
         f"hashstore={hashstore_retention_days}d, earnings={earnings_retention_days}d, "
         f"alerts={alerts_retention_days}d, insights={insights_retention_days}d, analytics={analytics_retention_days}d")
 
-    with sqlite3.connect(db_path, timeout=30, detect_types=0) as conn:
+    with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
         cursor = conn.cursor()
 
         # Prune events table
@@ -473,10 +477,11 @@ def blocking_db_prune(db_path, events_retention_days, hashstore_retention_days,
             log.info("No old analytics baselines found to prune.")
 
 
+@retry_on_db_lock(max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY)
 def get_historical_stats(view: List[str], all_nodes_state: Dict[str, Any]) -> List[Dict]:
     """Fetch historical stats from the database."""
     hist_stats = []
-    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
+    with get_optimized_connection(DATABASE_FILE, timeout=DB_CONNECTION_TIMEOUT) as conn:
         conn.row_factory = sqlite3.Row
 
         nodes_for_hist = view
@@ -611,7 +616,7 @@ def blocking_get_aggregated_performance(node_names: List[str], time_window_hours
     bin_sec = bin_size_min * 60
 
     sparse_results = []
-    with sqlite3.connect(DATABASE_FILE, timeout=20, detect_types=0) as conn:
+    with get_optimized_connection(DATABASE_FILE, timeout=DB_CONNECTION_TIMEOUT) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         if time_window_hours > 6:
@@ -696,7 +701,7 @@ def blocking_get_hashstore_stats(filters: Dict[str, Any]) -> List[Dict[str, Any]
         query += " WHERE " + " AND ".join(where_clauses)
     query += " ORDER BY last_run_iso DESC"
 
-    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
+    with get_optimized_connection(DATABASE_FILE, timeout=DB_CONNECTION_TIMEOUT) as conn:
         conn.row_factory = sqlite3.Row
         results = [dict(row) for row in conn.execute(query, params).fetchall()]
 
@@ -706,7 +711,7 @@ def blocking_get_hashstore_stats(filters: Dict[str, Any]) -> List[Dict[str, Any]
 
 def blocking_backfill_hourly_stats(node_names: List[str]):
     log.info("[BACKFILL] Starting smart backfill of hourly statistics.")
-    with sqlite3.connect(DATABASE_FILE, timeout=30, detect_types=0) as conn:
+    with get_optimized_connection(DATABASE_FILE, timeout=DB_CONNECTION_TIMEOUT) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -792,7 +797,7 @@ def load_initial_state_from_db(nodes_config: Dict[str, Dict[str, Any]]):
     initial_state = {}
     cutoff_datetime = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=STATS_WINDOW_MINUTES)
 
-    with sqlite3.connect(DATABASE_FILE, timeout=10, detect_types=0) as conn:
+    with get_optimized_connection(DATABASE_FILE, timeout=DB_CONNECTION_TIMEOUT) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -834,7 +839,7 @@ def load_initial_state_from_db(nodes_config: Dict[str, Dict[str, Any]]):
 def blocking_batch_write_hashstore_ingest(db_path: str, records: List[Dict]):
     if not records: return
     try:
-        with sqlite3.connect(db_path, timeout=30) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.executemany('''
                 INSERT OR IGNORE INTO hashstore_compaction_history
@@ -864,7 +869,7 @@ def blocking_write_reputation_history(db_path: str, records: List[Dict]) -> bool
         return False
     
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.executemany('''
                 INSERT INTO reputation_history
@@ -910,7 +915,7 @@ def blocking_get_latest_reputation(db_path: str, node_names: List[str]) -> List[
         return []
     
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             # Get latest reputation for each node-satellite combination
@@ -958,7 +963,7 @@ def blocking_get_reputation_history(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
         cutoff_iso = cutoff.isoformat()
         
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             if satellite:
@@ -999,7 +1004,7 @@ def blocking_write_storage_snapshot(db_path: str, snapshot: Dict[str, Any]) -> b
         True if successful
     """
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO storage_snapshots
@@ -1026,6 +1031,7 @@ def blocking_write_storage_snapshot(db_path: str, snapshot: Dict[str, Any]) -> b
         return False
 
 
+@retry_on_db_lock(max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY)
 def blocking_get_storage_history(
     db_path: str,
     node_name: str,
@@ -1046,7 +1052,7 @@ def blocking_get_storage_history(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
         cutoff_iso = cutoff.isoformat()
         
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             query = """
@@ -1075,7 +1081,7 @@ def blocking_write_alert(db_path: str, alert: Dict[str, Any]) -> bool:
         True if successful
     """
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO alerts
@@ -1110,7 +1116,7 @@ def blocking_get_active_alerts(db_path: str, node_names: List[str] = None) -> Li
         List of active alerts
     """
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             if node_names:
@@ -1140,7 +1146,7 @@ def blocking_get_active_alerts(db_path: str, node_names: List[str] = None) -> Li
 def blocking_acknowledge_alert(db_path: str, alert_id: int) -> bool:
     """Acknowledge an alert."""
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE alerts
@@ -1157,7 +1163,7 @@ def blocking_acknowledge_alert(db_path: str, alert_id: int) -> bool:
 def blocking_resolve_alert(db_path: str, alert_id: int) -> bool:
     """Resolve an alert."""
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE alerts
@@ -1182,7 +1188,7 @@ def blocking_get_alert_history(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
         cutoff_iso = cutoff.isoformat()
         
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             if include_resolved:
@@ -1210,7 +1216,7 @@ def blocking_get_alert_history(
 def blocking_write_insight(db_path: str, insight: Dict[str, Any]) -> bool:
     """Write an insight to the database."""
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO insights
@@ -1245,7 +1251,7 @@ def blocking_get_insights(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
         cutoff_iso = cutoff.isoformat()
         
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             if node_names:
@@ -1281,7 +1287,7 @@ def blocking_update_baseline(
 ) -> bool:
     """Update or create a baseline for a metric."""
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT OR REPLACE INTO analytics_baselines
@@ -1314,7 +1320,7 @@ def blocking_get_baseline(
 ) -> Optional[Dict[str, Any]]:
     """Get baseline statistics for a metric."""
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             query = """
@@ -1331,6 +1337,7 @@ def blocking_get_baseline(
         return None
 
 
+@retry_on_db_lock(max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY)
 def blocking_get_latest_storage(
     db_path: str,
     node_names: List[str]
@@ -1350,7 +1357,7 @@ def blocking_get_latest_storage(
         return []
     
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             # First check if we have any storage data at all
@@ -1557,7 +1564,7 @@ def blocking_write_earnings_estimate(db_path: str, estimate: Dict[str, Any]) -> 
         True if successful
     """
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO earnings_estimates
@@ -1622,7 +1629,7 @@ def blocking_get_earnings_estimates(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
         cutoff_iso = cutoff.isoformat()
         
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             where_clauses = ["timestamp >= ?"]
@@ -1674,7 +1681,7 @@ def blocking_get_latest_earnings(
         return []
     
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             placeholders = ','.join('?' for _ in node_names)
@@ -1729,7 +1736,7 @@ def blocking_write_payout_history(db_path: str, payout: Dict[str, Any]) -> bool:
         True if successful
     """
     try:
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO payout_history
@@ -1779,7 +1786,7 @@ def blocking_get_payout_history(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=months * 30)
         cutoff_iso = cutoff.isoformat()
         
-        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
             where_clauses = ["timestamp >= ?"]

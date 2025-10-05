@@ -228,8 +228,10 @@ async def start_background_tasks(app):
     from collections import deque
     from .log_processor import blocking_log_reader, network_log_reader_task, log_processor_task
     from .database import blocking_backfill_hourly_stats, load_initial_state_from_db
-    from .config import GEOIP_DATABASE_PATH
+    from .config import (GEOIP_DATABASE_PATH, DATABASE_FILE, DB_THREAD_POOL_SIZE,
+                        DB_CONNECTION_POOL_SIZE, DB_CONNECTION_TIMEOUT)
     from .storj_api_client import auto_discover_api_endpoint, setup_api_client
+    from .db_utils import init_connection_pool
 
     log.info("Starting background tasks...")
     try:
@@ -239,7 +241,12 @@ async def start_background_tasks(app):
         log.critical(f"GeoIP database not found at '{GEOIP_DATABASE_PATH}'. Please download it. Exiting.")
         sys.exit(1)
 
-    app['db_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+    # Initialize database connection pool for better concurrency
+    init_connection_pool(DATABASE_FILE, DB_CONNECTION_POOL_SIZE, DB_CONNECTION_TIMEOUT)
+    log.info(f"Database connection pool initialized with {DB_CONNECTION_POOL_SIZE} connections")
+
+    app['db_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=DB_THREAD_POOL_SIZE)
+    log.info(f"Database thread pool initialized with {DB_THREAD_POOL_SIZE} workers")
     app['log_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=len(app['nodes']) + 1)
     app['tasks'] = []
     app['log_reader_shutdown_events'] = {}
@@ -351,6 +358,11 @@ async def cleanup_background_tasks(app):
     if 'geoip_reader' in app and hasattr(app['geoip_reader'], 'close'):
         app['geoip_reader'].close()
         log.info("GeoIP database reader closed.")
+
+    # Cleanup database connection pool
+    from .db_utils import cleanup_connection_pool
+    cleanup_connection_pool()
+    log.info("Database connection pool cleaned up.")
 
     # Shutdown executors
     for executor_name in ['db_executor', 'log_executor']:
