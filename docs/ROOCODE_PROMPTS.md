@@ -18,19 +18,28 @@
 Create the financial tracking infrastructure for the Storj Node Monitor:
 
 1. Add financial tracking configuration to storj_monitor/config.py:
-   - Enable flag ENABLE_FINANCIAL_TRACKING
-   - Pricing configuration (egress, storage, repair, audit rates)
-   - Operator share percentages (45% egress, 50% storage, etc.)
-   - Held amount percentages for different node ages
-   - Optional cost tracking settings
+   - Enable flag ENABLE_FINANCIAL_TRACKING = True
+   - Pricing configuration: PRICING_EGRESS_PER_TB = 7.00, PRICING_STORAGE_PER_TB_MONTH = 1.50, etc.
+   - Operator share percentages: OPERATOR_SHARE_EGRESS = 0.45, OPERATOR_SHARE_STORAGE = 0.50, etc.
+   - Held amount percentages: HELD_AMOUNT_MONTHS_1_TO_3 = 0.75, HELD_AMOUNT_MONTHS_4_TO_6 = 0.50, etc.
+   - Optional cost tracking: NODE_MONTHLY_COSTS dictionary
 
-2. Update storj_monitor/database.py to add:
-   - earnings_estimates table (timestamp, node_name, satellite, period, breakdowns, held amounts)
-   - payout_history table (actual vs estimated, accuracy tracking)
-   - Database functions: blocking_write_earnings_estimate, blocking_get_current_month_earnings, blocking_get_earnings_history
-   - Include proper indexes for performance
+2. Update storj_monitor/database.py to add earnings_estimates table:
+   CREATE TABLE earnings_estimates (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       timestamp DATETIME NOT NULL,
+       node_name TEXT NOT NULL,
+       satellite TEXT NOT NULL,
+       period TEXT NOT NULL,
+       egress_bytes INTEGER, egress_earnings_gross REAL, egress_earnings_net REAL,
+       storage_bytes_hour INTEGER, storage_earnings_gross REAL, storage_earnings_net REAL,
+       repair_bytes INTEGER, repair_earnings_gross REAL, repair_earnings_net REAL,
+       audit_bytes INTEGER, audit_earnings_gross REAL, audit_earnings_net REAL,
+       total_earnings_gross REAL, total_earnings_net REAL, held_amount REAL,
+       node_age_months INTEGER, held_percentage REAL
+   );
 
-Reference the detailed schema in docs/PHASE_5_TO_11_ROADMAP.md Phase 5.5.
+3. Add payout_history table and database functions as shown in docs/PHASE_5_TO_11_ROADMAP.md.
 ```
 
 ### 5.2 Financial Tracker Module
@@ -51,7 +60,10 @@ Create storj_monitor/financial_tracker.py implementing the FinancialTracker clas
 
 3. Use configuration from storj_monitor/config.py for all pricing calculations.
 
-Reference Phase 5.2-5.5 in docs/PHASE_5_TO_11_ROADMAP.md for calculation logic details.
+Example calculation logic:
+- Storage earnings = (total_gb_hours / (1024 * 720)) * PRICING_STORAGE_PER_TB_MONTH * OPERATOR_SHARE_STORAGE
+- Held amount = total_gross * held_percentage (based on node age)
+- Fetch actual data from API endpoint /api/sno/estimated-payout when available
 ```
 
 ### 5.3 Integration & Background Tasks
@@ -74,7 +86,20 @@ Integrate financial tracking into the application:
 
 3. Ensure proper startup/shutdown integration in existing task management.
 
-Follow the WebSocket API format specified in Phase 5.8 of the roadmap.
+WebSocket response format:
+{
+  "type": "earnings_data",
+  "data": [{
+    "node_name": "My-Node",
+    "satellite": "us1",
+    "total_net": 45.67,
+    "total_gross": 52.50,
+    "held_amount": 6.83,
+    "breakdown": {"egress": 25.30, "storage": 15.20, "repair": 3.10, "audit": 2.07},
+    "forecast_month_end": 78.42,
+    "confidence": 0.85
+  }]
+}
 ```
 
 ---
@@ -95,7 +120,7 @@ Create the EarningsCard UI component in storj_monitor/static/index.html:
 
 2. Make card visibility controlled by show-earnings checkbox option.
 
-Reference Phase 6.2 in docs/PHASE_5_TO_11_ROADMAP.md for exact HTML structure.
+Structure should match existing cards with header, stats grid, breakdown list, and chart canvas.
 ```
 
 ### 6.2 Earnings Charts
@@ -114,7 +139,7 @@ Add earnings visualization functions to storj_monitor/static/js/charts.js:
    - Color-coded (blue/green/orange/purple)
    - Percentage labels in tooltips
 
-Use Chart.js configuration from Phase 6.3 in the roadmap.
+Charts should follow existing Chart.js patterns in the codebase, with responsive: true, maintainAspectRatio: false, and appropriate tooltips.
 ```
 
 ### 6.3 Earnings Component Logic
@@ -137,7 +162,7 @@ Implement earnings card functionality in storj_monitor/static/js/app.js:
 
 3. Handle period selector changes to refresh data.
 
-Reference Phase 6.4 for complete implementation details.
+Follow existing patterns in app.js for WebSocket message handling and state management.
 ```
 
 ### 6.4 Earnings Card Styling
@@ -156,7 +181,7 @@ Add earnings card styles to storj_monitor/static/css/style.css:
 
 3. Make layout responsive for mobile (stack on small screens).
 
-Reference Phase 6.5 for complete CSS specifications.
+Follow existing CSS patterns with dark mode support (use CSS variables like --bg-primary, --text-primary).
 ```
 
 ---
@@ -184,7 +209,10 @@ Create storj_monitor/email_sender.py for email notifications:
 
 4. Handle errors gracefully with logging.
 
-Reference Phase 7.3 for complete implementation including HTML template.
+HTML template should use inline styles for email client compatibility with severity colors:
+- critical: #ef4444 (red)
+- warning: #f59e0b (orange)
+- info: #3b82f6 (blue)
 ```
 
 ### 7.2 Webhook Notification Module
@@ -210,7 +238,15 @@ Create storj_monitor/webhook_sender.py for webhook integrations:
 
 4. Use aiohttp session for async HTTP requests.
 
-Reference Phase 7.4 for webhook payload formats.
+Discord payload example:
+{
+  "embeds": [{
+    "title": "Alert Title",
+    "description": "Alert Message",
+    "color": 15158332,
+    "fields": [{"name": "Node", "value": "My-Node", "inline": true}]
+  }]
+}
 ```
 
 ### 7.3 Notification Configuration & Integration
@@ -236,7 +272,7 @@ Complete notification system integration:
 
 4. Update storj_monitor/tasks.py to initialize webhook HTTP sessions on startup.
 
-Reference Phase 7.2-7.6 for configuration examples and integration patterns.
+Follow existing async patterns and error handling used in reputation_tracker.py and storage_tracker.py.
 ```
 
 ---
@@ -264,7 +300,7 @@ Create storj_monitor/report_generator.py for report generation:
    - export_to_csv(data, filename)
    - Proper escaping and formatting
 
-Reference Phase 8.2 for report type specifications.
+Reports should include timestamp, node name, summary statistics, and detailed data tables. Use existing database query patterns.
 ```
 
 ### 8.2 Export API Endpoints
@@ -294,7 +330,7 @@ Add export endpoints to storj_monitor/server.py:
    - GET /api/reports/scheduled - List schedules
    - DELETE /api/reports/schedule/{id} - Remove schedule
 
-Reference Phase 8.3 for API specifications.
+Use aiohttp for HTTP endpoints (similar to how WebSocket endpoints are structured in server.py). Return appropriate Content-Type headers.
 ```
 
 ---
@@ -328,7 +364,7 @@ Create alert configuration UI in storj_monitor/static/index.html:
    - Per-node overrides
    - Import/export settings (JSON)
 
-Reference Phase 9.2 for complete component structure.
+Modal structure should use CSS similar to existing overlays, with z-index layering and backdrop click-to-close.
 ```
 
 ### 9.2 Settings Component Logic
@@ -356,7 +392,7 @@ Create storj_monitor/static/js/settings.js for configuration management:
 
 4. Store settings in database or config file (user preference).
 
-Reference Phase 9.3 for validation rules and API format.
+Validation should prevent invalid ranges (e.g., warning threshold must be less than critical threshold). Use HTML5 input validation where possible.
 ```
 
 ---
@@ -386,7 +422,7 @@ Optimize storj_monitor/static/css/style.css for mobile:
 
 4. Test on multiple device sizes and adjust spacing/fonts.
 
-Reference Phase 10.2 for responsive design patterns.
+Use flexbox and CSS Grid with responsive breakpoints. Test with Chrome DevTools device emulation.
 ```
 
 ### 10.2 Progressive Web App Setup
@@ -419,7 +455,7 @@ Add PWA capabilities to Storj Node Monitor:
    - Subscribe to push service
    - Handle incoming push messages
 
-Reference Phase 10.3 for service worker implementation patterns.
+Service worker should use workbox patterns or manual cache management. Test offline functionality in DevTools Network tab.
 ```
 
 ---
@@ -449,7 +485,7 @@ Create multi-node comparison view:
    - updateComparisonView() - Render all comparison elements
    - exportComparison() - CSV export of comparison data
 
-Reference Phase 11.2 for visualization specifications.
+Charts should allow toggling individual nodes on/off. Use consistent color schemes across all comparison charts.
 ```
 
 ### 11.2 Comparison WebSocket API
@@ -479,7 +515,10 @@ Add comparison endpoints to storj_monitor/server.py:
 
 4. Optimize queries for multiple nodes (batch processing).
 
-Reference Phase 11.3 for metric calculation formulas.
+Normalize metrics for fair comparison:
+- Earnings per TB stored = total_earnings / (used_bytes / 1024^4)
+- Storage efficiency = (used_bytes / total_bytes) * 100
+- Average latency = mean of p50 values across time period
 ```
 
 ---
