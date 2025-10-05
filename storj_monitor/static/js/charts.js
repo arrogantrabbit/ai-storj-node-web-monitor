@@ -269,34 +269,87 @@ export function createStorageHistoryChart() {
     });
 }
 
+// Store multiple node histories for aggregation
+let storageHistoryByNode = {};
+
+export function clearStorageHistoryCache() {
+    storageHistoryByNode = {};
+}
+
 export function updateStorageHistoryChart(historyData) {
     if (!storageHistoryChartInstance) createStorageHistoryChart();
     if (!historyData || historyData.length === 0) return;
     
-    // Check if we have API data (used_bytes) or log data (available_bytes)
-    const hasUsedData = historyData.some(item => item.used_bytes != null);
-    const hasAvailableData = historyData.some(item => item.available_bytes != null);
+    // Store this node's history
+    if (historyData.length > 0) {
+        const nodeName = historyData[0].node_name;
+        storageHistoryByNode[nodeName] = historyData;
+    }
     
-    const usedData = historyData
-        .filter(item => item.used_bytes != null)
-        .map(item => ({
-            x: new Date(item.timestamp),
-            y: item.used_bytes
-        }));
+    // Determine which nodes to display based on current view
+    let nodesToDisplay = [];
+    if (window.currentView && window.currentView.length === 1 && window.currentView[0] !== 'Aggregate') {
+        // Single node view
+        nodesToDisplay = [window.currentView[0]];
+    } else {
+        // Aggregate or multi-node view - show all stored histories
+        nodesToDisplay = Object.keys(storageHistoryByNode);
+    }
     
-    const trashData = historyData
-        .filter(item => item.trash_bytes != null)
-        .map(item => ({
-            x: new Date(item.timestamp),
-            y: item.trash_bytes
-        }));
+    // Aggregate data across selected nodes by timestamp
+    const aggregatedData = {};
     
-    const availableData = historyData
-        .filter(item => item.available_bytes != null)
-        .map(item => ({
-            x: new Date(item.timestamp),
-            y: item.available_bytes
-        }));
+    nodesToDisplay.forEach(nodeName => {
+        const nodeHistory = storageHistoryByNode[nodeName];
+        if (!nodeHistory) return;
+        
+        nodeHistory.forEach(item => {
+            const timestamp = new Date(item.timestamp).getTime();
+            if (!aggregatedData[timestamp]) {
+                aggregatedData[timestamp] = {
+                    used_bytes: 0,
+                    trash_bytes: 0,
+                    available_bytes: 0,
+                    hasUsedData: false,
+                    hasAvailableData: false
+                };
+            }
+            
+            if (item.used_bytes != null) {
+                aggregatedData[timestamp].used_bytes += item.used_bytes;
+                aggregatedData[timestamp].hasUsedData = true;
+            }
+            if (item.trash_bytes != null) {
+                aggregatedData[timestamp].trash_bytes += item.trash_bytes;
+            }
+            if (item.available_bytes != null) {
+                aggregatedData[timestamp].available_bytes += item.available_bytes;
+                aggregatedData[timestamp].hasAvailableData = true;
+            }
+        });
+    });
+    
+    // Convert aggregated data to chart format
+    const sortedTimestamps = Object.keys(aggregatedData).map(Number).sort((a, b) => a - b);
+    
+    const usedData = [];
+    const trashData = [];
+    const availableData = [];
+    let hasUsedData = false;
+    let hasAvailableData = false;
+    
+    sortedTimestamps.forEach(timestamp => {
+        const data = aggregatedData[timestamp];
+        if (data.hasUsedData) {
+            usedData.push({ x: new Date(timestamp), y: data.used_bytes });
+            trashData.push({ x: new Date(timestamp), y: data.trash_bytes });
+            hasUsedData = true;
+        }
+        if (data.hasAvailableData) {
+            availableData.push({ x: new Date(timestamp), y: data.available_bytes });
+            hasAvailableData = true;
+        }
+    });
     
     storageHistoryChartInstance.data.datasets[0].data = usedData;
     storageHistoryChartInstance.data.datasets[1].data = trashData;

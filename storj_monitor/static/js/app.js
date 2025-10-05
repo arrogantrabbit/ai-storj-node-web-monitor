@@ -271,15 +271,23 @@ function updateStorageHealthCard(data) {
     document.getElementById('storage-used-percent').textContent = `${usedPercent.toFixed(1)}%`;
     document.getElementById('storage-available').textContent = formatBytes(totalAvailableBytes);
     
-    // Calculate growth rate and days until full if data is available
-    const firstNode = data[0];
-    if (firstNode.growth_rate_bytes_per_day != null) {
-        const growthRatePerDay = firstNode.growth_rate_bytes_per_day;
-        document.getElementById('storage-growth-rate').textContent =
-            growthRatePerDay > 0 ? `${formatBytes(growthRatePerDay)}/day` : 'N/A';
+    // Calculate aggregate growth rate and days until full
+    // Sum growth rates from all nodes that have valid data
+    let totalGrowthRatePerDay = 0;
+    let nodesWithGrowthData = 0;
+    
+    data.forEach(node => {
+        if (node.growth_rate_bytes_per_day != null && node.growth_rate_bytes_per_day > 0) {
+            totalGrowthRatePerDay += node.growth_rate_bytes_per_day;
+            nodesWithGrowthData++;
+        }
+    });
+    
+    if (nodesWithGrowthData > 0 && totalGrowthRatePerDay > 0) {
+        document.getElementById('storage-growth-rate').textContent = `${formatBytes(totalGrowthRatePerDay)}/day`;
         
-        if (growthRatePerDay > 0 && totalAvailableBytes > 0) {
-            const daysUntilFull = Math.floor(totalAvailableBytes / growthRatePerDay);
+        if (totalAvailableBytes > 0) {
+            const daysUntilFull = Math.floor(totalAvailableBytes / totalGrowthRatePerDay);
             document.getElementById('storage-days-until-full').textContent =
                 daysUntilFull > 365 ? '>365 days' : `~${daysUntilFull} days`;
         } else {
@@ -290,13 +298,27 @@ function updateStorageHealthCard(data) {
         document.getElementById('storage-days-until-full').textContent = 'N/A';
     }
     
-    // Request storage history for chart (use first node for single-node views)
+    // Request storage history for chart
+    // For aggregate view or multi-node: request histories for all nodes
+    // For single-node view: request history for that one node
     if (ws && ws.readyState === WebSocket.OPEN && data.length > 0) {
-        ws.send(JSON.stringify({
-            type: 'get_storage_history',
-            node_name: data[0].node_name,
-            days: 7
-        }));
+        if (currentNodeView.length === 1 && currentNodeView[0] !== 'Aggregate') {
+            // Single node view - request that node's history
+            ws.send(JSON.stringify({
+                type: 'get_storage_history',
+                node_name: currentNodeView[0],
+                days: 7
+            }));
+        } else {
+            // Aggregate or multi-node view - request all nodes' histories
+            data.forEach(node => {
+                ws.send(JSON.stringify({
+                    type: 'get_storage_history',
+                    node_name: node.node_name,
+                    days: 7
+                }));
+            });
+        }
     }
 }
 
@@ -626,6 +648,12 @@ function setupEventListeners() {
         initializePerformanceDataStateForView(currentNodeView);
         renderNodeSelector();
         heatmap.clearData();
+        
+        // Clear storage history cache when switching views to force fresh data
+        if (typeof charts !== 'undefined' && charts.clearStorageHistoryCache) {
+            charts.clearStorageHistoryCache();
+        }
+        
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'set_view', view: currentNodeView }));
             if (performanceState.range !== '5m') { document.querySelector('#time-range-toggles [data-range="5m"]').click(); } else { ws.send(JSON.stringify({ type: 'get_historical_performance', view: currentNodeView, points: MAX_PERF_POINTS, interval_sec: PERFORMANCE_INTERVAL_MS / 1000 })); }

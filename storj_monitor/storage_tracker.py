@@ -199,6 +199,7 @@ async def calculate_storage_forecast(
         
         if len(history) < 2:
             # Not enough data for forecast
+            log.info(f"[{node_name}] Insufficient storage history for growth rate calculation: {len(history)} records (need 2+)")
             return None
         
         # Calculate growth rate using linear regression
@@ -207,6 +208,8 @@ async def calculate_storage_forecast(
         
         if len(valid_history) < 2:
             # Not enough valid data for forecast (log-based data doesn't have used_bytes)
+            log.warning(f"[{node_name}] Cannot calculate growth rate: {len(valid_history)} records with used_bytes out of {len(history)} total. "
+                       f"Growth rate requires API-based storage data (not log-based). Enable storage polling via NODE_API_URL config.")
             return None
         
         timestamps = [(datetime.datetime.fromisoformat(h['timestamp']).timestamp() / 86400)
