@@ -1614,6 +1614,8 @@ def blocking_get_earnings_estimates(
 ) -> List[Dict[str, Any]]:
     """
     Get earnings estimates with optional filters.
+    Returns only the LATEST estimate for each node/satellite/period combination
+    to avoid duplicate aggregation in charts.
     
     Args:
         db_path: Path to database file
@@ -1623,7 +1625,7 @@ def blocking_get_earnings_estimates(
         days: Number of days of history to retrieve
     
     Returns:
-        List of earnings estimates
+        List of earnings estimates (latest per node/satellite/period)
     """
     try:
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
@@ -1632,6 +1634,7 @@ def blocking_get_earnings_estimates(
         with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
             
+            # Build WHERE clause for the subquery
             where_clauses = ["timestamp >= ?"]
             params = [cutoff_iso]
             
@@ -1648,13 +1651,27 @@ def blocking_get_earnings_estimates(
                 where_clauses.append("period = ?")
                 params.append(period)
             
+            where_clause = ' AND '.join(where_clauses)
+            
+            # Query to get only the LATEST estimate for each node/satellite/period combination
+            # This prevents duplicate aggregation when the same period has multiple estimates
             query = f"""
-                SELECT * FROM earnings_estimates
-                WHERE {' AND '.join(where_clauses)}
-                ORDER BY timestamp DESC
+                SELECT e1.*
+                FROM earnings_estimates e1
+                INNER JOIN (
+                    SELECT node_name, satellite, period, MAX(timestamp) as max_timestamp
+                    FROM earnings_estimates
+                    WHERE {where_clause}
+                    GROUP BY node_name, satellite, period
+                ) e2 ON e1.node_name = e2.node_name
+                    AND e1.satellite = e2.satellite
+                    AND e1.period = e2.period
+                    AND e1.timestamp = e2.max_timestamp
+                ORDER BY e1.period ASC, e1.node_name, e1.satellite
             """
             
             results = conn.execute(query, params).fetchall()
+            log.debug(f"Retrieved {len(results)} earnings estimates (deduplicated by period)")
             return [dict(row) for row in results]
     except Exception:
         log.error("Failed to get earnings estimates:", exc_info=True)
