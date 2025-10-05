@@ -375,20 +375,36 @@ export function updateStorageHistoryChart(historyData) {
     storageHistoryChartInstance.data.datasets[1].hidden = !hasUsedData;
     storageHistoryChartInstance.data.datasets[2].hidden = !hasAvailableData;
     
-    // Dynamically adjust time unit based on data range
+    // Dynamically adjust time unit and axis bounds based on data range
     if (sortedTimestamps.length > 0) {
         const firstTimestamp = sortedTimestamps[0];
         const lastTimestamp = sortedTimestamps[sortedTimestamps.length - 1];
         const rangeMs = lastTimestamp - firstTimestamp;
         const rangeDays = rangeMs / (1000 * 60 * 60 * 24);
         
-        // Adjust time unit based on actual data range
-        if (rangeDays < 1) {
+        // With sparse data (1-2 points), create an artificial time range for better display
+        if (sortedTimestamps.length <= 2 || rangeDays < 0.1) {
+            // For single or very close points, create a 6-hour window centered on the data
+            const centerTime = (firstTimestamp + lastTimestamp) / 2;
+            const threeHours = 3 * 60 * 60 * 1000;
+            storageHistoryChartInstance.options.scales.x.min = new Date(centerTime - threeHours);
+            storageHistoryChartInstance.options.scales.x.max = new Date(centerTime + threeHours);
             storageHistoryChartInstance.options.scales.x.time.unit = 'hour';
-        } else if (rangeDays < 7) {
-            storageHistoryChartInstance.options.scales.x.time.unit = 'day';
+            storageHistoryChartInstance.options.scales.x.ticks.stepSize = 1;
         } else {
-            storageHistoryChartInstance.options.scales.x.time.unit = 'day';
+            // Clear artificial bounds for real data ranges
+            storageHistoryChartInstance.options.scales.x.min = undefined;
+            storageHistoryChartInstance.options.scales.x.max = undefined;
+            storageHistoryChartInstance.options.scales.x.ticks.stepSize = undefined;
+            
+            // Adjust time unit based on actual data range
+            if (rangeDays < 1) {
+                storageHistoryChartInstance.options.scales.x.time.unit = 'hour';
+            } else if (rangeDays < 7) {
+                storageHistoryChartInstance.options.scales.x.time.unit = 'day';
+            } else {
+                storageHistoryChartInstance.options.scales.x.time.unit = 'day';
+            }
         }
     }
     
