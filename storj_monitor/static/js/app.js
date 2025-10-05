@@ -243,21 +243,58 @@ function updateReputationCard(data) {
 
 function updateStorageHealthCard(data) {
     if (!isCardVisible('storage-health-card')) return;
-    if (!data || data.length === 0) return;
+    if (!data || data.length === 0) {
+        document.getElementById('storage-used-percent').textContent = 'N/A';
+        document.getElementById('storage-available').textContent = 'N/A';
+        document.getElementById('storage-growth-rate').textContent = 'N/A';
+        document.getElementById('storage-days-until-full').textContent = 'N/A';
+        return;
+    }
     
-    // Use first node's data (or aggregate if needed)
-    const storageData = data[0];
+    // Aggregate storage data across all nodes in the view
+    let totalUsedBytes = 0;
+    let totalAvailableBytes = 0;
+    let totalTrashBytes = 0;
+    let totalAllocatedBytes = 0;
     
-    document.getElementById('storage-used-percent').textContent =
-        storageData.used_percent ? `${storageData.used_percent.toFixed(1)}%` : 'N/A';
-    document.getElementById('storage-available').textContent =
-        storageData.available_bytes ? formatBytes(storageData.available_bytes) : 'N/A';
+    data.forEach(node => {
+        totalUsedBytes += node.used_bytes || 0;
+        totalAvailableBytes += node.available_bytes || 0;
+        totalTrashBytes += node.trash_bytes || 0;
+        totalAllocatedBytes += node.allocated_bytes || 0;
+    });
     
-    // Request storage history for chart
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    // Calculate aggregated metrics
+    const totalCapacity = totalUsedBytes + totalAvailableBytes;
+    const usedPercent = totalCapacity > 0 ? (totalUsedBytes / totalCapacity * 100) : 0;
+    
+    document.getElementById('storage-used-percent').textContent = `${usedPercent.toFixed(1)}%`;
+    document.getElementById('storage-available').textContent = formatBytes(totalAvailableBytes);
+    
+    // Calculate growth rate and days until full if data is available
+    const firstNode = data[0];
+    if (firstNode.growth_rate_bytes_per_day != null) {
+        const growthRatePerDay = firstNode.growth_rate_bytes_per_day;
+        document.getElementById('storage-growth-rate').textContent =
+            growthRatePerDay > 0 ? `${formatBytes(growthRatePerDay)}/day` : 'N/A';
+        
+        if (growthRatePerDay > 0 && totalAvailableBytes > 0) {
+            const daysUntilFull = Math.floor(totalAvailableBytes / growthRatePerDay);
+            document.getElementById('storage-days-until-full').textContent =
+                daysUntilFull > 365 ? '>365 days' : `~${daysUntilFull} days`;
+        } else {
+            document.getElementById('storage-days-until-full').textContent = 'N/A';
+        }
+    } else {
+        document.getElementById('storage-growth-rate').textContent = 'N/A';
+        document.getElementById('storage-days-until-full').textContent = 'N/A';
+    }
+    
+    // Request storage history for chart (use first node for single-node views)
+    if (ws && ws.readyState === WebSocket.OPEN && data.length > 0) {
         ws.send(JSON.stringify({
             type: 'get_storage_history',
-            node_name: storageData.node_name,
+            node_name: data[0].node_name,
             days: 7
         }));
     }
