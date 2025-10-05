@@ -255,7 +255,7 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
     log.info(f"Log processor task started for node: {node_name}")
     
     # Track operation start times for duration calculation
-    # Key: (piece_id, satellite_id, action) -> arrival_time
+    # Key: (piece_id, satellite_id, action) -> (arrival_time, timestamp_obj)
     operation_start_times = {}
     MAX_TRACKED_OPERATIONS = 10000  # Prevent memory growth
 
@@ -267,9 +267,10 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
                 continue
 
             if parsed['type'] == 'operation_start':
-                # Store start time for this operation
+                # Store both arrival_time and timestamp for hybrid duration calculation
                 key = (parsed['piece_id'], parsed['satellite_id'], parsed['action'])
-                operation_start_times[key] = arrival_time
+                operation_start_times[key] = (arrival_time, parsed['timestamp'])
+                log.debug(f"[{node_name}] Stored operation_start: action={parsed['action']}, piece={parsed['piece_id'][:16]}..., sat={parsed['satellite_id'][:12]}...")
                 
                 # Prevent unbounded growth
                 if len(operation_start_times) > MAX_TRACKED_OPERATIONS:
@@ -277,18 +278,38 @@ async def log_processor_task(app, node_name: str, line_queue: asyncio.Queue):
                     to_remove = len(operation_start_times) // 5
                     for _ in range(to_remove):
                         operation_start_times.pop(next(iter(operation_start_times)))
+                    log.warning(f"[{node_name}] operation_start_times exceeded {MAX_TRACKED_OPERATIONS}, removed {to_remove} oldest entries")
                 continue
 
             if parsed['type'] == 'traffic_event':
                 event = parsed['data']
                 
-                # Calculate duration from start time if available
+                # Hybrid duration calculation: prefer arrival_time for sub-second precision,
+                # but fall back to log timestamps when buffering artifacts detected (>4s)
                 if event['duration_ms'] is None:
                     key = (event['piece_id'], event['satellite_id'], event['action'])
-                    start_time = operation_start_times.pop(key, None)
-                    if start_time is not None:
-                        duration_seconds = arrival_time - start_time
-                        event['duration_ms'] = int(duration_seconds * 1000)  # Convert to milliseconds
+                    start_data = operation_start_times.pop(key, None)
+                    if start_data is not None:
+                        start_arrival_time, start_timestamp = start_data
+                        
+                        # Calculate duration using arrival times (sub-second precision)
+                        arrival_duration_seconds = arrival_time - start_arrival_time
+                        arrival_duration_ms = int(arrival_duration_seconds * 1000)
+                        
+                        # If arrival_time shows suspiciously high duration (>4s),
+                        # it's likely a buffering artifact - use log timestamps instead
+                        if arrival_duration_ms > 4000:
+                            # Fallback to log timestamp calculation
+                            timestamp_duration_seconds = (event['timestamp'] - start_timestamp).total_seconds()
+                            timestamp_duration_ms = int(timestamp_duration_seconds * 1000)
+                            event['duration_ms'] = timestamp_duration_ms
+                            log.debug(f"[{node_name}] Used timestamp fallback: {timestamp_duration_ms}ms (arrival suggested {arrival_duration_ms}ms) for {event['action']}")
+                        else:
+                            # Normal case: use arrival_time for best precision
+                            event['duration_ms'] = arrival_duration_ms
+                            log.debug(f"[{node_name}] Calculated duration: {arrival_duration_ms}ms for {event['action']}")
+                    else:
+                        log.debug(f"[{node_name}] No duration available for {event['action']}")
                 
                 if event['category'] != 'other':
                     node_state['unprocessed_performance_events'].append({
