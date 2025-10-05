@@ -2,7 +2,7 @@ import sqlite3
 import logging
 import datetime
 from typing import List, Dict, Any, Optional
-
+import json
 from .config import DATABASE_FILE, DB_EVENTS_RETENTION_DAYS, DB_HASHSTORE_RETENTION_DAYS, HISTORICAL_HOURS_TO_SHOW
 
 log = logging.getLogger("StorjMonitor.Database")
