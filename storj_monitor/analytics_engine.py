@@ -243,8 +243,14 @@ class AnalyticsEngine:
             return None
         
         try:
+            # Filter out None values first
+            valid_values = [(t, v) for t, v in values if v is not None]
+            
+            if not valid_values or len(valid_values) < 2:
+                return None
+            
             # Sort by timestamp
-            sorted_values = sorted(values, key=lambda x: x[0])
+            sorted_values = sorted(valid_values, key=lambda x: x[0])
             
             # Filter to window
             cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=window_hours)
