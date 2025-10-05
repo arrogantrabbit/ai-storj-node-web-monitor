@@ -195,7 +195,22 @@ async def websocket_handler(request):
                         )
                         payload = {"type": "hashstore_stats_data", "data": hashstore_data}
                         await ws.send_json(payload)
-
+                    
+                    elif msg_type == 'get_reputation_data':
+                        # Phase 1.3: Get current reputation data
+                        view = data.get('view', ['Aggregate'])
+                        nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
+                        
+                        loop = asyncio.get_running_loop()
+                        from .config import DATABASE_FILE
+                        reputation_data = await loop.run_in_executor(
+                            app['db_executor'],
+                            database.blocking_get_latest_reputation,
+                            DATABASE_FILE,
+                            nodes_to_query
+                        )
+                        payload = {"type": "reputation_data", "data": reputation_data}
+                        await ws.send_json(payload)
 
                 except Exception:
                     log.error("Could not parse websocket message:", exc_info=True)

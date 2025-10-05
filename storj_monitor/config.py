@@ -26,6 +26,18 @@ DB_EVENTS_RETENTION_DAYS = 2  # New: How many days of event data to keep
 DB_PRUNE_INTERVAL_HOURS = 6  # New: How often to run the pruner
 DB_HASHSTORE_RETENTION_DAYS = 180  # How many days of hashstore compaction history to keep
 
+# --- API Integration Configuration (Phase 1) ---
+NODE_API_DEFAULT_PORT = 14002  # Default Storj node API port
+NODE_API_TIMEOUT = 10  # seconds
+NODE_API_POLL_INTERVAL = 300  # 5 minutes - how often to poll node API
+ALLOW_REMOTE_API = True  # Allow API endpoints on remote hosts (set False for localhost-only)
+
+# --- Reputation Alert Thresholds (Phase 1) ---
+AUDIT_SCORE_WARNING = 85.0  # Yellow warning
+AUDIT_SCORE_CRITICAL = 70.0  # Red alert
+SUSPENSION_SCORE_CRITICAL = 60.0  # Red alert - risk of suspension
+ONLINE_SCORE_WARNING = 95.0
+
 # --- Global Constants ---
 SATELLITE_NAMES = {'121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1',
                    '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1',

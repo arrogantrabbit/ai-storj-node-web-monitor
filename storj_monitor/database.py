@@ -1,7 +1,7 @@
 import sqlite3
 import logging
 import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from .config import DATABASE_FILE, DB_EVENTS_RETENTION_DAYS, DB_HASHSTORE_RETENTION_DAYS, HISTORICAL_HOURS_TO_SHOW
 
@@ -102,6 +102,25 @@ def init_db():
         cursor.execute('CREATE INDEX idx_events_node_name_timestamp ON events (node_name, timestamp);')
         log.info("Index creation complete.")
 
+    # --- Reputation History Table (Phase 1.3) ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS reputation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME NOT NULL,
+            node_name TEXT NOT NULL,
+            satellite TEXT NOT NULL,
+            audit_score REAL,
+            suspension_score REAL,
+            online_score REAL,
+            audit_success_count INTEGER,
+            audit_total_count INTEGER,
+            is_disqualified INTEGER DEFAULT 0,
+            is_suspended INTEGER DEFAULT 0
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_reputation_node_time ON reputation_history (node_name, timestamp);')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_reputation_satellite ON reputation_history (satellite);')
+    
     conn.commit()
     conn.close()
     log.info("Database schema is valid and ready.")
@@ -603,3 +622,138 @@ def blocking_batch_write_hashstore_ingest(db_path: str, records: List[Dict]):
         log.info(f"Successfully ingested {len(records)} hashstore compaction records into the database.")
     except Exception:
         log.error("Failed to write ingested hashstore logs to DB:", exc_info=True)
+
+
+# --- Reputation Tracking Functions (Phase 1.3) ---
+
+def blocking_write_reputation_history(db_path: str, records: List[Dict]) -> bool:
+    """
+    Write reputation history records to database.
+    
+    Args:
+        db_path: Path to database file
+        records: List of reputation records
+    
+    Returns:
+        True if successful
+    """
+    if not records:
+        return False
+    
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            cursor = conn.cursor()
+            cursor.executemany('''
+                INSERT INTO reputation_history
+                (timestamp, node_name, satellite, audit_score, suspension_score, online_score,
+                 audit_success_count, audit_total_count, is_disqualified, is_suspended)
+                VALUES (:timestamp, :node_name, :satellite, :audit_score, :suspension_score, :online_score,
+                        :audit_success_count, :audit_total_count, :is_disqualified, :is_suspended)
+            ''', [
+                {
+                    'timestamp': r['timestamp'].isoformat(),
+                    'node_name': r['node_name'],
+                    'satellite': r['satellite'],
+                    'audit_score': r['audit_score'],
+                    'suspension_score': r['suspension_score'],
+                    'online_score': r['online_score'],
+                    'audit_success_count': r['audit_success_count'],
+                    'audit_total_count': r['audit_total_count'],
+                    'is_disqualified': 1 if r.get('is_disqualified') else 0,
+                    'is_suspended': 1 if r.get('is_suspended') else 0
+                }
+                for r in records
+            ])
+            conn.commit()
+        log.info(f"Successfully wrote {len(records)} reputation history records")
+        return True
+    except Exception:
+        log.error("Failed to write reputation history to DB:", exc_info=True)
+        return False
+
+
+def blocking_get_latest_reputation(db_path: str, node_names: List[str]) -> List[Dict[str, Any]]:
+    """
+    Get the most recent reputation data for specified nodes.
+    
+    Args:
+        db_path: Path to database file
+        node_names: List of node names
+    
+    Returns:
+        List of reputation summaries with latest data per node per satellite
+    """
+    if not node_names:
+        return []
+    
+    try:
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            # Get latest reputation for each node-satellite combination
+            placeholders = ','.join('?' for _ in node_names)
+            query = f"""
+                SELECT r1.*
+                FROM reputation_history r1
+                INNER JOIN (
+                    SELECT node_name, satellite, MAX(timestamp) as max_timestamp
+                    FROM reputation_history
+                    WHERE node_name IN ({placeholders})
+                    GROUP BY node_name, satellite
+                ) r2 ON r1.node_name = r2.node_name
+                    AND r1.satellite = r2.satellite
+                    AND r1.timestamp = r2.max_timestamp
+                ORDER BY r1.node_name, r1.satellite
+            """
+            
+            results = [dict(row) for row in conn.execute(query, node_names).fetchall()]
+            return results
+    except Exception:
+        log.error("Failed to get latest reputation:", exc_info=True)
+        return []
+
+
+def blocking_get_reputation_history(
+    db_path: str,
+    node_name: str,
+    satellite: Optional[str] = None,
+    hours: int = 24
+) -> List[Dict[str, Any]]:
+    """
+    Get reputation history for a node.
+    
+    Args:
+        db_path: Path to database file
+        node_name: Name of the node
+        satellite: Optional satellite ID to filter by
+        hours: Number of hours of history to retrieve
+    
+    Returns:
+        List of reputation records ordered by timestamp
+    """
+    try:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+        cutoff_iso = cutoff.isoformat()
+        
+        with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            if satellite:
+                query = """
+                    SELECT * FROM reputation_history
+                    WHERE node_name = ? AND satellite = ? AND timestamp >= ?
+                    ORDER BY timestamp ASC
+                """
+                results = conn.execute(query, (node_name, satellite, cutoff_iso)).fetchall()
+            else:
+                query = """
+                    SELECT * FROM reputation_history
+                    WHERE node_name = ? AND timestamp >= ?
+                    ORDER BY timestamp ASC, satellite
+                """
+                results = conn.execute(query, (node_name, cutoff_iso)).fetchall()
+            
+            return [dict(row) for row in results]
+    except Exception:
+        log.error("Failed to get reputation history:", exc_info=True)
+        return []

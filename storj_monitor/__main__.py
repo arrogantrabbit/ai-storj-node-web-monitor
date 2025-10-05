@@ -24,38 +24,97 @@ log = logging.getLogger("StorjMonitor")
 
 
 def parse_nodes(args: list[str]) -> dict[str, dict[str, any]]:
+    """
+    Parse node configuration from command-line arguments.
+    
+    Format: "NodeName:log_source[:api_endpoint]"
+    
+    Examples:
+        NodeName:/path/to/log.log
+        NodeName:/path/to/log.log:http://localhost:14002
+        NodeName:192.168.1.100:9999
+        NodeName:192.168.1.100:9999:http://192.168.1.100:14002
+    """
     nodes = {}
     if not args:
-        log.critical("No nodes specified. Use --node 'NodeName:/path/to/log' or 'NodeName:host:port' argument.")
+        log.critical("No nodes specified. Use --node 'NodeName:/path/to/log[:api_endpoint]' argument.")
         sys.exit(1)
 
     for arg in args:
-        parts = arg.split(':', 1)
-        if len(parts) != 2 or not parts[0] or not parts[1]:
-            log.critical(f"Invalid node format: '{arg}'. Expected 'NodeName:/path/to/log' or 'NodeName:host:port'.")
+        parts = arg.split(':')
+        if len(parts) < 2 or not parts[0]:
+            log.critical(f"Invalid node format: '{arg}'. Expected 'NodeName:/path/to/log[:api_endpoint]'.")
             sys.exit(1)
-        node_name, source = parts
-
-        # Heuristic 1: If the source path exists on disk, it's a file.
-        if os.path.exists(source):
-            log.info(f"Configured node '{node_name}' with file source '{source}' (path exists).")
-            nodes[node_name] = {'type': 'file', 'path': source}
-            continue
-
-        # Heuristic 2: If it doesn't exist, check if it looks like host:port.
-        try:
-            host, port_str = source.rsplit(':', 1)
-            port = int(port_str)
-            if 1 <= port <= 65535 and host:
-                log.info(f"Configured node '{node_name}' with network source '{source}'.")
-                nodes[node_name] = {'type': 'network', 'host': host, 'port': port}
-                continue
-        except (ValueError, TypeError):
-            pass  # Doesn't look like a network address.
-
-        # Fallback: Treat as a non-existent file path. This is valid for log files that will be created.
-        log.warning(f"Configured node '{node_name}' with file source '{source}' (path does not currently exist).")
-        nodes[node_name] = {'type': 'file', 'path': source}
+        
+        node_name = parts[0]
+        api_endpoint = None
+        
+        # Check if log source starts with '/' or '.' (file path)
+        if parts[1].startswith('/') or parts[1].startswith('.'):
+            # File path
+            log_source = parts[1]
+            log_type = 'file'
+            
+            # Check for explicit API endpoint after file path
+            if len(parts) >= 3:
+                # "NodeName:/path/to/log:http://localhost:14002"
+                api_endpoint = ':'.join(parts[2:])
+                log.info(f"Configured node '{node_name}' with file source '{log_source}' and API endpoint '{api_endpoint}'.")
+            else:
+                # No explicit API, will attempt auto-discovery
+                log.info(f"Configured node '{node_name}' with file source '{log_source}' (API endpoint will be auto-discovered).")
+            
+            # Check if file exists
+            if os.path.exists(log_source):
+                log.info(f"  -> Log file exists at '{log_source}'.")
+            else:
+                log.warning(f"  -> Log file does not currently exist at '{log_source}' (may be created later).")
+            
+            nodes[node_name] = {
+                'type': 'file',
+                'path': log_source,
+                'api_endpoint': api_endpoint
+            }
+        else:
+            # Network: "NodeName:host:port" or "NodeName:host:port:http://..."
+            if len(parts) == 3:
+                # "NodeName:host:port" - log forwarder only
+                try:
+                    host, port = parts[1], int(parts[2])
+                    if 1 <= port <= 65535 and host:
+                        log.info(f"Configured node '{node_name}' with network source '{host}:{port}' (no API).")
+                        nodes[node_name] = {
+                            'type': 'network',
+                            'host': host,
+                            'port': port,
+                            'api_endpoint': None
+                        }
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            
+            elif len(parts) >= 4:
+                # "NodeName:host:port:http://host:api_port"
+                try:
+                    host, port_str = parts[1], parts[2]
+                    port = int(port_str)
+                    if 1 <= port <= 65535 and host:
+                        api_endpoint = ':'.join(parts[3:])
+                        log.info(f"Configured node '{node_name}' with network source '{host}:{port}' and API endpoint '{api_endpoint}'.")
+                        nodes[node_name] = {
+                            'type': 'network',
+                            'host': host,
+                            'port': port,
+                            'api_endpoint': api_endpoint
+                        }
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            
+            # If we got here, format is invalid
+            log.critical(f"Invalid network node format: '{arg}'. Expected 'NodeName:host:port[:api_endpoint]'.")
+            sys.exit(1)
+    
     return nodes
 
 
@@ -125,13 +184,56 @@ def ingest_log_file(node_name: str, log_path: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Storagenode Pro Monitor")
+    parser = argparse.ArgumentParser(
+        description="Storagenode Pro Monitor - Real-time monitoring dashboard for Storj storage nodes",
+        epilog="""
+Examples:
+  # Single local node with auto-discovered API
+  %(prog)s --node "My-Node:/var/log/storagenode.log"
+  
+  # Local node with explicit API endpoint
+  %(prog)s --node "My-Node:/var/log/storagenode.log:http://localhost:14002"
+  
+  # Multiple local nodes with different API ports
+  %(prog)s --node "Node1:/var/log/node1.log:http://localhost:14002" \\
+           --node "Node2:/var/log/node2.log:http://localhost:15002"
+  
+  # Remote log forwarder without API
+  %(prog)s --node "Remote-Node:192.168.1.100:9999"
+  
+  # Remote log forwarder with API
+  %(prog)s --node "Remote-Node:192.168.1.100:9999:http://192.168.1.100:14002"
+  
+  # One-time historical log ingestion
+  %(prog)s --ingest-log "My-Node:/var/log/old-logs.log"
+
+Enhanced Features (with API):
+  When API endpoint is provided or auto-discovered, additional features are enabled:
+  - Node reputation monitoring (audit, suspension, online scores)
+  - Storage capacity tracking and forecasting
+  - Performance latency analytics
+  - Proactive alerting
+  
+  If API endpoint is not specified for local nodes, the system attempts
+  auto-discovery at http://localhost:14002 (default Storj node API port).
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
 
     mode_group = parser.add_mutually_exclusive_group(required=True)
-    mode_group.add_argument('--node', action='append',
-                            help="SERVER MODE: Specify a node in 'NodeName:/path/to/log.log' or 'NodeName:host:port' format. Can be used multiple times.")
-    mode_group.add_argument('--ingest-log',
-                            help="INGEST MODE: Ingest a log file for a specific node and exit. Format: 'NodeName:/path/to/log.log'")
+    mode_group.add_argument(
+        '--node',
+        action='append',
+        metavar='NODE_CONFIG',
+        help="SERVER MODE: Specify a node configuration. Format: 'NodeName:log_source[:api_endpoint]' "
+             "where log_source is either a file path (/path/to/log.log) or network address (host:port). "
+             "API endpoint is optional for enhanced monitoring features. Can be specified multiple times for multi-node monitoring."
+    )
+    mode_group.add_argument(
+        '--ingest-log',
+        metavar='NODE:PATH',
+        help="INGEST MODE: One-time ingestion of a log file into the database and exit. Format: 'NodeName:/path/to/log.log'"
+    )
 
     parser.add_argument('--debug', action='store_true', help="Enable debug logging.")
     args = parser.parse_args()

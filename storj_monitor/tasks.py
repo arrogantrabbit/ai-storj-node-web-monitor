@@ -228,6 +228,7 @@ async def start_background_tasks(app):
     from .log_processor import blocking_log_reader, network_log_reader_task, log_processor_task
     from .database import blocking_backfill_hourly_stats, load_initial_state_from_db
     from .config import GEOIP_DATABASE_PATH
+    from .storj_api_client import auto_discover_api_endpoint, setup_api_client
 
     log.info("Starting background tasks...")
     try:
@@ -241,6 +242,7 @@ async def start_background_tasks(app):
     app['log_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=len(app['nodes']) + 1)
     app['tasks'] = []
     app['log_reader_shutdown_events'] = {}
+    app['api_clients'] = {}  # Initialize API clients dict
 
     loop = asyncio.get_running_loop()
 
@@ -251,18 +253,48 @@ async def start_background_tasks(app):
     app_state['nodes'] = initial_node_states
     log.info("Initial state has been populated from the database.")
 
+    # Initialize nodes with log readers and API clients
     for node_name, node_config in app['nodes'].items():
         if node_name not in app_state['nodes']:
-            app_state['nodes'][node_name] = {'live_events': deque(), 'active_compactions': {}, 'unprocessed_performance_events': [], 'has_new_events': False}
+            app_state['nodes'][node_name] = {
+                'live_events': deque(),
+                'active_compactions': {},
+                'unprocessed_performance_events': [],
+                'has_new_events': False
+            }
+        
+        # Setup log reader
         line_queue = asyncio.Queue(maxsize=5000)
         if node_config['type'] == 'file':
             import threading
             shutdown_event = threading.Event()
             app['log_reader_shutdown_events'][node_name] = shutdown_event
-            loop.run_in_executor(app['log_executor'], blocking_log_reader, node_config['path'], loop, line_queue, shutdown_event)
+            loop.run_in_executor(
+                app['log_executor'],
+                blocking_log_reader,
+                node_config['path'],
+                loop,
+                line_queue,
+                shutdown_event
+            )
         elif node_config['type'] == 'network':
-            app['tasks'].append(asyncio.create_task(network_log_reader_task(node_name, node_config['host'], node_config['port'], line_queue)))
+            app['tasks'].append(
+                asyncio.create_task(
+                    network_log_reader_task(
+                        node_name,
+                        node_config['host'],
+                        node_config['port'],
+                        line_queue
+                    )
+                )
+            )
         app['tasks'].append(asyncio.create_task(log_processor_task(app, node_name, line_queue)))
+        
+        # Setup API client (Phase 1.2)
+        node_config_with_name = {**node_config, 'name': node_name}
+        api_endpoint = await auto_discover_api_endpoint(node_config_with_name)
+        if api_endpoint:
+            await setup_api_client(app, node_name, api_endpoint)
 
     app['tasks'].extend([
         asyncio.create_task(prune_live_events_task(app)),
@@ -274,24 +306,40 @@ async def start_background_tasks(app):
         asyncio.create_task(hourly_aggregator_task(app)),
         asyncio.create_task(database_pruner_task(app))
     ])
+    
+    # Add reputation polling task if we have any API clients (Phase 1.3)
+    if app['api_clients']:
+        from .reputation_tracker import reputation_polling_task
+        log.info(f"Reputation monitoring enabled for {len(app['api_clients'])} node(s)")
+        app['tasks'].append(asyncio.create_task(reputation_polling_task(app)))
 
 
 async def cleanup_background_tasks(app):
     log.warning("Application cleanup started.")
+    
+    # Cancel all background tasks
     for task in app.get('tasks', []):
         task.cancel()
     if 'tasks' in app:
         await asyncio.gather(*app['tasks'], return_exceptions=True)
     log.info("Asyncio background tasks cancelled.")
 
+    # Shutdown log reader threads
     for event in app.get('log_reader_shutdown_events', {}).values():
         event.set()
 
+    # Close API clients (Phase 1.2)
+    if 'api_clients' in app:
+        from .storj_api_client import cleanup_api_clients
+        await cleanup_api_clients(app)
+
+    # Close GeoIP reader
     if 'geoip_reader' in app and hasattr(app['geoip_reader'], 'close'):
         app['geoip_reader'].close()
         log.info("GeoIP database reader closed.")
 
+    # Shutdown executors
     for executor_name in ['db_executor', 'log_executor']:
         if executor_name in app and app[executor_name]:
             app[executor_name].shutdown(wait=True)
-    log.info(f"{executor_name} shut down.")
+            log.info(f"{executor_name} shut down.")
