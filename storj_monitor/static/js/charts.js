@@ -628,7 +628,14 @@ export function createEarningsHistoryChart() {
 
 export function updateEarningsHistoryChart(historyData) {
     if (!earningsHistoryChartInstance) createEarningsHistoryChart();
+    
+    console.log('updateEarningsHistoryChart received:', historyData?.length, 'records');
+    if (historyData && historyData.length > 0) {
+        console.log('Sample record:', historyData[0]);
+    }
+    
     if (!historyData || historyData.length === 0) {
+        console.log('No earnings history data, clearing chart');
         earningsHistoryChartInstance.data.datasets[0].data = [];
         earningsHistoryChartInstance.data.datasets[1].data = [];
         earningsHistoryChartInstance.data.datasets[2].data = [];
@@ -636,31 +643,58 @@ export function updateEarningsHistoryChart(historyData) {
         return;
     }
     
-    // Sort by date
-    const sortedData = [...historyData].sort((a, b) => 
-        new Date(a.period_start) - new Date(b.period_start)
-    );
+    // Group by period and aggregate across satellites
+    const byPeriod = {};
+    historyData.forEach(item => {
+        const period = item.period;
+        if (!byPeriod[period]) {
+            byPeriod[period] = {
+                total_earnings_net: 0,
+                total_earnings_gross: 0,
+                held_amount: 0
+            };
+        }
+        byPeriod[period].total_earnings_net += item.total_earnings_net || 0;
+        byPeriod[period].total_earnings_gross += item.total_earnings_gross || 0;
+        byPeriod[period].held_amount += item.held_amount || 0;
+    });
+    
+    // Convert to array and sort by date
+    const aggregated = Object.keys(byPeriod).map(period => ({
+        period: period,
+        ...byPeriod[period]
+    })).sort((a, b) => a.period.localeCompare(b.period));
+    
+    console.log('Aggregated data:', aggregated.length, 'periods');
     
     // Map data to chart datasets
-    const netEarnings = sortedData.map(item => ({
-        x: new Date(item.period_start),
-        y: item.total_earnings - item.held_amount
+    // Parse period (YYYY-MM) to date
+    const netEarnings = aggregated.map(item => ({
+        x: new Date(item.period + '-01'),
+        y: item.total_earnings_net
     }));
     
-    const heldAmount = sortedData.map(item => ({
-        x: new Date(item.period_start),
+    const heldAmount = aggregated.map(item => ({
+        x: new Date(item.period + '-01'),
         y: item.held_amount
     }));
     
-    const grossEarnings = sortedData.map(item => ({
-        x: new Date(item.period_start),
-        y: item.total_earnings
+    const grossEarnings = aggregated.map(item => ({
+        x: new Date(item.period + '-01'),
+        y: item.total_earnings_gross
     }));
+    
+    console.log('Chart data points:', {
+        net: netEarnings.length,
+        held: heldAmount.length,
+        gross: grossEarnings.length
+    });
     
     earningsHistoryChartInstance.data.datasets[0].data = netEarnings;
     earningsHistoryChartInstance.data.datasets[1].data = heldAmount;
     earningsHistoryChartInstance.data.datasets[2].data = grossEarnings;
     earningsHistoryChartInstance.update();
+    console.log('Chart updated successfully');
 }
 
 export function createEarningsBreakdownChart() {

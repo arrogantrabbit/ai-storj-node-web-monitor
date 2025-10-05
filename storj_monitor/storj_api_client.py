@@ -104,7 +104,16 @@ class StorjNodeAPIClient:
                 
                 if resp.status == 200:
                     json_data = await resp.json()
-                    log.debug(f"[{self.node_name}] API returned JSON with {len(json_data)} keys")
+                    # Handle null/None responses (valid JSON for periods with no data)
+                    if json_data is None:
+                        log.debug(f"[{self.node_name}] API returned null for {path}")
+                        return None
+                    elif isinstance(json_data, dict):
+                        log.debug(f"[{self.node_name}] API returned JSON dict with {len(json_data)} keys")
+                    elif isinstance(json_data, list):
+                        log.debug(f"[{self.node_name}] API returned JSON list with {len(json_data)} items")
+                    else:
+                        log.debug(f"[{self.node_name}] API returned JSON: {type(json_data)}")
                     return json_data
                 else:
                     response_text = await resp.text()
@@ -162,20 +171,21 @@ class StorjNodeAPIClient:
         """
         return await self._get('/api/sno/estimated-payout')
     
-    async def get_payout_history(self, period: Optional[str] = None) -> Optional[Dict]:
+    async def get_payout_paystubs(self, period: str) -> Optional[list]:
         """
-        Get historical payout data.
+        Get payout paystubs for a specific period.
         
         Args:
-            period: Optional period in YYYY-MM format. If not provided, returns all history.
+            period: Period in YYYY-MM format (required)
         
-        Returns dict with historical payouts per satellite.
-        API endpoint: /api/sno/payout (for current period) or /api/sno/payout?period=YYYY-MM
+        Returns:
+            List of paystub dicts, each containing satellite payout info with 'paid' field in micro-dollars.
+            Returns None if period has no data or API error.
+        
+        API endpoint: /api/heldamount/paystubs/{period}/{period}
+        Example response: [{"satelliteID": "...", "period": "2025-10", "paid": 28112100, ...}, ...]
         """
-        if period:
-            return await self._get(f'/api/sno/payout?period={period}')
-        else:
-            return await self._get('/api/sno/payout')
+        return await self._get(f'/api/heldamount/paystubs/{period}/{period}')
 
 
 async def auto_discover_api_endpoint(node_config: Dict[str, Any]) -> Optional[str]:

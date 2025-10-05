@@ -98,6 +98,9 @@ class FinancialTracker:
         """
         Determine node age in months from API or storage history.
         
+        Prioritizes historical earnings data over API startedAt to handle
+        cases where API reports incorrect start dates.
+        
         Args:
             db_path: Path to database
             executor: Thread pool executor for database operations (optional)
@@ -105,7 +108,32 @@ class FinancialTracker:
         Returns:
             Node age in months, or None if cannot be determined
         """
-        # First try to get from API dashboard
+        # First check if we have historical earnings data (most reliable for age)
+        loop = asyncio.get_running_loop()
+        try:
+            earliest_earning_date = await loop.run_in_executor(
+                executor,
+                self._blocking_get_earliest_earning_date,
+                db_path
+            )
+            if earliest_earning_date:
+                started_at = datetime.datetime.fromisoformat(earliest_earning_date)
+                now = datetime.datetime.now(datetime.timezone.utc)
+                months = (now.year - started_at.year) * 12 + (now.month - started_at.month)
+                days_diff = (now - started_at).days
+                months = max(1, months)
+                self.node_start_date = started_at
+                
+                log.info(
+                    f"[{self.node_name}] Node age from earnings history: "
+                    f"{started_at.date()} ({days_diff} days ago = {months} months, "
+                    f"held rate: {self.calculate_held_percentage(months)*100:.0f}%)"
+                )
+                return months
+        except Exception as e:
+            log.debug(f"[{self.node_name}] No earnings history for age determination: {e}")
+        
+        # Fallback to API dashboard
         if self.api_client and self.api_client.is_available:
             try:
                 dashboard = await self.api_client.get_dashboard()
@@ -117,12 +145,11 @@ class FinancialTracker:
                     months = (now.year - started_at.year) * 12 + (now.month - started_at.month)
                     self.node_start_date = started_at
                     
-                    # Calculate more accurate age including days
                     days_diff = (now - started_at).days
-                    months = max(1, months)  # At least 1 month
+                    months = max(1, months)
                     
                     log.info(
-                        f"[{self.node_name}] Node started: {started_at.date()} "
+                        f"[{self.node_name}] Node age from API: {started_at.date()} "
                         f"({days_diff} days ago = {months} months, held rate: "
                         f"{self.calculate_held_percentage(months)*100:.0f}%)"
                     )
@@ -148,8 +175,27 @@ class FinancialTracker:
         )
         return 16
     
+    def _blocking_get_earliest_earning_date(self, db_path: str) -> Optional[str]:
+        """Get the earliest period from earnings_estimates table."""
+        import sqlite3
+        try:
+            with sqlite3.connect(db_path, timeout=10) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT MIN(period) FROM earnings_estimates WHERE node_name = ?",
+                    (self.node_name,)
+                )
+                result = cursor.fetchone()
+                if result and result[0]:
+                    # period is YYYY-MM, convert to first day of that month
+                    period = result[0]
+                    return f"{period}-01T00:00:00+00:00"
+        except Exception as e:
+            log.debug(f"[{self.node_name}] Error getting earliest earning date: {e}")
+        return None
+    
     def _blocking_determine_node_age_from_db(self, db_path: str) -> int:
-        """Blocking method to determine node age from database."""
+        """Blocking method to determine node age from database events/storage."""
         import sqlite3
         try:
             with sqlite3.connect(db_path, timeout=10) as conn:
@@ -660,8 +706,8 @@ class FinancialTracker:
         """
         Import historical payout data from API to populate earnings history.
         
-        This allows the graph to show historical data immediately without waiting months.
-        Only imports data once - won't duplicate if database already has historical data.
+        Iterates through periods from 2022-01 to current month, querying paystubs
+        for each period and storing them as earnings estimates.
         
         Args:
             db_path: Path to database
@@ -673,86 +719,102 @@ class FinancialTracker:
             return
         
         try:
-            # Get all payout history from API
-            payout_history = await self.api_client.get_payout_history()
-            
-            if not payout_history:
-                log.info(f"[{self.node_name}] No historical payout data available from API")
-                return
-            
-            # Check if this is a dict with period keys or some other structure
-            log.info(f"[{self.node_name}] Received payout history data: {type(payout_history)}")
-            
-            # The API might return data in various formats:
-            # Option 1: {'2021-10': {...}, '2021-11': {...}, ...}
-            # Option 2: {'currentMonthPayouts': {...}, 'previousMonthsPayouts': [...]}
-            # We'll handle both
-            
             imported_count = 0
+            now = datetime.datetime.now(datetime.timezone.utc)
+            current_year = now.year
+            current_month = now.month
             
-            # If it's a dict with period-like keys (YYYY-MM format)
-            if isinstance(payout_history, dict):
-                for period_key, period_data in payout_history.items():
-                    # Check if key looks like a period (YYYY-MM)
-                    if len(period_key) == 7 and period_key[4] == '-':
-                        # This looks like a period key
-                        # period_data should contain per-satellite payout info
-                        log.info(f"[{self.node_name}] Processing historical period: {period_key}")
-                        
-                        # Convert API payout data to earnings estimate format
-                        # Note: Historical payouts are actual paid amounts, not estimates
-                        # We store them as estimates for consistency but mark them as historical
-                        
-                        if isinstance(period_data, dict):
-                            for satellite_id, satellite_data in period_data.items():
-                                if not isinstance(satellite_data, dict):
-                                    continue
+            # Start from 2022-01 (reasonable start for most nodes)
+            # Could be optimized to use node start date, but this is simpler
+            start_year = 2022
+            start_month = 1
+            
+            year = start_year
+            month = start_month
+            
+            log.info(f"[{self.node_name}] Importing historical payouts from {year}-{month:02d} to {current_year}-{current_month:02d}")
+            
+            while year < current_year or (year == current_year and month <= current_month):
+                period = f"{year}-{month:02d}"
+                
+                try:
+                    # Query paystubs for this period
+                    # API endpoint: /api/heldamount/paystubs/{period}/{period}
+                    # Returns: list of paystubs, one per satellite, or None if no data
+                    paystubs = await self.api_client.get_payout_paystubs(period)
+                    
+                    if paystubs and isinstance(paystubs, list) and len(paystubs) > 0:
+                        # Process each satellite's paystub
+                        for stub in paystubs:
+                            if not isinstance(stub, dict):
+                                continue
+                            
+                            # Note: API returns 'satelliteId' (camelCase), not 'satelliteID'
+                            satellite_id = stub.get('satelliteId')
+                            paid_microdollars = stub.get('paid', 0)
+                            held_microdollars = stub.get('held', 0)
+                            
+                            if not satellite_id:
+                                continue
+                            
+                            # Convert from micro-dollars to dollars
+                            # Example: paid: 59246 = $0.059246
+                            paid_dollars = paid_microdollars / 1_000_000
+                            held_dollars = held_microdollars / 1_000_000
+                            
+                            if paid_dollars > 0 or held_dollars > 0:
+                                estimate = {
+                                    'timestamp': datetime.datetime.now(datetime.timezone.utc),
+                                    'node_name': self.node_name,
+                                    'satellite': satellite_id,
+                                    'period': period,
+                                    'egress_bytes': 0,  # Historical data doesn't have breakdown
+                                    'egress_earnings_gross': 0,
+                                    'egress_earnings_net': 0,
+                                    'storage_bytes_hour': 0,
+                                    'storage_earnings_gross': 0,
+                                    'storage_earnings_net': 0,
+                                    'repair_bytes': 0,
+                                    'repair_earnings_gross': 0,
+                                    'repair_earnings_net': 0,
+                                    'audit_bytes': 0,
+                                    'audit_earnings_gross': 0,
+                                    'audit_earnings_net': 0,
+                                    'total_earnings_gross': paid_dollars + held_dollars,
+                                    'total_earnings_net': paid_dollars,
+                                    'held_amount': held_dollars,
+                                    'node_age_months': 0,  # Unknown for historical
+                                    'held_percentage': held_dollars / (paid_dollars + held_dollars) if (paid_dollars + held_dollars) > 0 else 0
+                                }
                                 
-                                # Extract payout information
-                                # API format might vary, adapt as needed
-                                payout_amount = satellite_data.get('paid', satellite_data.get('totalAmount', 0))
-                                held = satellite_data.get('held', 0)
+                                # Write to database
+                                success = await loop.run_in_executor(
+                                    executor,
+                                    blocking_write_earnings_estimate,
+                                    db_path,
+                                    estimate
+                                )
                                 
-                                if payout_amount > 0 or held > 0:
-                                    estimate = {
-                                        'timestamp': datetime.datetime.now(datetime.timezone.utc),
-                                        'node_name': self.node_name,
-                                        'satellite': satellite_id,
-                                        'period': period_key,
-                                        'egress_bytes': 0,  # Historical data doesn't have breakdown
-                                        'egress_earnings_gross': 0,
-                                        'egress_earnings_net': 0,
-                                        'storage_bytes_hour': 0,
-                                        'storage_earnings_gross': 0,
-                                        'storage_earnings_net': 0,
-                                        'repair_bytes': 0,
-                                        'repair_earnings_gross': 0,
-                                        'repair_earnings_net': 0,
-                                        'audit_bytes': 0,
-                                        'audit_earnings_gross': 0,
-                                        'audit_earnings_net': 0,
-                                        'total_earnings_gross': payout_amount + held,
-                                        'total_earnings_net': payout_amount,
-                                        'held_amount': held,
-                                        'node_age_months': 0,  # Unknown for historical
-                                        'held_percentage': held / (payout_amount + held) if (payout_amount + held) > 0 else 0
-                                    }
-                                    
-                                    # Write to database
-                                    success = await loop.run_in_executor(
-                                        executor,
-                                        blocking_write_earnings_estimate,
-                                        db_path,
-                                        estimate
-                                    )
-                                    
-                                    if success:
-                                        imported_count += 1
+                                if success:
+                                    imported_count += 1
+                        
+                        if len(paystubs) > 0:
+                            log.debug(f"[{self.node_name}] Imported {len(paystubs)} paystubs for {period}")
+                    
+                except Exception as e:
+                    # Log but continue with next period
+                    log.debug(f"[{self.node_name}] Could not fetch paystubs for {period}: {e}")
+                
+                # Move to next month
+                month += 1
+                if month > 12:
+                    month = 1
+                    year += 1
             
             if imported_count > 0:
                 log.info(f"[{self.node_name}] Successfully imported {imported_count} historical payout records")
             else:
-                log.info(f"[{self.node_name}] No historical payouts to import (or data format not recognized)")
+                log.info(f"[{self.node_name}] No historical payouts found (node may be new)")
                 
         except Exception as e:
             log.error(f"[{self.node_name}] Error importing historical payouts: {e}", exc_info=True)
@@ -820,8 +882,8 @@ async def financial_polling_task(app: Dict[str, Any]):
         app['financial_trackers'][node_name] = FinancialTracker(node_name, api_client)
         log.info(f"[{node_name}] Financial tracker initialized")
     
-    # Import historical payouts on first run (one-time operation)
-    log.info("Importing historical payout data from node APIs...")
+    # Attempt to import historical payouts (will gracefully skip if endpoint unavailable)
+    log.info("Attempting to import historical payout data from node APIs...")
     for node_name, tracker in app['financial_trackers'].items():
         try:
             await tracker.import_historical_payouts(
@@ -830,7 +892,7 @@ async def financial_polling_task(app: Dict[str, Any]):
                 app.get('db_executor')
             )
         except Exception as e:
-            log.error(f"[{node_name}] Failed to import historical payouts: {e}")
+            log.debug(f"[{node_name}] Historical import skipped: {e}")
     
     # Initial poll
     await asyncio.sleep(10)  # Wait for other systems to initialize

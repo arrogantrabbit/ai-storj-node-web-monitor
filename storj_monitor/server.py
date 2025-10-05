@@ -423,6 +423,8 @@ async def websocket_handler(request):
                         satellite = data.get('satellite')
                         days = data.get('days', 30)
                         
+                        log.info(f"Earnings history requested: node={node_name}, satellite={satellite}, days={days}")
+                        
                         if not node_name:
                             await ws.send_json({"type": "error", "message": "node_name required"})
                             continue
@@ -440,6 +442,10 @@ async def websocket_handler(request):
                             None,  # period
                             days
                         )
+                        
+                        log.info(f"Earnings history query returned {len(history_data) if history_data else 0} records")
+                        if history_data and len(history_data) > 0:
+                            log.info(f"Sample record: period={history_data[0].get('period')}, total_net={history_data[0].get('total_earnings_net')}")
                         
                         payload = {"type": "earnings_history", "data": history_data}
                         await ws.send_json(payload)
