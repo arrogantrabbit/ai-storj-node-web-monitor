@@ -53,10 +53,26 @@ async def track_storage(
         # Extract capacity data - API returns nested structure
         disk_space = dashboard.get('diskSpace', {})
         if isinstance(disk_space, dict):
+            # IMPORTANT: Storj API field naming is confusing!
+            # - 'available': Total allocated storage capacity (e.g., 25TB)
+            # - 'used': Space used by pieces including trash (e.g., 11.17TB)
+            # - 'trash': Space used by trash, subset of 'used' (e.g., 0.26TB)
+            # - Free space = available - used (e.g., 25TB - 11.17TB = 13.83TB)
+            
             used_space = disk_space.get('used', 0)
-            available_space = disk_space.get('available', 0)
+            allocated_capacity = disk_space.get('available', 0)  # This is TOTAL allocated, not free!
             trash_space = disk_space.get('trash', 0)
-            total_space = used_space + available_space
+            
+            # Calculate actual free space
+            free_space = allocated_capacity - used_space
+            total_space = allocated_capacity  # The allocated capacity IS the total
+            
+            log.debug(
+                f"[{node_name}] API storage: allocated={allocated_capacity/(1024**4):.2f}TB, "
+                f"used={used_space/(1024**4):.2f}TB, "
+                f"free={free_space/(1024**4):.2f}TB, "
+                f"trash={trash_space/(1024**4):.2f}TB"
+            )
         else:
             log.error(f"[{node_name}] Unexpected diskSpace format: {type(disk_space)}")
             return None
@@ -65,9 +81,9 @@ async def track_storage(
         if total_space > 0:
             used_percent = (used_space / total_space) * 100
             trash_percent = (trash_space / total_space) * 100
-            available_percent = (available_space / total_space) * 100
+            free_percent = (free_space / total_space) * 100
         else:
-            used_percent = trash_percent = available_percent = 0
+            used_percent = trash_percent = free_percent = 0
         
         # Create storage snapshot
         snapshot = {
@@ -75,11 +91,11 @@ async def track_storage(
             'node_name': node_name,
             'total_bytes': total_space,
             'used_bytes': used_space,
-            'available_bytes': available_space,
+            'available_bytes': free_space,  # This is the actual FREE space
             'trash_bytes': trash_space,
             'used_percent': round(used_percent, 2),
             'trash_percent': round(trash_percent, 2),
-            'available_percent': round(available_percent, 2)
+            'available_percent': round(free_percent, 2)
         }
         
         # Store in database
@@ -97,7 +113,7 @@ async def track_storage(
         forecast_data = await calculate_storage_forecast(
             app,
             node_name,
-            available_space
+            free_space  # Pass the actual free space
         )
         
         # Check for alerts
@@ -110,7 +126,7 @@ async def track_storage(
                 'node_name': node_name,
                 'title': f'Critical Disk Usage on {node_name}',
                 'message': f'Disk is {used_percent:.1f}% full (threshold: {STORAGE_CRITICAL_PERCENT}%). '
-                           f'Free space: {_format_bytes(available_space)}. '
+                           f'Free space: {_format_bytes(free_space)}. '
                            f'Immediate action required to prevent downtime.'
             })
         elif used_percent >= STORAGE_WARNING_PERCENT:
@@ -119,7 +135,7 @@ async def track_storage(
                 'node_name': node_name,
                 'title': f'High Disk Usage on {node_name}',
                 'message': f'Disk is {used_percent:.1f}% full (threshold: {STORAGE_WARNING_PERCENT}%). '
-                           f'Free space: {_format_bytes(available_space)}. '
+                           f'Free space: {_format_bytes(free_space)}. '
                            f'Consider adding capacity soon.'
             })
         

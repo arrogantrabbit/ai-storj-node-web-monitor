@@ -429,16 +429,8 @@ class FinancialTracker:
             db_path
         )
         
-        # If no satellites in database (new node), try to get from API
-        if not satellites_to_process and api_data:
-            # Try to extract satellites from API data
-            if 'currentMonthExpectations' in api_data:
-                satellites_to_process = list(api_data.get('currentMonthExpectations', {}).keys())
-                if satellites_to_process:
-                    log.info(f"[{self.node_name}] Using {len(satellites_to_process)} satellites from API (no events in DB yet)")
-        
         if not satellites_to_process:
-            log.warning(f"[{self.node_name}] No satellites found in database or API for earnings calculation")
+            log.warning(f"[{self.node_name}] No satellites found in database for earnings calculation")
             return []
         
         for satellite in satellites_to_process:
