@@ -777,18 +777,35 @@ class FinancialTracker:
         
         Note: Storage snapshots are per-node, not per-satellite. We allocate
         storage earnings proportionally based on each satellite's traffic share.
+        
+        CRITICAL OPTIMIZATION: Calculate total storage ONCE per node/period,
+        then reuse for all satellites. This avoids recalculating the same
+        snapshot loop for every satellite.
         """
         import sqlite3
         import calendar
         
-        # Check cache first
+        # Check per-satellite cache first (fast path)
         cache_key = f"storage_{self.node_name}_{satellite}_{period}"
         if hasattr(self, '_storage_cache'):
             cached = self._storage_cache.get(cache_key)
-            if cached and (time.time() - cached['ts']) < 60:  # 1-min cache
+            if cached and (time.time() - cached['ts']) < 300:  # 5-min cache (storage changes slowly)
                 return cached['data']
         else:
             self._storage_cache = {}
+        
+        # Check if we already calculated total storage for this node/period
+        total_cache_key = f"storage_total_{self.node_name}_{period}"
+        total_byte_hours = None
+        total_storage_gross = None
+        total_storage_net = None
+        
+        if total_cache_key in self._storage_cache:
+            cached_total = self._storage_cache[total_cache_key]
+            if (time.time() - cached_total['ts']) < 300:  # 5-min cache
+                total_byte_hours = cached_total['total_byte_hours']
+                total_storage_gross = cached_total['total_gross']
+                total_storage_net = cached_total['total_net']
         
         try:
             # Parse period once
@@ -805,58 +822,73 @@ class FinancialTracker:
             
             # Use read-only connection for better concurrency
             from .db_utils import get_optimized_connection
+            
+            # CRITICAL: Only calculate total storage if not already cached
+            if total_byte_hours is None:
+                with get_optimized_connection(db_path, timeout=10, read_only=True) as conn:
+                    cursor = conn.cursor()
+                    
+                    # OPTIMIZED: Get snapshots without row_factory overhead
+                    query_snapshots = """
+                        SELECT timestamp, used_bytes
+                        FROM storage_snapshots
+                        WHERE node_name = ?
+                            AND timestamp >= ?
+                            AND timestamp < ?
+                            AND used_bytes IS NOT NULL
+                        ORDER BY timestamp ASC
+                    """
+                    
+                    snapshots = cursor.execute(
+                        query_snapshots,
+                        (self.node_name, period_start_iso, period_end_iso)
+                    ).fetchall()
+                    
+                    if not snapshots:
+                        result = (0, 0.0, 0.0)
+                        self._storage_cache[cache_key] = {'data': result, 'ts': time.time()}
+                        return result
+                    
+                    # OPTIMIZED: Calculate byte-hours with pre-allocated arrays
+                    total_byte_hours = 0.0
+                    snapshots_len = len(snapshots)
+                    
+                    for i in range(snapshots_len - 1):
+                        t1_str, bytes1 = snapshots[i]
+                        t2_str, bytes2 = snapshots[i + 1]
+                        t1 = datetime.datetime.fromisoformat(t1_str)
+                        t2 = datetime.datetime.fromisoformat(t2_str)
+                        hours_diff = (t2 - t1).total_seconds() / 3600
+                        avg_bytes = (bytes1 + bytes2) * 0.5  # Faster than division
+                        total_byte_hours += avg_bytes * hours_diff
+                    
+                    # Project from last snapshot to NOW
+                    if snapshots:
+                        last_time_str, last_bytes = snapshots[-1]
+                        last_time = datetime.datetime.fromisoformat(last_time_str)
+                        now = datetime.datetime.now(datetime.timezone.utc)
+                        if last_time < now and now <= period_end:
+                            hours_since_last = (now - last_time).total_seconds() / 3600
+                            total_byte_hours += last_bytes * hours_since_last
+                    
+                    # Calculate total storage earnings with pre-computed constants
+                    gb_hours = total_byte_hours / 1073741824  # 1024^3 pre-computed
+                    hours_in_month = days_in_month * 24
+                    tb_months = gb_hours / (1024 * hours_in_month)
+                    total_storage_gross = tb_months * PRICING_STORAGE_PER_TB_MONTH
+                    total_storage_net = total_storage_gross * OPERATOR_SHARE_STORAGE
+                    
+                    # Cache the total for reuse by other satellites
+                    self._storage_cache[total_cache_key] = {
+                        'total_byte_hours': total_byte_hours,
+                        'total_gross': total_storage_gross,
+                        'total_net': total_storage_net,
+                        'ts': time.time()
+                    }
+            
+            # Now calculate satellite-specific allocation (fast - reuses total)
             with get_optimized_connection(db_path, timeout=10, read_only=True) as conn:
                 cursor = conn.cursor()
-                
-                # OPTIMIZED: Get snapshots without row_factory overhead
-                query_snapshots = """
-                    SELECT timestamp, used_bytes
-                    FROM storage_snapshots
-                    WHERE node_name = ?
-                        AND timestamp >= ?
-                        AND timestamp < ?
-                        AND used_bytes IS NOT NULL
-                    ORDER BY timestamp ASC
-                """
-                
-                snapshots = cursor.execute(
-                    query_snapshots,
-                    (self.node_name, period_start_iso, period_end_iso)
-                ).fetchall()
-                
-                if not snapshots:
-                    result = (0, 0.0, 0.0)
-                    self._storage_cache[cache_key] = {'data': result, 'ts': time.time()}
-                    return result
-                
-                # OPTIMIZED: Calculate byte-hours with pre-allocated arrays
-                total_byte_hours = 0.0
-                snapshots_len = len(snapshots)
-                
-                for i in range(snapshots_len - 1):
-                    t1_str, bytes1 = snapshots[i]
-                    t2_str, bytes2 = snapshots[i + 1]
-                    t1 = datetime.datetime.fromisoformat(t1_str)
-                    t2 = datetime.datetime.fromisoformat(t2_str)
-                    hours_diff = (t2 - t1).total_seconds() / 3600
-                    avg_bytes = (bytes1 + bytes2) * 0.5  # Faster than division
-                    total_byte_hours += avg_bytes * hours_diff
-                
-                # Project from last snapshot to NOW
-                if snapshots:
-                    last_time_str, last_bytes = snapshots[-1]
-                    last_time = datetime.datetime.fromisoformat(last_time_str)
-                    now = datetime.datetime.now(datetime.timezone.utc)
-                    if last_time < now and now <= period_end:
-                        hours_since_last = (now - last_time).total_seconds() / 3600
-                        total_byte_hours += last_bytes * hours_since_last
-                
-                # Calculate total storage earnings with pre-computed constants
-                gb_hours = total_byte_hours / 1073741824  # 1024^3 pre-computed
-                hours_in_month = days_in_month * 24
-                tb_months = gb_hours / (1024 * hours_in_month)
-                total_storage_gross = tb_months * PRICING_STORAGE_PER_TB_MONTH
-                total_storage_net = total_storage_gross * OPERATOR_SHARE_STORAGE
                 
                 # OPTIMIZED: Batch both traffic queries in one call
                 query_traffic = """
@@ -878,7 +910,7 @@ class FinancialTracker:
                 satellite_bytes = traffic_result[0] or 0
                 total_bytes = traffic_result[1] or 0
                 
-                # Calculate proportional allocation
+                # Calculate proportional allocation (reuses cached total storage)
                 if total_bytes > 0:
                     proportion = satellite_bytes / total_bytes
                     allocated_gross = total_storage_gross * proportion
