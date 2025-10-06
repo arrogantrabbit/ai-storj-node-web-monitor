@@ -272,29 +272,30 @@ class FinancialTracker:
         node_age_months = await self.determine_node_age(db_path, executor)
         held_percentage = self.calculate_held_percentage(node_age_months)
         
-        # For current month: use API data directly if available (more accurate than our calculations)
+        # For current month: use API total but calculate per-satellite breakdown from DB
         now = datetime.datetime.now(datetime.timezone.utc)
         current_period = now.strftime('%Y-%m')
         
         if period == current_period:
             api_data = await self.get_api_earnings()
             if api_data and 'currentMonth' in api_data:
-                # Use API's accurate current month data
+                # Use API's accurate current month total
                 cm = api_data['currentMonth']
                 payout_cents = cm.get('payout', 0)
                 held_cents = cm.get('held', 0)
                 
                 # Convert from cents to dollars
-                total_net = payout_cents / 100.0
-                held_amount = held_cents / 100.0
-                total_gross = total_net + held_amount
+                api_total_net = payout_cents / 100.0
+                api_held_amount = held_cents / 100.0
+                api_total_gross = api_total_net + api_held_amount
                 
                 log.info(
-                    f"[{self.node_name}] Using API data for {period}: "
-                    f"${total_net:.2f} net, ${held_amount:.2f} held"
+                    f"[{self.node_name}] API total for {period}: "
+                    f"${api_total_net:.2f} net, ${api_held_amount:.2f} held. "
+                    f"Calculating per-satellite breakdown from DB..."
                 )
                 
-                # Delete any old per-satellite entries for current month to avoid double-counting
+                # Delete any old entries for current month to avoid double-counting
                 await loop.run_in_executor(
                     executor,
                     self._blocking_delete_current_month_estimates,
@@ -302,69 +303,121 @@ class FinancialTracker:
                     period
                 )
                 
-                # Calculate breakdown from database to show proportional distribution
-                # even though API only gives us totals
-                breakdown_from_db = await loop.run_in_executor(
+                # Calculate per-satellite earnings from database
+                # This gives us the breakdown by satellite
+                satellites_to_process = await loop.run_in_executor(
                     executor,
-                    self._blocking_calculate_breakdown_from_all_satellites,
-                    db_path,
-                    period
+                    self._get_satellites_from_db,
+                    db_path
                 )
                 
-                # Scale the breakdown proportionally to match API total
-                db_total = sum([
-                    breakdown_from_db['egress_net'],
-                    breakdown_from_db['storage_net'],
-                    breakdown_from_db['repair_net'],
-                    breakdown_from_db['audit_net']
-                ])
-                
-                if db_total > 0:
-                    # Scale to match API total
-                    scale_factor = total_net / db_total
-                    egress_net = breakdown_from_db['egress_net'] * scale_factor
-                    storage_net = breakdown_from_db['storage_net'] * scale_factor
-                    repair_net = breakdown_from_db['repair_net'] * scale_factor
-                    audit_net = breakdown_from_db['audit_net'] * scale_factor
-                    
-                    log.info(
-                        f"[{self.node_name}] Calculated breakdown from DB (scaled to API total): "
-                        f"egress=${egress_net:.2f}, storage=${storage_net:.2f}, "
-                        f"repair=${repair_net:.2f}, audit=${audit_net:.2f}"
-                    )
+                if not satellites_to_process:
+                    log.warning(f"[{self.node_name}] No satellites found in DB for per-satellite breakdown")
+                    # Fall through to regular database calculation below
                 else:
-                    # No DB data yet, set all to 0
-                    egress_net = storage_net = repair_net = audit_net = 0
-                    log.warning(
-                        f"[{self.node_name}] No DB events yet for breakdown calculation"
-                    )
-                
-                # Create a single aggregate estimate with calculated breakdown
-                estimates = [{
-                    'timestamp': datetime.datetime.now(datetime.timezone.utc),
-                    'node_name': self.node_name,
-                    'satellite': 'aggregate',  # API gives totals, not per-satellite
-                    'period': period,
-                    'egress_bytes': breakdown_from_db.get('egress_bytes', 0),
-                    'egress_earnings_gross': egress_net / OPERATOR_SHARE_EGRESS if OPERATOR_SHARE_EGRESS > 0 else 0,
-                    'egress_earnings_net': egress_net,
-                    'storage_bytes_hour': breakdown_from_db.get('storage_bytes_hour', 0),
-                    'storage_earnings_gross': storage_net / OPERATOR_SHARE_STORAGE if OPERATOR_SHARE_STORAGE > 0 else 0,
-                    'storage_earnings_net': storage_net,
-                    'repair_bytes': breakdown_from_db.get('repair_bytes', 0),
-                    'repair_earnings_gross': repair_net / OPERATOR_SHARE_REPAIR if OPERATOR_SHARE_REPAIR > 0 else 0,
-                    'repair_earnings_net': repair_net,
-                    'audit_bytes': breakdown_from_db.get('audit_bytes', 0),
-                    'audit_earnings_gross': audit_net / OPERATOR_SHARE_AUDIT if OPERATOR_SHARE_AUDIT > 0 else 0,
-                    'audit_earnings_net': audit_net,
-                    'total_earnings_gross': total_gross,
-                    'total_earnings_net': total_net,
-                    'held_amount': held_amount,
-                    'node_age_months': node_age_months,
-                    'held_percentage': held_percentage
-                }]
-                
-                return estimates
+                    # Calculate earnings per satellite from DB
+                    per_satellite_estimates = []
+                    db_total_net = 0
+                    
+                    for satellite in satellites_to_process:
+                        try:
+                            # Calculate traffic earnings
+                            traffic_earnings = await loop.run_in_executor(
+                                executor,
+                                self._blocking_calculate_from_traffic,
+                                db_path,
+                                satellite,
+                                period
+                            )
+                            
+                            # Calculate storage earnings
+                            storage_result = await loop.run_in_executor(
+                                executor,
+                                self._blocking_calculate_storage_earnings,
+                                db_path,
+                                satellite,
+                                period
+                            )
+                            storage_bytes_hour, storage_gross, storage_net = storage_result
+                            
+                            # Calculate totals for this satellite
+                            sat_total_gross = (
+                                traffic_earnings['egress_earnings_gross'] +
+                                traffic_earnings['repair_earnings_gross'] +
+                                traffic_earnings['audit_earnings_gross'] +
+                                storage_gross
+                            )
+                            
+                            sat_total_net = (
+                                traffic_earnings['egress_earnings_net'] +
+                                traffic_earnings['repair_earnings_net'] +
+                                traffic_earnings['audit_earnings_net'] +
+                                storage_net
+                            )
+                            
+                            db_total_net += sat_total_net
+                            
+                            per_satellite_estimates.append({
+                                'satellite': satellite,
+                                'egress_bytes': traffic_earnings['egress_bytes'],
+                                'egress_earnings_net': traffic_earnings['egress_earnings_net'],
+                                'storage_bytes_hour': storage_bytes_hour,
+                                'storage_earnings_net': storage_net,
+                                'repair_bytes': traffic_earnings['repair_bytes'],
+                                'repair_earnings_net': traffic_earnings['repair_earnings_net'],
+                                'audit_bytes': traffic_earnings['audit_bytes'],
+                                'audit_earnings_net': traffic_earnings['audit_earnings_net'],
+                                'total_earnings_net': sat_total_net,
+                                'total_earnings_gross': sat_total_gross
+                            })
+                            
+                        except Exception as e:
+                            log.error(f"[{self.node_name}] Failed to calculate for satellite {satellite}: {e}")
+                    
+                    # Scale all satellite earnings to match API total
+                    if db_total_net > 0 and len(per_satellite_estimates) > 0:
+                        scale_factor = api_total_net / db_total_net
+                        scaled_held = api_held_amount / len(per_satellite_estimates)  # Distribute held evenly
+                        
+                        log.info(
+                            f"[{self.node_name}] Scaling {len(per_satellite_estimates)} satellites "
+                            f"from DB total ${db_total_net:.2f} to API total ${api_total_net:.2f} "
+                            f"(factor: {scale_factor:.3f})"
+                        )
+                        
+                        estimates = []
+                        for sat_est in per_satellite_estimates:
+                            scaled_net = sat_est['total_earnings_net'] * scale_factor
+                            scaled_gross = sat_est['total_earnings_gross'] * scale_factor
+                            
+                            estimates.append({
+                                'timestamp': datetime.datetime.now(datetime.timezone.utc),
+                                'node_name': self.node_name,
+                                'satellite': sat_est['satellite'],
+                                'period': period,
+                                'egress_bytes': sat_est['egress_bytes'],
+                                'egress_earnings_gross': sat_est['egress_earnings_net'] * scale_factor / OPERATOR_SHARE_EGRESS if OPERATOR_SHARE_EGRESS > 0 else 0,
+                                'egress_earnings_net': sat_est['egress_earnings_net'] * scale_factor,
+                                'storage_bytes_hour': sat_est['storage_bytes_hour'],
+                                'storage_earnings_gross': sat_est['storage_earnings_net'] * scale_factor / OPERATOR_SHARE_STORAGE if OPERATOR_SHARE_STORAGE > 0 else 0,
+                                'storage_earnings_net': sat_est['storage_earnings_net'] * scale_factor,
+                                'repair_bytes': sat_est['repair_bytes'],
+                                'repair_earnings_gross': sat_est['repair_earnings_net'] * scale_factor / OPERATOR_SHARE_REPAIR if OPERATOR_SHARE_REPAIR > 0 else 0,
+                                'repair_earnings_net': sat_est['repair_earnings_net'] * scale_factor,
+                                'audit_bytes': sat_est['audit_bytes'],
+                                'audit_earnings_gross': sat_est['audit_earnings_net'] * scale_factor / OPERATOR_SHARE_AUDIT if OPERATOR_SHARE_AUDIT > 0 else 0,
+                                'audit_earnings_net': sat_est['audit_earnings_net'] * scale_factor,
+                                'total_earnings_gross': scaled_gross,
+                                'total_earnings_net': scaled_net,
+                                'held_amount': scaled_held,
+                                'node_age_months': node_age_months,
+                                'held_percentage': held_percentage
+                            })
+                        
+                        return estimates
+                    else:
+                        log.warning(f"[{self.node_name}] No DB data to scale, falling back to DB calculation")
+                        # Fall through to regular calculation
         
         # For past months or if API unavailable: calculate from database
         estimates = []
