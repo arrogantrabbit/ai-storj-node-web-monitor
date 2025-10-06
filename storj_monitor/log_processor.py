@@ -120,6 +120,10 @@ def categorize_action(action: str) -> str:
     """Efficiently categorizes a log action string."""
     if action == 'GET_AUDIT':
         return 'audit'
+    if 'GET_REPAIR' in action:
+        return 'get_repair'
+    if 'PUT_REPAIR' in action:
+        return 'put_repair'
     if 'GET' in action:
         return 'get'
     if 'PUT' in action:

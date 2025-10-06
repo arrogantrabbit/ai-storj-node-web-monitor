@@ -52,7 +52,10 @@ class IncrementalStats:
             self.satellites[sat_id] = {
                 'uploads': 0, 'downloads': 0, 'audits': 0,
                 'ul_success': 0, 'dl_success': 0, 'audit_success': 0,
-                'total_upload_size': 0, 'total_download_size': 0
+                'total_upload_size': 0, 'total_download_size': 0,
+                'get_repair': 0, 'put_repair': 0,
+                'get_repair_success': 0, 'put_repair_success': 0,
+                'total_get_repair_size': 0, 'total_put_repair_size': 0
             }
         return self.satellites[sat_id]
 
@@ -125,6 +128,42 @@ class IncrementalStats:
                 self.uls_success[size_bucket] += 1
             else:
                 self.ul_fail += 1
+                self._aggregate_error(event['error_reason'], TOKEN_REGEX)
+                size_bucket = get_size_bucket(size)
+                self.uls_failed[size_bucket] += 1
+
+        elif category == 'get_repair':
+            sat_stats['get_repair'] += 1
+
+            # Update country stats
+            country = event['location']['country']
+            if country:
+                self.countries_dl[country] += size
+
+            if is_success:
+                sat_stats['get_repair_success'] += 1
+                sat_stats['total_get_repair_size'] += size
+                size_bucket = get_size_bucket(size)
+                self.dls_success[size_bucket] += 1
+            else:
+                self._aggregate_error(event['error_reason'], TOKEN_REGEX)
+                size_bucket = get_size_bucket(size)
+                self.dls_failed[size_bucket] += 1
+
+        elif category == 'put_repair':
+            sat_stats['put_repair'] += 1
+
+            # Update country stats
+            country = event['location']['country']
+            if country:
+                self.countries_ul[country] += size
+
+            if is_success:
+                sat_stats['put_repair_success'] += 1
+                sat_stats['total_put_repair_size'] += size
+                size_bucket = get_size_bucket(size)
+                self.uls_success[size_bucket] += 1
+            else:
                 self._aggregate_error(event['error_reason'], TOKEN_REGEX)
                 size_bucket = get_size_bucket(size)
                 self.uls_failed[size_bucket] += 1
