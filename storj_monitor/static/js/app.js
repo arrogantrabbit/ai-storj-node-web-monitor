@@ -43,6 +43,7 @@ let earningsState = {
     cachedData: null
 };
 let cardVisibilityState = {};
+let previousCardVisibilityState = {}; // Track previous state to detect transitions
 let livePerformanceBins = {};
 let maxHistoricalTimestampByView = {};
 let isHistoricalDataLoaded = false;
@@ -53,6 +54,7 @@ let hashstoreMasterData = [];
 let hashstoreFilters = { satellite: 'all', store: 'all' };
 let hashstoreSort = { column: 'last_run_iso', direction: 'desc' };
 let latencyTimeWindow = { firstIso: null, lastIso: null };
+let cachedStatsData = null; // Cache the last stats_update data
 let ws;
 window.ws = null;  // Global reference for AlertsPanel
 window.currentView = ['Aggregate'];  // Global reference for AlertsPanel
@@ -74,6 +76,98 @@ function formatCompactionDate(isoString) {
 // --- Card Visibility & Layout ---
 function isCardVisible(cardId) {
     return cardVisibilityState[cardId] !== false;
+}
+
+function refreshCardData(cardId) {
+    // Apply cached data immediately if available, then request fresh data
+    switch(cardId) {
+        case 'reputation-card':
+            ws.send(JSON.stringify({
+                type: 'get_reputation_data',
+                view: currentNodeView
+            }));
+            break;
+        case 'storage-health-card':
+            ws.send(JSON.stringify({
+                type: 'get_storage_data',
+                view: currentNodeView
+            }));
+            break;
+        case 'latency-card':
+            const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range];
+            ws.send(JSON.stringify({
+                type: 'get_latency_stats',
+                view: currentNodeView,
+                hours: latencyHours
+            }));
+            break;
+        case 'earnings-card':
+            requestEarningsData();
+            break;
+        case 'hashstore-card':
+        case 'hashstore-chart-card':
+            requestHashstoreData();
+            break;
+        case 'active-compactions-card':
+            // Active compactions are automatically pushed via WebSocket, no request needed
+            break;
+        case 'performance-card':
+            if (performanceState.range === '5m') {
+                ws.send(JSON.stringify({
+                    type: 'get_historical_performance',
+                    view: currentNodeView,
+                    points: MAX_PERF_POINTS,
+                    interval_sec: PERFORMANCE_INTERVAL_MS / 1000
+                }));
+            } else {
+                const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[performanceState.range];
+                ws.send(JSON.stringify({
+                    type: 'get_aggregated_performance',
+                    view: currentNodeView,
+                    hours: hours
+                }));
+            }
+            break;
+        case 'stats-card':
+            // Apply cached data immediately if available
+            if (cachedStatsData) {
+                updateOverallStats(cachedStatsData.overall);
+                updateTitles(cachedStatsData.first_event_iso, cachedStatsData.last_event_iso);
+            }
+            break;
+        case 'satellite-card':
+            // Apply cached data immediately if available
+            if (cachedStatsData && cachedStatsData.satellites) {
+                charts.updateSatelliteChart(cachedStatsData.satellites);
+                updateTitles(cachedStatsData.first_event_iso, cachedStatsData.last_event_iso);
+            }
+            break;
+        case 'size-charts-card':
+            // Apply cached data immediately if available
+            if (cachedStatsData && cachedStatsData.transfer_sizes) {
+                charts.updateSizeBarChart(cachedStatsData.transfer_sizes);
+                updateTitles(cachedStatsData.first_event_iso, cachedStatsData.last_event_iso);
+            }
+            break;
+        case 'health-card':
+            // Apply cached data immediately if available
+            if (cachedStatsData && cachedStatsData.historical_stats) {
+                updateHistoricalTable(cachedStatsData.historical_stats);
+            }
+            break;
+        case 'analysis-card':
+            // Apply cached data immediately if available
+            if (cachedStatsData) {
+                updateAnalysisTables(cachedStatsData);
+            }
+            break;
+        case 'alerts-panel-card':
+            // Alerts are automatically pushed via WebSocket
+            break;
+        case 'map-card':
+            // Map is automatically updated via live log entries
+            break;
+    }
 }
 
 function initializeDisplayMenu() {
@@ -112,6 +206,8 @@ function loadCardVisibility() {
     }
     const defaultState = Object.keys(TOGGLEABLE_CARDS).reduce((acc, key) => ({...acc, [key]: true }), {});
     cardVisibilityState = { ...defaultState, ...state };
+    // Initialize previous state to current state (no transitions yet)
+    previousCardVisibilityState = { ...cardVisibilityState };
     applyCardLayout();
 }
 
@@ -121,14 +217,22 @@ function applyCardLayout() {
         const checkbox = document.querySelector(`#display-menu-dropdown input[data-card-id="${cardId}"]`);
         if (cardElement && checkbox) {
             const isVisible = cardVisibilityState[cardId];
+            const wasVisible = previousCardVisibilityState[cardId];
             cardElement.classList.toggle('is-hidden', !isVisible);
             checkbox.checked = isVisible;
             if (cardId === 'map-card') {
                 if (isVisible) heatmap.resume();
                 else heatmap.pause();
             }
+            
+            // Detect transition from hidden to visible and refresh data
+            if (isVisible && !wasVisible && ws && ws.readyState === WebSocket.OPEN) {
+                refreshCardData(cardId);
+            }
         }
     }
+    // Update previous state for next comparison
+    previousCardVisibilityState = { ...cardVisibilityState };
     reflowGrid();
 }
 
@@ -165,6 +269,10 @@ function reflowGrid() {
 
 // --- UI Update Functions ---
 function updateAllVisuals(data) {
+    // Always cache the data, regardless of card visibility
+    cachedStatsData = data;
+    
+    // Only update visible cards
     if (isCardVisible('stats-card')) updateOverallStats(data.overall);
     if (isCardVisible('satellite-card')) charts.updateSatelliteChart(data.satellites);
     if (isCardVisible('size-charts-card')) charts.updateSizeBarChart(data.transfer_sizes);
