@@ -646,6 +646,11 @@ export function updateEarningsHistoryChart(historyData) {
         return;
     }
     
+    // Get current month to filter incomplete data
+    const now = new Date();
+    const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const dayOfMonth = now.getDate();
+    
     // Group by period and aggregate across satellites
     const byPeriod = {};
     historyData.forEach(item => {
@@ -663,7 +668,7 @@ export function updateEarningsHistoryChart(historyData) {
     });
     
     // Convert to array and sort by date
-    const aggregated = Object.keys(byPeriod).map(period => ({
+    let aggregated = Object.keys(byPeriod).map(period => ({
         period: period,
         ...byPeriod[period]
     })).sort((a, b) => a.period.localeCompare(b.period));
@@ -671,19 +676,19 @@ export function updateEarningsHistoryChart(historyData) {
     console.log('Aggregated data:', aggregated.length, 'periods');
     
     // Map data to chart datasets
-    // Parse period (YYYY-MM) to date
+    // Parse period (YYYY-MM) to date at noon UTC to avoid timezone boundary issues
     const netEarnings = aggregated.map(item => ({
-        x: new Date(item.period + '-01'),
+        x: new Date(item.period + '-15T12:00:00Z'),  // 15th at noon UTC avoids timezone issues
         y: item.total_earnings_net
     }));
     
     const heldAmount = aggregated.map(item => ({
-        x: new Date(item.period + '-01'),
+        x: new Date(item.period + '-15T12:00:00Z'),  // 15th at noon UTC avoids timezone issues
         y: item.held_amount
     }));
     
     const grossEarnings = aggregated.map(item => ({
-        x: new Date(item.period + '-01'),
+        x: new Date(item.period + '-15T12:00:00Z'),  // 15th at noon UTC avoids timezone issues
         y: item.total_earnings_gross
     }));
     

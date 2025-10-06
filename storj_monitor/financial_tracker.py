@@ -632,6 +632,9 @@ class FinancialTracker:
         """
         Forecast month-end payout with confidence score.
         
+        Extrapolates current month earnings to project end-of-month payout based on
+        progress through the month. For past months, returns actual earnings.
+        
         Args:
             db_path: Path to database
             period: Optional period in YYYY-MM format (defaults to current month)
@@ -639,7 +642,7 @@ class FinancialTracker:
             executor: Thread pool executor for database operations (optional)
         
         Returns:
-            Dict with forecast data including confidence score
+            Dict with forecast data including confidence score and extrapolation details
         """
         if period is None:
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -656,26 +659,42 @@ class FinancialTracker:
                 'reason': 'No data available'
             }
         
-        # Calculate total across all satellites
-        total_forecast = sum(est['total_earnings_net'] for est in estimates)
+        # Calculate total across all satellites (current accumulated earnings)
+        total_current = sum(est['total_earnings_net'] for est in estimates)
         total_held = sum(est['held_amount'] for est in estimates)
         
-        # Calculate confidence score based on data availability and time progress
+        # Calculate confidence score and extrapolation based on time progress
         year, month = map(int, period.split('-'))
         now = datetime.datetime.now(datetime.timezone.utc)
         
+        # Default: no extrapolation (for past/future months)
+        total_forecast = total_current
+        extrapolation_factor = 1.0
+        
         if year == now.year and month == now.month:
-            # Current month - calculate progress
+            # Current month - calculate progress and extrapolate
             import calendar
             days_in_month = calendar.monthrange(year, month)[1]
             days_elapsed = now.day
             progress = days_elapsed / days_in_month
             
+            # Extrapolate to end of month if we have meaningful progress
+            if progress > 0.05:  # At least 5% through month (1.5 days)
+                extrapolation_factor = 1.0 / progress
+                total_forecast = total_current * extrapolation_factor
+                
+                log.info(
+                    f"[{self.node_name}] Extrapolating forecast: ${total_current:.2f} "
+                    f"(day {days_elapsed}/{days_in_month}) × {extrapolation_factor:.2f} = "
+                    f"${total_forecast:.2f}"
+                )
+            
             # Confidence increases with progress through the month
             # 50% at start, 100% at end
             time_confidence = 0.5 + (progress * 0.5)
         else:
-            # Past or future month
+            # Past month: high confidence, no extrapolation needed
+            # Future month: low confidence
             time_confidence = 1.0 if year < now.year or (year == now.year and month < now.month) else 0.3
         
         # Data confidence based on having storage data
@@ -687,15 +706,17 @@ class FinancialTracker:
         
         log.info(
             f"[{self.node_name}] Payout forecast for {period}: "
-            f"${total_forecast:.4f} net (${total_held:.4f} held), "
+            f"${total_forecast:.4f} net (${total_held * extrapolation_factor:.4f} held), "
             f"confidence={confidence:.1%}"
         )
         
         return {
             'period': period,
             'forecasted_payout': total_forecast,
-            'forecasted_payout_before_held': total_forecast + total_held,
-            'held_amount': total_held,
+            'forecasted_payout_before_held': total_forecast + (total_held * extrapolation_factor),
+            'held_amount': total_held * extrapolation_factor,
+            'current_earnings': total_current,  # Actual accumulated so far
+            'extrapolation_factor': extrapolation_factor,
             'confidence': confidence,
             'time_confidence': time_confidence,
             'data_confidence': data_confidence,
@@ -898,9 +919,25 @@ async def financial_polling_task(app: Dict[str, Any]):
     await asyncio.sleep(10)  # Wait for other systems to initialize
     
     loop = asyncio.get_running_loop()
+    last_historical_import_day = datetime.datetime.now(datetime.timezone.utc).day
     
     while True:
         try:
+            # Check if we should run daily historical import (catches new paystubs like Sept reported in Oct)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if now.day != last_historical_import_day:
+                log.info("Running daily historical paystub check...")
+                for node_name, tracker in app['financial_trackers'].items():
+                    try:
+                        await tracker.import_historical_payouts(
+                            DATABASE_FILE,
+                            loop,
+                            app.get('db_executor')
+                        )
+                    except Exception as e:
+                        log.debug(f"[{node_name}] Historical import check skipped: {e}")
+                last_historical_import_day = now.day
+            
             for node_name, tracker in app['financial_trackers'].items():
                 try:
                     await tracker.track_earnings(DATABASE_FILE, loop, app.get('db_executor'))
