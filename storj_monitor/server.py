@@ -422,6 +422,20 @@ async def websocket_handler(request):
                         
                         payload = {"type": "earnings_data", "data": formatted_data}
                         
+                        # Debug log to show what breakdown values are being sent
+                        for item in formatted_data:
+                            breakdown = item.get('breakdown', {})
+                            total_breakdown = sum(breakdown.values())
+                            log.info(
+                                f"[{item['node_name']}] Sending earnings: "
+                                f"total_net=${item['total_net']:.2f}, "
+                                f"breakdown sum=${total_breakdown:.2f} "
+                                f"(egress=${breakdown.get('egress', 0):.2f}, "
+                                f"storage=${breakdown.get('storage', 0):.2f}, "
+                                f"repair=${breakdown.get('repair', 0):.2f}, "
+                                f"audit=${breakdown.get('audit', 0):.2f})"
+                            )
+                        
                         # Store in cache
                         if 'earnings_cache' not in app_state:
                             app_state['earnings_cache'] = {}

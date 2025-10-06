@@ -302,24 +302,61 @@ class FinancialTracker:
                     period
                 )
                 
-                # Create a single aggregate estimate (API doesn't break down by satellite for current month)
+                # Calculate breakdown from database to show proportional distribution
+                # even though API only gives us totals
+                breakdown_from_db = await loop.run_in_executor(
+                    executor,
+                    self._blocking_calculate_breakdown_from_all_satellites,
+                    db_path,
+                    period
+                )
+                
+                # Scale the breakdown proportionally to match API total
+                db_total = sum([
+                    breakdown_from_db['egress_net'],
+                    breakdown_from_db['storage_net'],
+                    breakdown_from_db['repair_net'],
+                    breakdown_from_db['audit_net']
+                ])
+                
+                if db_total > 0:
+                    # Scale to match API total
+                    scale_factor = total_net / db_total
+                    egress_net = breakdown_from_db['egress_net'] * scale_factor
+                    storage_net = breakdown_from_db['storage_net'] * scale_factor
+                    repair_net = breakdown_from_db['repair_net'] * scale_factor
+                    audit_net = breakdown_from_db['audit_net'] * scale_factor
+                    
+                    log.info(
+                        f"[{self.node_name}] Calculated breakdown from DB (scaled to API total): "
+                        f"egress=${egress_net:.2f}, storage=${storage_net:.2f}, "
+                        f"repair=${repair_net:.2f}, audit=${audit_net:.2f}"
+                    )
+                else:
+                    # No DB data yet, set all to 0
+                    egress_net = storage_net = repair_net = audit_net = 0
+                    log.warning(
+                        f"[{self.node_name}] No DB events yet for breakdown calculation"
+                    )
+                
+                # Create a single aggregate estimate with calculated breakdown
                 estimates = [{
                     'timestamp': datetime.datetime.now(datetime.timezone.utc),
                     'node_name': self.node_name,
                     'satellite': 'aggregate',  # API gives totals, not per-satellite
                     'period': period,
-                    'egress_bytes': 0,
-                    'egress_earnings_gross': 0,
-                    'egress_earnings_net': 0,
-                    'storage_bytes_hour': 0,
-                    'storage_earnings_gross': 0,
-                    'storage_earnings_net': 0,
-                    'repair_bytes': 0,
-                    'repair_earnings_gross': 0,
-                    'repair_earnings_net': 0,
-                    'audit_bytes': 0,
-                    'audit_earnings_gross': 0,
-                    'audit_earnings_net': 0,
+                    'egress_bytes': breakdown_from_db.get('egress_bytes', 0),
+                    'egress_earnings_gross': egress_net / OPERATOR_SHARE_EGRESS if OPERATOR_SHARE_EGRESS > 0 else 0,
+                    'egress_earnings_net': egress_net,
+                    'storage_bytes_hour': breakdown_from_db.get('storage_bytes_hour', 0),
+                    'storage_earnings_gross': storage_net / OPERATOR_SHARE_STORAGE if OPERATOR_SHARE_STORAGE > 0 else 0,
+                    'storage_earnings_net': storage_net,
+                    'repair_bytes': breakdown_from_db.get('repair_bytes', 0),
+                    'repair_earnings_gross': repair_net / OPERATOR_SHARE_REPAIR if OPERATOR_SHARE_REPAIR > 0 else 0,
+                    'repair_earnings_net': repair_net,
+                    'audit_bytes': breakdown_from_db.get('audit_bytes', 0),
+                    'audit_earnings_gross': audit_net / OPERATOR_SHARE_AUDIT if OPERATOR_SHARE_AUDIT > 0 else 0,
+                    'audit_earnings_net': audit_net,
                     'total_earnings_gross': total_gross,
                     'total_earnings_net': total_net,
                     'held_amount': held_amount,
@@ -423,6 +460,132 @@ class FinancialTracker:
                 )
         
         return estimates
+    
+    def _blocking_calculate_breakdown_from_all_satellites(
+        self,
+        db_path: str,
+        period: str
+    ) -> Dict[str, Any]:
+        """
+        Calculate earnings breakdown from database events across all satellites.
+        Returns totals that can be scaled to match API data.
+        """
+        import sqlite3
+        import calendar
+        try:
+            # Parse period
+            year, month = map(int, period.split('-'))
+            period_start = datetime.datetime(year, month, 1, tzinfo=datetime.timezone.utc)
+            days_in_month = calendar.monthrange(year, month)[1]
+            if month == 12:
+                period_end = datetime.datetime(year + 1, 1, 1, tzinfo=datetime.timezone.utc)
+            else:
+                period_end = datetime.datetime(year, month + 1, 1, tzinfo=datetime.timezone.utc)
+            
+            period_start_iso = period_start.isoformat()
+            period_end_iso = period_end.isoformat()
+            
+            with sqlite3.connect(db_path, timeout=10) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                # Calculate traffic breakdown
+                traffic_query = """
+                    SELECT
+                        SUM(CASE WHEN action LIKE '%GET%' AND action != 'GET_AUDIT' AND action != 'GET_REPAIR'
+                                 AND status = 'success' THEN size ELSE 0 END) as egress_bytes,
+                        SUM(CASE WHEN action = 'GET_REPAIR' AND status = 'success'
+                                 THEN size ELSE 0 END) as repair_bytes,
+                        SUM(CASE WHEN action = 'GET_AUDIT' AND status = 'success'
+                                 THEN size ELSE 0 END) as audit_bytes
+                    FROM events
+                    WHERE node_name = ?
+                        AND timestamp >= ?
+                        AND timestamp < ?
+                """
+                
+                traffic_result = cursor.execute(
+                    traffic_query,
+                    (self.node_name, period_start_iso, period_end_iso)
+                ).fetchone()
+                
+                egress_bytes = traffic_result['egress_bytes'] or 0
+                repair_bytes = traffic_result['repair_bytes'] or 0
+                audit_bytes = traffic_result['audit_bytes'] or 0
+                
+                # Calculate earnings
+                egress_tb = egress_bytes / (1024 ** 4)
+                repair_tb = repair_bytes / (1024 ** 4)
+                audit_tb = audit_bytes / (1024 ** 4)
+                
+                egress_gross = egress_tb * PRICING_EGRESS_PER_TB
+                egress_net = egress_gross * OPERATOR_SHARE_EGRESS
+                
+                repair_gross = repair_tb * PRICING_REPAIR_PER_TB
+                repair_net = repair_gross * OPERATOR_SHARE_REPAIR
+                
+                audit_gross = audit_tb * PRICING_AUDIT_PER_TB
+                audit_net = audit_gross * OPERATOR_SHARE_AUDIT
+                
+                # Calculate storage earnings
+                storage_query = """
+                    SELECT timestamp, used_bytes
+                    FROM storage_snapshots
+                    WHERE node_name = ?
+                        AND timestamp >= ?
+                        AND timestamp < ?
+                        AND used_bytes IS NOT NULL
+                    ORDER BY timestamp ASC
+                """
+                
+                snapshots = cursor.execute(
+                    storage_query,
+                    (self.node_name, period_start_iso, period_end_iso)
+                ).fetchall()
+                
+                storage_bytes_hour = 0
+                if snapshots:
+                    # Calculate byte-hours
+                    for i in range(len(snapshots) - 1):
+                        t1 = datetime.datetime.fromisoformat(snapshots[i]['timestamp'])
+                        t2 = datetime.datetime.fromisoformat(snapshots[i + 1]['timestamp'])
+                        hours_diff = (t2 - t1).total_seconds() / 3600
+                        avg_bytes = (snapshots[i]['used_bytes'] + snapshots[i + 1]['used_bytes']) / 2
+                        storage_bytes_hour += avg_bytes * hours_diff
+                    
+                    # Project to now (not month end, for current earnings)
+                    last_snapshot = snapshots[-1]
+                    last_time = datetime.datetime.fromisoformat(last_snapshot['timestamp'])
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    if last_time < now and now <= period_end:
+                        hours_since_last = (now - last_time).total_seconds() / 3600
+                        storage_bytes_hour += last_snapshot['used_bytes'] * hours_since_last
+                
+                gb_hours = storage_bytes_hour / (1024 ** 3)
+                hours_in_month = days_in_month * 24
+                tb_months = gb_hours / (1024 * hours_in_month)
+                storage_gross = tb_months * PRICING_STORAGE_PER_TB_MONTH
+                storage_net = storage_gross * OPERATOR_SHARE_STORAGE
+                
+                return {
+                    'egress_bytes': egress_bytes,
+                    'egress_net': egress_net,
+                    'repair_bytes': repair_bytes,
+                    'repair_net': repair_net,
+                    'audit_bytes': audit_bytes,
+                    'audit_net': audit_net,
+                    'storage_bytes_hour': int(storage_bytes_hour),
+                    'storage_net': storage_net
+                }
+                
+        except Exception as e:
+            log.error(f"[{self.node_name}] Failed to calculate breakdown from DB: {e}")
+            return {
+                'egress_bytes': 0, 'egress_net': 0,
+                'repair_bytes': 0, 'repair_net': 0,
+                'audit_bytes': 0, 'audit_net': 0,
+                'storage_bytes_hour': 0, 'storage_net': 0
+            }
     
     def _get_satellites_from_db(self, db_path: str) -> List[str]:
         """Blocking method to get satellites from database."""
@@ -1091,21 +1254,33 @@ async def broadcast_earnings_update(app: Dict[str, Any], loop=None):
             forecast_info = node_forecasts[node_name]
             sat_name = SATELLITE_NAMES.get(estimate['satellite'], estimate['satellite'][:8])
             
-            formatted_data.append({
+            breakdown_data = {
+                'egress': round(estimate['egress_earnings_net'], 2),
+                'storage': round(estimate['storage_earnings_net'], 2),
+                'repair': round(estimate['repair_earnings_net'], 2),
+                'audit': round(estimate['audit_earnings_net'], 2)
+            }
+            
+            formatted_item = {
                 'node_name': estimate['node_name'],
                 'satellite': sat_name,
                 'total_net': round(estimate['total_earnings_net'], 2),
                 'total_gross': round(estimate['total_earnings_gross'], 2),
                 'held_amount': round(estimate['held_amount'], 2),
-                'breakdown': {
-                    'egress': round(estimate['egress_earnings_net'], 2),
-                    'storage': round(estimate['storage_earnings_net'], 2),
-                    'repair': round(estimate['repair_earnings_net'], 2),
-                    'audit': round(estimate['audit_earnings_net'], 2)
-                },
+                'breakdown': breakdown_data,
                 'forecast_month_end': round(forecast_info['forecasted_payout'], 2) if forecast_info else None,
                 'confidence': round(forecast_info['confidence'], 2) if forecast_info else None
-            })
+            }
+            
+            # Debug log breakdown values
+            breakdown_sum = sum(breakdown_data.values())
+            if breakdown_sum == 0 and formatted_item['total_net'] > 0:
+                log.warning(
+                    f"[{estimate['node_name']}] Breakdown is zero but total_net is ${formatted_item['total_net']:.2f} "
+                    f"for satellite {sat_name}"
+                )
+            
+            formatted_data.append(formatted_item)
         
         # Broadcast to all clients
         payload = {
