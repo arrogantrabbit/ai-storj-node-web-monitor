@@ -634,14 +634,18 @@ class FinancialTracker:
             }
     
     def _get_satellites_from_db(self, db_path: str) -> List[str]:
-        """Blocking method to get satellites from database with caching."""
+        """
+        OPTIMIZED: Get satellites from database with aggressive 30-min caching.
+        
+        During startup, this is called frequently. Extended cache reduces DB queries.
+        """
         import sqlite3
         
         # Check cache first (cache key includes node name)
         cache_key = f"satellites_{self.node_name}"
         if hasattr(self, '_satellite_cache'):
             cached_data = self._satellite_cache.get(cache_key)
-            if cached_data and (time.time() - cached_data['timestamp']) < 300:  # 5-min cache
+            if cached_data and (time.time() - cached_data['timestamp']) < 1800:  # 30-min cache (rarely changes)
                 return cached_data['satellites']
         else:
             self._satellite_cache = {}
@@ -674,14 +678,24 @@ class FinancialTracker:
         satellite: str,
         period: str
     ) -> Dict[str, Any]:
-        """OPTIMIZED: Blocking wrapper for calculate_from_traffic with caching."""
+        """
+        OPTIMIZED: Blocking wrapper with period-aware caching.
+        
+        Historical periods cached for 30 minutes, current period for 1 minute.
+        """
         import sqlite3
+        
+        # Determine cache duration based on period
+        now = datetime.datetime.now(datetime.timezone.utc)
+        current_period = now.strftime('%Y-%m')
+        is_current_period = (period == current_period)
+        cache_duration = 60 if is_current_period else 1800  # 1 min current, 30 min historical
         
         # Check cache first
         cache_key = f"traffic_{self.node_name}_{satellite}_{period}"
         if hasattr(self, '_traffic_cache'):
             cached = self._traffic_cache.get(cache_key)
-            if cached and (time.time() - cached['ts']) < 60:  # 1-min cache for current period
+            if cached and (time.time() - cached['ts']) < cache_duration:
                 return cached['data']
         else:
             self._traffic_cache = {}
@@ -773,23 +787,29 @@ class FinancialTracker:
         period: str
     ) -> Tuple[int, float, float]:
         """
-        OPTIMIZED: Calculate storage earnings with caching and batch queries.
+        OPTIMIZED: Calculate storage earnings with aggressive caching and batch queries.
+        
+        CRITICAL STARTUP OPTIMIZATION: During startup, this can be called thousands of times.
+        We use a 30-minute cache for historical data and 5-minute cache for current period
+        to drastically reduce redundant calculations.
         
         Note: Storage snapshots are per-node, not per-satellite. We allocate
         storage earnings proportionally based on each satellite's traffic share.
-        
-        CRITICAL OPTIMIZATION: Calculate total storage ONCE per node/period,
-        then reuse for all satellites. This avoids recalculating the same
-        snapshot loop for every satellite.
         """
         import sqlite3
         import calendar
+        
+        # Determine cache duration based on period
+        now = datetime.datetime.now(datetime.timezone.utc)
+        current_period = now.strftime('%Y-%m')
+        is_current_period = (period == current_period)
+        cache_duration = 300 if is_current_period else 1800  # 5 min current, 30 min historical
         
         # Check per-satellite cache first (fast path)
         cache_key = f"storage_{self.node_name}_{satellite}_{period}"
         if hasattr(self, '_storage_cache'):
             cached = self._storage_cache.get(cache_key)
-            if cached and (time.time() - cached['ts']) < 300:  # 5-min cache (storage changes slowly)
+            if cached and (time.time() - cached['ts']) < cache_duration:
                 return cached['data']
         else:
             self._storage_cache = {}
@@ -802,7 +822,7 @@ class FinancialTracker:
         
         if total_cache_key in self._storage_cache:
             cached_total = self._storage_cache[total_cache_key]
-            if (time.time() - cached_total['ts']) < 300:  # 5-min cache
+            if (time.time() - cached_total['ts']) < cache_duration:
                 total_byte_hours = cached_total['total_byte_hours']
                 total_storage_gross = cached_total['total_gross']
                 total_storage_net = cached_total['total_net']
@@ -1213,6 +1233,8 @@ async def financial_polling_task(app: Dict[str, Any]):
     """
     Background task that polls earnings data for all nodes and broadcasts updates.
     
+    OPTIMIZATION: Uses aggressive caching to speed up calculations dramatically.
+    
     Args:
         app: Application context
     """
@@ -1231,20 +1253,20 @@ async def financial_polling_task(app: Dict[str, Any]):
         app['financial_trackers'][node_name] = FinancialTracker(node_name, api_client)
         log.info(f"[{node_name}] Financial tracker initialized")
     
-    # Attempt to import historical payouts (will gracefully skip if endpoint unavailable)
-    log.info("Attempting to import historical payout data from node APIs...")
+    # Attempt to import historical payouts (with caching, this should be fast)
+    log.info("Importing historical payout data from node APIs...")
+    loop = asyncio.get_running_loop()
     for node_name, tracker in app['financial_trackers'].items():
         try:
             await tracker.import_historical_payouts(
                 DATABASE_FILE,
-                asyncio.get_running_loop(),
+                loop,
                 app.get('db_executor')
             )
         except Exception as e:
             log.debug(f"[{node_name}] Historical import skipped: {e}")
 
     # Initial poll
-    loop = asyncio.get_running_loop()
     await broadcast_earnings_update(app, loop)
     last_historical_import_day = datetime.datetime.now(datetime.timezone.utc).day
     

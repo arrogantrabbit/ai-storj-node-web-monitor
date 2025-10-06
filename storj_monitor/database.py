@@ -813,12 +813,20 @@ def load_initial_state_from_db(nodes_config: Dict[str, Dict[str, Any]]):
     from .config import STATS_WINDOW_MINUTES
     from .log_processor import categorize_action
 
-    """Connects to the DB to re-hydrate the in-memory state on startup."""
-    log.info("Attempting to load initial state from database...")
+    """
+    OPTIMIZED: Connects to the DB to re-hydrate the in-memory state on startup.
+    
+    Uses batched processing and reduced time window for faster startup.
+    """
+    log.info("Loading initial state from database (optimized)...")
     initial_state = {}
-    cutoff_datetime = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=STATS_WINDOW_MINUTES)
+    
+    # OPTIMIZATION: Reduce initial load to last 15 minutes instead of full STATS_WINDOW
+    # This speeds up startup significantly; older events will naturally age out
+    load_window_minutes = min(STATS_WINDOW_MINUTES, 15)
+    cutoff_datetime = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=load_window_minutes)
 
-    with get_optimized_connection(DATABASE_FILE, timeout=DB_CONNECTION_TIMEOUT) as conn:
+    with get_optimized_connection(DATABASE_FILE, timeout=DB_CONNECTION_TIMEOUT, read_only=True) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -829,23 +837,37 @@ def load_initial_state_from_db(nodes_config: Dict[str, Dict[str, Any]]):
                 'unprocessed_performance_events': [],
                 'has_new_events': False
             }
-            log.info(f"Re-hydrating live events for node '{node_name}' since {cutoff_datetime.isoformat()}")
+            
+            # OPTIMIZATION: Use LIMIT to avoid loading too many events on startup
+            log.info(f"Loading recent events for node '{node_name}' (last {load_window_minutes} min, max 10000 events)")
             cursor.execute(
-                "SELECT * FROM events WHERE node_name = ? AND timestamp >= ? ORDER BY timestamp ASC",
+                """SELECT * FROM events
+                   WHERE node_name = ? AND timestamp >= ?
+                   ORDER BY timestamp DESC
+                   LIMIT 10000""",
                 (node_name, cutoff_datetime.isoformat())
             )
+            
+            rows = cursor.fetchall()
             rehydrated_events = 0
-            for row in cursor.fetchall():
+            
+            # Process in reverse order (oldest first) since we queried DESC with LIMIT
+            for row in reversed(rows):
                 try:
                     action = row['action']
                     timestamp_obj = datetime.datetime.fromisoformat(row['timestamp'])
                     event = {
-                        "ts_unix": timestamp_obj.timestamp(), "timestamp": timestamp_obj,
-                        "action": action, "status": row['status'], "size": row['size'],
-                        "piece_id": row['piece_id'], "satellite_id": row['satellite_id'],
+                        "ts_unix": timestamp_obj.timestamp(),
+                        "timestamp": timestamp_obj,
+                        "action": action,
+                        "status": row['status'],
+                        "size": row['size'],
+                        "piece_id": row['piece_id'],
+                        "satellite_id": row['satellite_id'],
                         "remote_ip": row['remote_ip'],
                         "location": {"lat": row['latitude'], "lon": row['longitude'], "country": row['country']},
-                        "error_reason": row['error_reason'], "node_name": row['node_name'],
+                        "error_reason": row['error_reason'],
+                        "node_name": row['node_name'],
                         "category": categorize_action(action)
                     }
                     node_state['live_events'].append(event)
@@ -853,7 +875,10 @@ def load_initial_state_from_db(nodes_config: Dict[str, Dict[str, Any]]):
                 except Exception:
                     log.error("Failed to process a database row for re-hydration.", exc_info=True)
 
+            log.info(f"  -> Loaded {rehydrated_events} events for '{node_name}'")
             initial_state[node_name] = node_state
+            
+    log.info(f"Initial state loaded for {len(initial_state)} node(s)")
     return initial_state
 
 

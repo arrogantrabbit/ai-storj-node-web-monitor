@@ -158,7 +158,7 @@ def blocking_get_latency_stats(
     hours: int = 1
 ) -> Dict[str, Any]:
     """
-    OPTIMIZED: Get latency statistics with 30-second caching.
+    OPTIMIZED: Get latency statistics with 2-minute caching for startup performance.
     
     Args:
         db_path: Path to database
@@ -173,10 +173,10 @@ def blocking_get_latency_stats(
     if not node_names:
         return {'statistics': {}, 'slow_operations': []}
     
-    # Check cache
+    # Check cache - extended to 2 minutes for better startup performance
     cache_key = f"{','.join(sorted(node_names))}_{hours}"
     cached = _latency_stats_cache.get(cache_key)
-    if cached and (time.time() - cached['ts']) < 30:  # 30-second cache
+    if cached and (time.time() - cached['ts']) < 120:  # 2-minute cache
         return cached['data']
     
     try:
@@ -284,10 +284,10 @@ def blocking_get_latency_histogram(
     if not node_names:
         return []
     
-    # Check cache
+    # Check cache - extended to 2 minutes for better startup performance
     cache_key = f"{','.join(sorted(node_names))}_{hours}_{bucket_size_ms}"
     cached = _latency_histogram_cache.get(cache_key)
-    if cached and (time.time() - cached['ts']) < 30:  # 30-second cache
+    if cached and (time.time() - cached['ts']) < 120:  # 2-minute cache
         return cached['data']
     
     try:
