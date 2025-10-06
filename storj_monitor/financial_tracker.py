@@ -889,6 +889,7 @@ class FinancialTracker:
             log.error(f"[{self.node_name}] Failed to calculate storage earnings: {e}")
             return (0, 0.0, 0.0)
 
+    
     def _blocking_delete_current_month_estimates(self, db_path: str, period: str):
         """Deletes all earnings estimates for the current month to prevent duplicates."""
         import sqlite3
