@@ -646,7 +646,7 @@ export function updateEarningsHistoryChart(historyData) {
         return;
     }
     
-    // Get current month to filter incomplete data
+    // Get current month to use forecast instead of accumulated
     const now = new Date();
     const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const dayOfMonth = now.getDate();
@@ -659,21 +659,46 @@ export function updateEarningsHistoryChart(historyData) {
             byPeriod[period] = {
                 total_earnings_net: 0,
                 total_earnings_gross: 0,
-                held_amount: 0
+                held_amount: 0,
+                has_forecast: false,
+                forecast_month_end: 0
             };
         }
         byPeriod[period].total_earnings_net += item.total_earnings_net || 0;
         byPeriod[period].total_earnings_gross += item.total_earnings_gross || 0;
         byPeriod[period].held_amount += item.held_amount || 0;
+        
+        // Track forecast data for current month
+        if (item.forecast_month_end && item.forecast_month_end > 0) {
+            byPeriod[period].has_forecast = true;
+            byPeriod[period].forecast_month_end = Math.max(byPeriod[period].forecast_month_end, item.forecast_month_end);
+        }
     });
     
     // Convert to array and sort by date
-    let aggregated = Object.keys(byPeriod).map(period => ({
-        period: period,
-        ...byPeriod[period]
-    })).sort((a, b) => a.period.localeCompare(b.period));
+    let aggregated = Object.keys(byPeriod).map(period => {
+        const data = byPeriod[period];
+        
+        // For current month with forecast data: use forecast value instead of accumulated
+        if (period === currentPeriod && data.has_forecast && dayOfMonth < 25) {
+            console.log(`Using forecast for ${period}: $${data.forecast_month_end.toFixed(2)} instead of accumulated $${data.total_earnings_net.toFixed(2)}`);
+            return {
+                period: period,
+                total_earnings_net: data.forecast_month_end,
+                total_earnings_gross: data.forecast_month_end + data.held_amount,
+                held_amount: data.held_amount,
+                is_forecast: true
+            };
+        }
+        
+        return {
+            period: period,
+            ...data,
+            is_forecast: false
+        };
+    }).sort((a, b) => a.period.localeCompare(b.period));
     
-    console.log('Aggregated data:', aggregated.length, 'periods');
+    console.log('Aggregated data:', aggregated.length, 'periods', aggregated.filter(a => a.is_forecast).length, 'with forecasts');
     
     // Map data to chart datasets
     // Parse period (YYYY-MM) to date at noon UTC to avoid timezone boundary issues
