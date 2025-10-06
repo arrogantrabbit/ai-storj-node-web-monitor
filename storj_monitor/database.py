@@ -1695,7 +1695,10 @@ def blocking_get_latest_earnings(
         List of latest earnings estimates per node per satellite
     """
     if not node_names:
+        log.warning("[blocking_get_latest_earnings] No node names provided")
         return []
+    
+    log.info(f"[blocking_get_latest_earnings] Querying for nodes: {node_names}, period: {period}")
     
     try:
         with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
@@ -1735,6 +1738,17 @@ def blocking_get_latest_earnings(
                 params = node_names
             
             results = [dict(row) for row in conn.execute(query, params).fetchall()]
+            
+            log.info(f"[blocking_get_latest_earnings] Query returned {len(results)} records")
+            if results:
+                nodes_in_results = {r['node_name'] for r in results}
+                log.info(f"[blocking_get_latest_earnings] Nodes in results: {nodes_in_results}")
+                for node in node_names:
+                    node_records = [r for r in results if r['node_name'] == node]
+                    log.info(f"[blocking_get_latest_earnings]   {node}: {len(node_records)} satellites")
+            else:
+                log.warning(f"[blocking_get_latest_earnings] No results found for nodes {node_names}, period {period}")
+            
             return results
     except Exception:
         log.error("Failed to get latest earnings:", exc_info=True)

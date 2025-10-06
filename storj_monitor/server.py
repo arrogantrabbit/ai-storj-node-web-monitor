@@ -130,6 +130,18 @@ async def websocket_handler(request):
     await ws.send_json({"type": "init", "nodes": node_names})
     await send_initial_stats(app, ws, ["Aggregate"])
     await ws.send_json(get_active_compactions_payload())
+    
+    # Send initial earnings data from cache if available
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    period = now.strftime('%Y-%m')
+    cache_key = ('Aggregate', period)
+    
+    if cache_key in app_state.get('earnings_cache', {}):
+        log.info(f"Sending cached earnings data for Aggregate view on connect")
+        await ws.send_json(app_state['earnings_cache'][cache_key])
+    else:
+        log.info(f"No cached earnings data available on connect, client will receive broadcast when ready")
 
     try:
         async for msg in ws:
@@ -149,6 +161,25 @@ async def websocket_handler(request):
                                 app_state['websockets'][ws]['view'] = new_view
                                 log.info(f"Client switched view to: {new_view}")
                                 await send_initial_stats(app, ws, new_view)
+                                
+                                # Send cached earnings data for the new view if available
+                                import datetime
+                                now = datetime.datetime.now(datetime.timezone.utc)
+                                period = now.strftime('%Y-%m')
+                                
+                                # Determine cache key based on view
+                                if is_aggregate:
+                                    cache_key = ('Aggregate', period)
+                                else:
+                                    # For single or multiple specific nodes
+                                    if len(new_view) == 1:
+                                        cache_key = (new_view[0], period)
+                                    else:
+                                        cache_key = tuple(sorted(new_view)) + (period,)
+                                
+                                if cache_key in app_state.get('earnings_cache', {}):
+                                    log.info(f"Sending cached earnings data for view {new_view} on view switch")
+                                    await ws.send_json(app_state['earnings_cache'][cache_key])
 
                     elif msg_type == 'get_historical_performance':
                         view = data.get('view')  # This is now a list

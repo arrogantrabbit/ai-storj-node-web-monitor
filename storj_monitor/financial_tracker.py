@@ -1267,6 +1267,8 @@ async def broadcast_earnings_update(app: Dict[str, Any], loop=None):
         # Get latest earnings for all nodes
         node_names = list(app['nodes'].keys())
         
+        log.info(f"[BROADCAST] Fetching earnings for nodes: {node_names}, period: {period}")
+        
         earnings_data = await loop.run_in_executor(
             app.get('db_executor'),
             blocking_get_latest_earnings,
@@ -1276,7 +1278,13 @@ async def broadcast_earnings_update(app: Dict[str, Any], loop=None):
         )
         
         if not earnings_data:
+            log.warning(f"[BROADCAST] No earnings data returned for nodes {node_names}, period {period}")
             return
+        
+        log.info(f"[BROADCAST] Retrieved {len(earnings_data)} earnings records from database")
+        # Log which nodes have data
+        nodes_with_data = {item['node_name'] for item in earnings_data}
+        log.info(f"[BROADCAST] Nodes with data: {nodes_with_data}")
         
         # Format data for WebSocket transmission
         # Group by node for forecasting (calculate forecast once per node, not per satellite)
@@ -1355,9 +1363,11 @@ async def broadcast_earnings_update(app: Dict[str, Any], loop=None):
             app_state['earnings_cache'][(node_name, period)] = node_payload
             
         app_state['earnings_cache'][('Aggregate', period)] = payload
+        
+        log.info(f"[BROADCAST] Cached aggregate data with {len(formatted_data)} estimates for {len(nodes_in_payload)} nodes")
 
         await robust_broadcast(app_state['websockets'], payload)
-        log.debug(f"Broadcast earnings update with {len(formatted_data)} estimates")
+        log.info(f"[BROADCAST] Broadcast complete: {len(formatted_data)} estimates to {len(app_state['websockets'])} clients")
         
     except Exception as e:
         log.error(f"Failed to broadcast earnings update: {e}", exc_info=True)
