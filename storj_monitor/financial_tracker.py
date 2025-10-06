@@ -1102,7 +1102,11 @@ class FinancialTracker:
                         estimate
                     )
                     if success:
-                        sat_name = SATELLITE_NAMES.get(estimate['satellite'], estimate['satellite'][:8])
+                        # Don't truncate special 'aggregate' satellite name
+                        if estimate['satellite'] == 'aggregate':
+                            sat_name = 'Aggregate'
+                        else:
+                            sat_name = SATELLITE_NAMES.get(estimate['satellite'], estimate['satellite'][:8])
                         log.info(
                             f"[{self.node_name}] Wrote earnings estimate for {sat_name}: "
                             f"${estimate['total_earnings_net']:.4f} net "
@@ -1252,7 +1256,11 @@ async def broadcast_earnings_update(app: Dict[str, Any], loop=None):
                     node_forecasts[node_name] = None
             
             forecast_info = node_forecasts[node_name]
-            sat_name = SATELLITE_NAMES.get(estimate['satellite'], estimate['satellite'][:8])
+            # Don't truncate special 'aggregate' satellite name
+            if estimate['satellite'] == 'aggregate':
+                sat_name = 'Aggregate'
+            else:
+                sat_name = SATELLITE_NAMES.get(estimate['satellite'], estimate['satellite'][:8])
             
             breakdown_data = {
                 'egress': round(estimate['egress_earnings_net'], 2),
