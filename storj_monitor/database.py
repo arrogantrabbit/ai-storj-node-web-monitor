@@ -109,6 +109,27 @@ def init_db():
             "Creating composite index for performance. This may take a very long time on large databases. Please wait...")
         cursor.execute('CREATE INDEX idx_events_node_name_timestamp ON events (node_name, timestamp);')
         log.info("Index creation complete.")
+    
+    # PERFORMANCE OPTIMIZATION: Add indexes for financial tracking queries
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_events_financial_traffic'")
+    if not cursor.fetchone():
+        log.info("Creating financial traffic index for earnings calculations. This may take a while...")
+        cursor.execute('CREATE INDEX idx_events_financial_traffic ON events (node_name, satellite_id, timestamp, status, action);')
+        log.info("Financial traffic index created.")
+    
+    # PERFORMANCE OPTIMIZATION: Add index for storage snapshot queries
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_storage_earnings'")
+    if not cursor.fetchone():
+        log.info("Creating storage earnings index...")
+        cursor.execute('CREATE INDEX idx_storage_earnings ON storage_snapshots (node_name, timestamp DESC, used_bytes);')
+        log.info("Storage earnings index created.")
+    
+    # PERFORMANCE OPTIMIZATION: Add index for latency queries
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_events_latency'")
+    if not cursor.fetchone():
+        log.info("Creating latency analysis index...")
+        cursor.execute('CREATE INDEX idx_events_latency ON events (node_name, timestamp, duration_ms) WHERE duration_ms IS NOT NULL;')
+        log.info("Latency analysis index created.")
 
     # --- Reputation History Table (Phase 1.3) ---
     cursor.execute('''

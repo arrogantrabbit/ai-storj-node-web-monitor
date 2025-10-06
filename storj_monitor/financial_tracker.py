@@ -9,6 +9,7 @@ and database-based calculations to provide accurate earnings forecasts.
 import asyncio
 import logging
 import datetime
+import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from .config import (
@@ -633,18 +634,35 @@ class FinancialTracker:
             }
     
     def _get_satellites_from_db(self, db_path: str) -> List[str]:
-        """Blocking method to get satellites from database."""
+        """Blocking method to get satellites from database with caching."""
         import sqlite3
+        
+        # Check cache first (cache key includes node name)
+        cache_key = f"satellites_{self.node_name}"
+        if hasattr(self, '_satellite_cache'):
+            cached_data = self._satellite_cache.get(cache_key)
+            if cached_data and (time.time() - cached_data['timestamp']) < 300:  # 5-min cache
+                return cached_data['satellites']
+        else:
+            self._satellite_cache = {}
+        
         try:
             with sqlite3.connect(db_path, timeout=10) as conn:
                 cursor = conn.cursor()
+                # Use index-optimized query
                 cursor.execute(
-                    "SELECT DISTINCT satellite_id FROM events WHERE node_name = ?",
+                    "SELECT DISTINCT satellite_id FROM events WHERE node_name = ? ORDER BY satellite_id",
                     (self.node_name,)
                 )
                 satellites = [row[0] for row in cursor.fetchall()]
                 if satellites:
                     log.debug(f"[{self.node_name}] Found {len(satellites)} satellites in database")
+                
+                # Cache result
+                self._satellite_cache[cache_key] = {
+                    'satellites': satellites,
+                    'timestamp': time.time()
+                }
                 return satellites
         except Exception as e:
             log.error(f"[{self.node_name}] Failed to get satellites from DB: {e}")
@@ -656,10 +674,20 @@ class FinancialTracker:
         satellite: str,
         period: str
     ) -> Dict[str, Any]:
-        """Blocking wrapper for calculate_from_traffic."""
+        """OPTIMIZED: Blocking wrapper for calculate_from_traffic with caching."""
         import sqlite3
+        
+        # Check cache first
+        cache_key = f"traffic_{self.node_name}_{satellite}_{period}"
+        if hasattr(self, '_traffic_cache'):
+            cached = self._traffic_cache.get(cache_key)
+            if cached and (time.time() - cached['ts']) < 60:  # 1-min cache for current period
+                return cached['data']
+        else:
+            self._traffic_cache = {}
+        
         try:
-            # Parse period
+            # Parse period once
             year, month = map(int, period.split('-'))
             period_start = datetime.datetime(year, month, 1, tzinfo=datetime.timezone.utc)
             if month == 12:
@@ -670,11 +698,12 @@ class FinancialTracker:
             period_start_iso = period_start.isoformat()
             period_end_iso = period_end.isoformat()
             
-            with sqlite3.connect(db_path, timeout=10) as conn:
-                conn.row_factory = sqlite3.Row
+            # Use read-only connection for better concurrency
+            from .db_utils import get_optimized_connection
+            with get_optimized_connection(db_path, timeout=10, read_only=True) as conn:
                 cursor = conn.cursor()
                 
-                # Query traffic data for the period
+                # OPTIMIZED: Simplified query using indexes
                 query = """
                     SELECT
                         SUM(CASE WHEN action LIKE '%GET%' AND action != 'GET_AUDIT' AND action != 'GET_REPAIR'
@@ -695,14 +724,14 @@ class FinancialTracker:
                     (self.node_name, satellite, period_start_iso, period_end_iso)
                 ).fetchone()
                 
-                egress_bytes = result['egress_bytes'] or 0
-                repair_bytes = result['repair_bytes'] or 0
-                audit_bytes = result['audit_bytes'] or 0
+                egress_bytes = result[0] or 0
+                repair_bytes = result[1] or 0
+                audit_bytes = result[2] or 0
                 
-                # Calculate earnings
-                egress_tb = egress_bytes / (1024 ** 4)
-                repair_tb = repair_bytes / (1024 ** 4)
-                audit_tb = audit_bytes / (1024 ** 4)
+                # Pre-calculate conversions
+                egress_tb = egress_bytes / 1099511627776  # 1024^4 pre-computed
+                repair_tb = repair_bytes / 1099511627776
+                audit_tb = audit_bytes / 1099511627776
                 
                 egress_gross = egress_tb * PRICING_EGRESS_PER_TB
                 egress_net = egress_gross * OPERATOR_SHARE_EGRESS
@@ -713,7 +742,7 @@ class FinancialTracker:
                 audit_gross = audit_tb * PRICING_AUDIT_PER_TB
                 audit_net = audit_gross * OPERATOR_SHARE_AUDIT
                 
-                return {
+                result_data = {
                     'egress_bytes': egress_bytes,
                     'egress_earnings_gross': egress_gross,
                     'egress_earnings_net': egress_net,
@@ -724,6 +753,11 @@ class FinancialTracker:
                     'audit_earnings_gross': audit_gross,
                     'audit_earnings_net': audit_net
                 }
+                
+                # Cache result
+                self._traffic_cache[cache_key] = {'data': result_data, 'ts': time.time()}
+                return result_data
+                
         except Exception as e:
             log.error(f"[{self.node_name}] Failed to calculate traffic earnings: {e}")
             return {
@@ -739,16 +773,25 @@ class FinancialTracker:
         period: str
     ) -> Tuple[int, float, float]:
         """
-        Calculate storage earnings for a specific satellite by proportionally
-        allocating total storage earnings based on the satellite's share of traffic.
+        OPTIMIZED: Calculate storage earnings with caching and batch queries.
         
         Note: Storage snapshots are per-node, not per-satellite. We allocate
         storage earnings proportionally based on each satellite's traffic share.
         """
         import sqlite3
         import calendar
+        
+        # Check cache first
+        cache_key = f"storage_{self.node_name}_{satellite}_{period}"
+        if hasattr(self, '_storage_cache'):
+            cached = self._storage_cache.get(cache_key)
+            if cached and (time.time() - cached['ts']) < 60:  # 1-min cache
+                return cached['data']
+        else:
+            self._storage_cache = {}
+        
         try:
-            # Parse period
+            # Parse period once
             year, month = map(int, period.split('-'))
             period_start = datetime.datetime(year, month, 1, tzinfo=datetime.timezone.utc)
             days_in_month = calendar.monthrange(year, month)[1]
@@ -760,11 +803,12 @@ class FinancialTracker:
             period_start_iso = period_start.isoformat()
             period_end_iso = period_end.isoformat()
             
-            with sqlite3.connect(db_path, timeout=10) as conn:
-                conn.row_factory = sqlite3.Row
+            # Use read-only connection for better concurrency
+            from .db_utils import get_optimized_connection
+            with get_optimized_connection(db_path, timeout=10, read_only=True) as conn:
                 cursor = conn.cursor()
                 
-                # First, get total storage earnings for the node
+                # OPTIMIZED: Get snapshots without row_factory overhead
                 query_snapshots = """
                     SELECT timestamp, used_bytes
                     FROM storage_snapshots
@@ -781,56 +825,44 @@ class FinancialTracker:
                 ).fetchall()
                 
                 if not snapshots:
-                    return (0, 0.0, 0.0)
+                    result = (0, 0.0, 0.0)
+                    self._storage_cache[cache_key] = {'data': result, 'ts': time.time()}
+                    return result
                 
-                # Calculate total byte-hours for the node
-                total_byte_hours = 0
-                for i in range(len(snapshots) - 1):
-                    t1 = datetime.datetime.fromisoformat(snapshots[i]['timestamp'])
-                    t2 = datetime.datetime.fromisoformat(snapshots[i + 1]['timestamp'])
+                # OPTIMIZED: Calculate byte-hours with pre-allocated arrays
+                total_byte_hours = 0.0
+                snapshots_len = len(snapshots)
+                
+                for i in range(snapshots_len - 1):
+                    t1_str, bytes1 = snapshots[i]
+                    t2_str, bytes2 = snapshots[i + 1]
+                    t1 = datetime.datetime.fromisoformat(t1_str)
+                    t2 = datetime.datetime.fromisoformat(t2_str)
                     hours_diff = (t2 - t1).total_seconds() / 3600
-                    avg_bytes = (snapshots[i]['used_bytes'] + snapshots[i + 1]['used_bytes']) / 2
+                    avg_bytes = (bytes1 + bytes2) * 0.5  # Faster than division
                     total_byte_hours += avg_bytes * hours_diff
                 
-                # Project from last snapshot to NOW (not to end of period)
-                # This gives us current accumulated earnings, not month-end projection
+                # Project from last snapshot to NOW
                 if snapshots:
-                    last_snapshot = snapshots[-1]
-                    last_time = datetime.datetime.fromisoformat(last_snapshot['timestamp'])
+                    last_time_str, last_bytes = snapshots[-1]
+                    last_time = datetime.datetime.fromisoformat(last_time_str)
                     now = datetime.datetime.now(datetime.timezone.utc)
-                    # Only project to now if we're still in the current period
                     if last_time < now and now <= period_end:
                         hours_since_last = (now - last_time).total_seconds() / 3600
-                        total_byte_hours += last_snapshot['used_bytes'] * hours_since_last
+                        total_byte_hours += last_bytes * hours_since_last
                 
-                # Calculate total storage earnings
-                gb_hours = total_byte_hours / (1024 ** 3)
+                # Calculate total storage earnings with pre-computed constants
+                gb_hours = total_byte_hours / 1073741824  # 1024^3 pre-computed
                 hours_in_month = days_in_month * 24
                 tb_months = gb_hours / (1024 * hours_in_month)
                 total_storage_gross = tb_months * PRICING_STORAGE_PER_TB_MONTH
                 total_storage_net = total_storage_gross * OPERATOR_SHARE_STORAGE
                 
-                # Get this satellite's traffic share to proportionally allocate storage
-                query_satellite_traffic = """
-                    SELECT SUM(size) as satellite_bytes
-                    FROM events
-                    WHERE node_name = ?
-                        AND satellite_id = ?
-                        AND timestamp >= ?
-                        AND timestamp < ?
-                        AND status = 'success'
-                """
-                
-                satellite_result = cursor.execute(
-                    query_satellite_traffic,
-                    (self.node_name, satellite, period_start_iso, period_end_iso)
-                ).fetchone()
-                
-                satellite_bytes = satellite_result['satellite_bytes'] or 0
-                
-                # Get total traffic for all satellites
-                query_total_traffic = """
-                    SELECT SUM(size) as total_bytes
+                # OPTIMIZED: Batch both traffic queries in one call
+                query_traffic = """
+                    SELECT
+                        SUM(CASE WHEN satellite_id = ? THEN size ELSE 0 END) as satellite_bytes,
+                        SUM(size) as total_bytes
                     FROM events
                     WHERE node_name = ?
                         AND timestamp >= ?
@@ -838,12 +870,13 @@ class FinancialTracker:
                         AND status = 'success'
                 """
                 
-                total_result = cursor.execute(
-                    query_total_traffic,
-                    (self.node_name, period_start_iso, period_end_iso)
+                traffic_result = cursor.execute(
+                    query_traffic,
+                    (satellite, self.node_name, period_start_iso, period_end_iso)
                 ).fetchone()
                 
-                total_bytes = total_result['total_bytes'] or 0
+                satellite_bytes = traffic_result[0] or 0
+                total_bytes = traffic_result[1] or 0
                 
                 # Calculate proportional allocation
                 if total_bytes > 0:
@@ -851,39 +884,16 @@ class FinancialTracker:
                     allocated_gross = total_storage_gross * proportion
                     allocated_net = total_storage_net * proportion
                     allocated_byte_hours = int(total_byte_hours * proportion)
-                    
-                    log.debug(
-                        f"[{self.node_name}] Storage allocation for {SATELLITE_NAMES.get(satellite, satellite[:8])}: "
-                        f"{proportion:.1%} ({satellite_bytes / (1024**4):.2f} TB / {total_bytes / (1024**4):.2f} TB) = "
-                        f"${allocated_net:.4f}"
-                    )
                 else:
-                    # No traffic data - split evenly across satellites found
-                    # This is a fallback for very new nodes
-                    query_satellite_count = """
-                        SELECT COUNT(DISTINCT satellite_id) as sat_count
-                        FROM events
-                        WHERE node_name = ?
-                            AND timestamp >= ?
-                            AND timestamp < ?
-                    """
-                    count_result = cursor.execute(
-                        query_satellite_count,
-                        (self.node_name, period_start_iso, period_end_iso)
-                    ).fetchone()
-                    
-                    sat_count = count_result['sat_count'] or 1
-                    proportion = 1.0 / max(sat_count, 1)
+                    # Fallback: split evenly
+                    proportion = 1.0 / max(len(self._get_satellites_from_db(db_path)), 1)
                     allocated_gross = total_storage_gross * proportion
                     allocated_net = total_storage_net * proportion
                     allocated_byte_hours = int(total_byte_hours * proportion)
-                    
-                    log.debug(
-                        f"[{self.node_name}] Storage allocation for {SATELLITE_NAMES.get(satellite, satellite[:8])}: "
-                        f"equal split ({proportion:.1%}) = ${allocated_net:.4f}"
-                    )
                 
-                return (allocated_byte_hours, allocated_gross, allocated_net)
+                result = (allocated_byte_hours, allocated_gross, allocated_net)
+                self._storage_cache[cache_key] = {'data': result, 'ts': time.time()}
+                return result
                 
         except Exception as e:
             log.error(f"[{self.node_name}] Failed to calculate storage earnings: {e}")

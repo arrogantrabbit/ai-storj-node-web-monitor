@@ -8,11 +8,16 @@ and slow operations.
 import logging
 from typing import List, Dict, Any
 import statistics
+import time
 from .config import DB_CONNECTION_TIMEOUT, DB_MAX_RETRIES, DB_RETRY_BASE_DELAY, DB_RETRY_MAX_DELAY
 from .db_utils import retry_on_db_lock, get_optimized_connection
 import sqlite3
 
 log = logging.getLogger("StorjMonitor.PerformanceAnalyzer")
+
+# Module-level cache for latency queries
+_latency_stats_cache = {}
+_latency_histogram_cache = {}
 
 
 def calculate_percentiles(values: List[float], percentiles: List[int] = [50, 95, 99]) -> Dict[str, float]:
@@ -153,7 +158,7 @@ def blocking_get_latency_stats(
     hours: int = 1
 ) -> Dict[str, Any]:
     """
-    Get latency statistics from database for specified nodes and time window.
+    OPTIMIZED: Get latency statistics with 30-second caching.
     
     Args:
         db_path: Path to database
@@ -167,6 +172,12 @@ def blocking_get_latency_stats(
     
     if not node_names:
         return {'statistics': {}, 'slow_operations': []}
+    
+    # Check cache
+    cache_key = f"{','.join(sorted(node_names))}_{hours}"
+    cached = _latency_stats_cache.get(cache_key)
+    if cached and (time.time() - cached['ts']) < 30:  # 30-second cache
+        return cached['data']
     
     try:
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
@@ -233,12 +244,16 @@ def blocking_get_latency_stats(
         # Detect slow operations
         slow_operations = detect_slow_operations(events, threshold_ms=5000, limit=10)
         
-        return {
+        result = {
             'statistics': statistics_data,
             'slow_operations': slow_operations,
             'total_operations': len(events),
             'operations_with_latency': len([e for e in events if e.get('duration_ms')])
         }
+        
+        # Cache result
+        _latency_stats_cache[cache_key] = {'data': result, 'ts': time.time()}
+        return result
         
     except Exception as e:
         log.error(f"Error getting latency stats: {e}", exc_info=True)
@@ -253,9 +268,7 @@ def blocking_get_latency_histogram(
     bucket_size_ms: int = 100
 ) -> List[Dict[str, Any]]:
     """
-    Get latency distribution histogram data.
-    
-    OPTIMIZED: Uses index-optimized query with efficient bucketing.
+    OPTIMIZED: Uses index-optimized query with caching and efficient bucketing.
     
     Args:
         db_path: Path to database
@@ -270,6 +283,12 @@ def blocking_get_latency_histogram(
     
     if not node_names:
         return []
+    
+    # Check cache
+    cache_key = f"{','.join(sorted(node_names))}_{hours}_{bucket_size_ms}"
+    cached = _latency_histogram_cache.get(cache_key)
+    if cached and (time.time() - cached['ts']) < 30:  # 30-second cache
+        return cached['data']
     
     try:
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
@@ -309,6 +328,8 @@ def blocking_get_latency_histogram(
                     'label': f'{bucket_start}-{bucket_start + bucket_size_ms}ms'
                 })
             
+            # Cache result
+            _latency_histogram_cache[cache_key] = {'data': histogram, 'ts': time.time()}
             return histogram
             
     except Exception as e:
