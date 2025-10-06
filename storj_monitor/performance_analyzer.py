@@ -255,6 +255,8 @@ def blocking_get_latency_histogram(
     """
     Get latency distribution histogram data.
     
+    OPTIMIZED: Uses index-optimized query with efficient bucketing.
+    
     Args:
         db_path: Path to database
         node_names: List of node names
@@ -273,12 +275,13 @@ def blocking_get_latency_histogram(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
         cutoff_iso = cutoff.isoformat()
         
-        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT, read_only=True) as conn:
             placeholders = ','.join('?' for _ in node_names)
             
-            # Query to create histogram buckets
+            # Optimized query using read-only connection and new indexes
+            # Limit to reasonable latency range (0-10s) for better performance
             query = f"""
-                SELECT 
+                SELECT
                     (duration_ms / ?) * ? as bucket_start,
                     COUNT(*) as count
                 FROM events
@@ -286,16 +289,18 @@ def blocking_get_latency_histogram(
                   AND timestamp >= ?
                   AND duration_ms IS NOT NULL
                   AND duration_ms > 0
+                  AND duration_ms < 10000
                   AND status = 'success'
                 GROUP BY bucket_start
                 ORDER BY bucket_start
+                LIMIT 100
             """
             
             cursor = conn.execute(query, (bucket_size_ms, bucket_size_ms, *node_names, cutoff_iso))
             
             histogram = []
             for row in cursor:
-                bucket_start = row[0]
+                bucket_start = int(row[0])
                 count = row[1]
                 histogram.append({
                     'bucket_start_ms': bucket_start,
