@@ -294,6 +294,14 @@ class FinancialTracker:
                     f"${total_net:.2f} net, ${held_amount:.2f} held"
                 )
                 
+                # Delete any old per-satellite entries for current month to avoid double-counting
+                await loop.run_in_executor(
+                    executor,
+                    self._blocking_delete_current_month_estimates,
+                    db_path,
+                    period
+                )
+                
                 # Create a single aggregate estimate (API doesn't break down by satellite for current month)
                 estimates = [{
                     'timestamp': datetime.datetime.now(datetime.timezone.utc),
