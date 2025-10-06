@@ -679,14 +679,20 @@ export function updateEarningsHistoryChart(historyData) {
     let aggregated = Object.keys(byPeriod).map(period => {
         const data = byPeriod[period];
         
-        // For current month with forecast data: use forecast value instead of accumulated
-        if (period === currentPeriod && data.has_forecast && dayOfMonth < 25) {
-            console.log(`Using forecast for ${period}: $${data.forecast_month_end.toFixed(2)} instead of accumulated $${data.total_earnings_net.toFixed(2)}`);
+        // For current month: extrapolate to get forecast (accumulated * days_in_month / days_elapsed)
+        if (period === currentPeriod && dayOfMonth < 25 && data.total_earnings_net > 0) {
+            const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+            const extrapolationFactor = daysInMonth / dayOfMonth;
+            const forecastNet = data.total_earnings_net * extrapolationFactor;
+            const forecastHeld = data.held_amount * extrapolationFactor;
+            
+            console.log(`Extrapolating ${period}: $${data.total_earnings_net.toFixed(2)} × ${extrapolationFactor.toFixed(2)} = $${forecastNet.toFixed(2)} (day ${dayOfMonth}/${daysInMonth})`);
+            
             return {
                 period: period,
-                total_earnings_net: data.forecast_month_end,
-                total_earnings_gross: data.forecast_month_end + data.held_amount,
-                held_amount: data.held_amount,
+                total_earnings_net: forecastNet,
+                total_earnings_gross: forecastNet + forecastHeld,
+                held_amount: forecastHeld,
                 is_forecast: true
             };
         }

@@ -268,13 +268,60 @@ class FinancialTracker:
         if loop is None:
             loop = asyncio.get_running_loop()
         
-        # Try to get from API first
-        api_data = await self.get_api_earnings()
-        
         # Determine node age for held amount calculation
         node_age_months = await self.determine_node_age(db_path, executor)
         held_percentage = self.calculate_held_percentage(node_age_months)
         
+        # For current month: use API data directly if available (more accurate than our calculations)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        current_period = now.strftime('%Y-%m')
+        
+        if period == current_period:
+            api_data = await self.get_api_earnings()
+            if api_data and 'currentMonth' in api_data:
+                # Use API's accurate current month data
+                cm = api_data['currentMonth']
+                payout_cents = cm.get('payout', 0)
+                held_cents = cm.get('held', 0)
+                
+                # Convert from cents to dollars
+                total_net = payout_cents / 100.0
+                held_amount = held_cents / 100.0
+                total_gross = total_net + held_amount
+                
+                log.info(
+                    f"[{self.node_name}] Using API data for {period}: "
+                    f"${total_net:.2f} net, ${held_amount:.2f} held"
+                )
+                
+                # Create a single aggregate estimate (API doesn't break down by satellite for current month)
+                estimates = [{
+                    'timestamp': datetime.datetime.now(datetime.timezone.utc),
+                    'node_name': self.node_name,
+                    'satellite': 'aggregate',  # API gives totals, not per-satellite
+                    'period': period,
+                    'egress_bytes': 0,
+                    'egress_earnings_gross': 0,
+                    'egress_earnings_net': 0,
+                    'storage_bytes_hour': 0,
+                    'storage_earnings_gross': 0,
+                    'storage_earnings_net': 0,
+                    'repair_bytes': 0,
+                    'repair_earnings_gross': 0,
+                    'repair_earnings_net': 0,
+                    'audit_bytes': 0,
+                    'audit_earnings_gross': 0,
+                    'audit_earnings_net': 0,
+                    'total_earnings_gross': total_gross,
+                    'total_earnings_net': total_net,
+                    'held_amount': held_amount,
+                    'node_age_months': node_age_months,
+                    'held_percentage': held_percentage
+                }]
+                
+                return estimates
+        
+        # For past months or if API unavailable: calculate from database
         estimates = []
         
         # Get satellites from database first (most reliable)
@@ -529,12 +576,16 @@ class FinancialTracker:
                     avg_bytes = (snapshots[i]['used_bytes'] + snapshots[i + 1]['used_bytes']) / 2
                     total_byte_hours += avg_bytes * hours_diff
                 
+                # Project from last snapshot to NOW (not to end of period)
+                # This gives us current accumulated earnings, not month-end projection
                 if snapshots:
                     last_snapshot = snapshots[-1]
                     last_time = datetime.datetime.fromisoformat(last_snapshot['timestamp'])
-                    if last_time < period_end:
-                        hours_remaining = (period_end - last_time).total_seconds() / 3600
-                        total_byte_hours += last_snapshot['used_bytes'] * hours_remaining
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    # Only project to now if we're still in the current period
+                    if last_time < now and now <= period_end:
+                        hours_since_last = (now - last_time).total_seconds() / 3600
+                        total_byte_hours += last_snapshot['used_bytes'] * hours_since_last
                 
                 # Calculate total storage earnings
                 gb_hours = total_byte_hours / (1024 ** 3)

@@ -75,14 +75,17 @@ DB_INSIGHTS_RETENTION_DAYS = 90  # How many days of insights to keep
 DB_ANALYTICS_RETENTION_DAYS = 180  # How many days of analytics baselines to keep
 # --- Financial Tracking Configuration (Phase 5) ---
 ENABLE_FINANCIAL_TRACKING = True  # Enable financial tracking and earnings calculations
-PRICING_EGRESS_PER_TB = 7.00  # USD per TB egress
-PRICING_STORAGE_PER_TB_MONTH = 1.50  # USD per TB-month storage
-PRICING_REPAIR_PER_TB = 10.00  # USD per TB repair traffic
-PRICING_AUDIT_PER_TB = 10.00  # USD per TB audit traffic
-OPERATOR_SHARE_EGRESS = 0.45  # 45% operator share for egress
-OPERATOR_SHARE_STORAGE = 0.50  # 50% operator share for storage
-OPERATOR_SHARE_REPAIR = 0.45  # 45% operator share for repair
-OPERATOR_SHARE_AUDIT = 0.45  # 45% operator share for audit
+# NOTE: These prices are what the NODE OPERATOR receives (net), not gross amounts
+# Storj pricing as of Dec 1st, 2023: Storage $1.50/TB-month, Egress/Repair/Audit $2.00/TB
+PRICING_EGRESS_PER_TB = 2.00  # USD per TB egress (operator's share)
+PRICING_STORAGE_PER_TB_MONTH = 1.50  # USD per TB-month storage (operator's share)
+PRICING_REPAIR_PER_TB = 2.00  # USD per TB repair traffic (operator's share)
+PRICING_AUDIT_PER_TB = 2.00  # USD per TB audit traffic (operator's share)
+# These "operator share" values should be 1.0 because the prices above are already net to operator
+OPERATOR_SHARE_EGRESS = 1.0  # 100% - price above is already operator's share
+OPERATOR_SHARE_STORAGE = 1.0  # 100% - price above is already operator's share
+OPERATOR_SHARE_REPAIR = 1.0  # 100% - price above is already operator's share
+OPERATOR_SHARE_AUDIT = 1.0  # 100% - price above is already operator's share
 HELD_AMOUNT_MONTHS_1_TO_3 = 0.75  # 75% held for months 1-3
 HELD_AMOUNT_MONTHS_4_TO_6 = 0.50  # 50% held for months 4-6
 HELD_AMOUNT_MONTHS_7_TO_9 = 0.25  # 25% held for months 7-9
