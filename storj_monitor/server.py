@@ -392,11 +392,15 @@ async def websocket_handler(request):
                             period = now.strftime('%Y-%m')
                         
                         # Create cache key including period
-                        view_tuple = tuple(nodes_to_query) + (period,)
+                        # Normalize cache key: use 'Aggregate' for aggregate views
+                        if view == ['Aggregate']:
+                            cache_key = ('Aggregate', period)
+                        else:
+                            cache_key = tuple(nodes_to_query) + (period,)
 
                         # Try to serve from cache first
-                        if view_tuple in app_state.get('earnings_cache', {}):
-                            await ws.send_json(app_state['earnings_cache'][view_tuple])
+                        if cache_key in app_state.get('earnings_cache', {}):
+                            await ws.send_json(app_state['earnings_cache'][cache_key])
                             continue
                         
                         earnings_data = await loop.run_in_executor(
@@ -453,7 +457,7 @@ async def websocket_handler(request):
                         # Store in cache with period included in key
                         if 'earnings_cache' not in app_state:
                             app_state['earnings_cache'] = {}
-                        app_state['earnings_cache'][view_tuple] = payload
+                        app_state['earnings_cache'][cache_key] = payload
                         
                         await ws.send_json(payload)
                     

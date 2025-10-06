@@ -629,16 +629,53 @@ export function createEarningsHistoryChart() {
     });
 }
 
+// Store history data from multiple nodes for aggregation
+let earningsHistoryByNode = {};
+
+export function clearEarningsHistoryCache() {
+    earningsHistoryByNode = {};
+}
+
 export function updateEarningsHistoryChart(historyData) {
     if (!earningsHistoryChartInstance) createEarningsHistoryChart();
     
     console.log('updateEarningsHistoryChart received:', historyData?.length, 'records');
-    if (historyData && historyData.length > 0) {
-        console.log('Sample record:', historyData[0]);
-    }
     
     if (!historyData || historyData.length === 0) {
-        console.log('No earnings history data, clearing chart');
+        console.log('No earnings history data received');
+        return;
+    }
+    
+    // Store this node's history
+    if (historyData.length > 0) {
+        const nodeName = historyData[0].node_name;
+        earningsHistoryByNode[nodeName] = historyData;
+        console.log(`Stored ${historyData.length} records for node: ${nodeName}`);
+    }
+    
+    // Determine which nodes to display based on current view
+    let nodesToDisplay = [];
+    if (window.currentView && window.currentView.length === 1 && window.currentView[0] !== 'Aggregate') {
+        // Single node view
+        nodesToDisplay = [window.currentView[0]];
+    } else {
+        // Aggregate or multi-node view - show all stored histories
+        nodesToDisplay = Object.keys(earningsHistoryByNode);
+    }
+    
+    // Aggregate all nodes' history data
+    const allHistoryData = [];
+    nodesToDisplay.forEach(nodeName => {
+        const nodeHistory = earningsHistoryByNode[nodeName];
+        if (nodeHistory) {
+            allHistoryData.push(...nodeHistory);
+        }
+    });
+    
+    console.log(`Aggregating ${allHistoryData.length} records from ${nodesToDisplay.length} node(s)`);
+    
+    if (allHistoryData.length === 0) {
+        console.log('No earnings history data to display, clearing chart');
         earningsHistoryChartInstance.data.datasets[0].data = [];
         earningsHistoryChartInstance.data.datasets[1].data = [];
         earningsHistoryChartInstance.data.datasets[2].data = [];
@@ -651,9 +688,9 @@ export function updateEarningsHistoryChart(historyData) {
     const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const dayOfMonth = now.getDate();
     
-    // Group by period and aggregate across satellites
+    // Group by period and aggregate across satellites AND nodes
     const byPeriod = {};
-    historyData.forEach(item => {
+    allHistoryData.forEach(item => {
         const period = item.period;
         if (!byPeriod[period]) {
             byPeriod[period] = {

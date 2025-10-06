@@ -636,21 +636,40 @@ function updateSatelliteEarnings(satelliteEarnings) {
         return;
     }
     
-    let html = '';
+    // Aggregate earnings by satellite (across multiple nodes)
+    const bySatellite = {};
     satelliteEarnings.forEach(sat => {
         const satName = sat.satellite || 'Unknown';
-        const netEarnings = sat.total_net || 0;
-        const heldAmount = sat.held_amount || 0;
-        const grossEarnings = sat.total_gross || (netEarnings + heldAmount);
-        const nodeName = sat.node_name || '';
+        if (!bySatellite[satName]) {
+            bySatellite[satName] = {
+                total_net: 0,
+                total_gross: 0,
+                held_amount: 0,
+                nodes: []
+            };
+        }
+        bySatellite[satName].total_net += sat.total_net || 0;
+        bySatellite[satName].total_gross += sat.total_gross || 0;
+        bySatellite[satName].held_amount += sat.held_amount || 0;
+        if (sat.node_name && !bySatellite[satName].nodes.includes(sat.node_name)) {
+            bySatellite[satName].nodes.push(sat.node_name);
+        }
+    });
+    
+    // Sort by total earnings (descending)
+    const sortedSatellites = Object.entries(bySatellite).sort((a, b) => b[1].total_net - a[1].total_net);
+    
+    let html = '';
+    sortedSatellites.forEach(([satName, data]) => {
+        const nodeInfo = data.nodes.length > 0 ? ` | ${data.nodes.length} node${data.nodes.length > 1 ? 's' : ''}` : '';
         
         html += `<div class="satellite-earnings-item">
             <div class="satellite-earnings-header">
                 <strong>${satName}</strong>
-                <span class="satellite-earnings-total">$${netEarnings.toFixed(2)}</span>
+                <span class="satellite-earnings-total">$${data.total_net.toFixed(2)}</span>
             </div>
             <div class="satellite-earnings-details">
-                <small>Gross: $${grossEarnings.toFixed(2)} | Held: $${heldAmount.toFixed(2)}${nodeName ? ` | ${nodeName}` : ''}</small>
+                <small>Gross: $${data.total_gross.toFixed(2)} | Held: $${data.held_amount.toFixed(2)}${nodeInfo}</small>
             </div>
         </div>`;
     });
@@ -963,9 +982,14 @@ function setupEventListeners() {
         renderNodeSelector();
         heatmap.clearData();
         
-        // Clear storage history cache when switching views to force fresh data
-        if (typeof charts !== 'undefined' && charts.clearStorageHistoryCache) {
-            charts.clearStorageHistoryCache();
+        // Clear storage and earnings history caches when switching views to force fresh data
+        if (typeof charts !== 'undefined') {
+            if (charts.clearStorageHistoryCache) {
+                charts.clearStorageHistoryCache();
+            }
+            if (charts.clearEarningsHistoryCache) {
+                charts.clearEarningsHistoryCache();
+            }
         }
         
         if (ws && ws.readyState === WebSocket.OPEN) {
