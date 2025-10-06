@@ -126,22 +126,29 @@ async def websocket_handler(request):
 
     log.info(f"WebSocket client connected. Total clients: {len(app_state['websockets'])}")
 
-    node_names = list(app['nodes'].keys())
-    await ws.send_json({"type": "init", "nodes": node_names})
-    await send_initial_stats(app, ws, ["Aggregate"])
-    await ws.send_json(get_active_compactions_payload())
-    
-    # Send initial earnings data from cache if available
-    import datetime
-    now = datetime.datetime.now(datetime.timezone.utc)
-    period = now.strftime('%Y-%m')
-    cache_key = ('Aggregate', period)
-    
-    if cache_key in app_state.get('earnings_cache', {}):
-        log.info(f"Sending cached earnings data for Aggregate view on connect")
-        await ws.send_json(app_state['earnings_cache'][cache_key])
-    else:
-        log.info(f"No cached earnings data available on connect, client will receive broadcast when ready")
+    try:
+        node_names = list(app['nodes'].keys())
+        await ws.send_json({"type": "init", "nodes": node_names})
+        await send_initial_stats(app, ws, ["Aggregate"])
+        await ws.send_json(get_active_compactions_payload())
+        
+        # Send initial earnings data from cache if available
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        period = now.strftime('%Y-%m')
+        cache_key = ('Aggregate', period)
+        
+        if cache_key in app_state.get('earnings_cache', {}):
+            log.info(f"Sending cached earnings data for Aggregate view on connect")
+            await ws.send_json(app_state['earnings_cache'][cache_key])
+        else:
+            log.info(f"No cached earnings data available on connect, client will receive broadcast when ready")
+    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
+        # Client disconnected during initial setup
+        log.debug("Client disconnected during initial setup")
+        if ws in app_state['websockets']:
+            del app_state['websockets'][ws]
+        return ws
 
     try:
         async for msg in ws:
