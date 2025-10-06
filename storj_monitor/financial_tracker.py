@@ -1296,20 +1296,20 @@ async def broadcast_earnings_update(app: Dict[str, Any], loop=None):
             'data': formatted_data
         }
         
-        # Store in cache before broadcasting
+        # Store in cache before broadcasting (include period in cache key)
         if 'earnings_cache' not in app_state:
             app_state['earnings_cache'] = {}
         
-        # Cache per-node and aggregate views
+        # Cache per-node and aggregate views with period
         nodes_in_payload = {item['node_name'] for item in formatted_data}
         for node_name in nodes_in_payload:
             node_payload = {
                 'type': 'earnings_data',
                 'data': [item for item in formatted_data if item['node_name'] == node_name]
             }
-            app_state['earnings_cache'][(node_name,)] = node_payload
+            app_state['earnings_cache'][(node_name, period)] = node_payload
             
-        app_state['earnings_cache'][('Aggregate',)] = payload
+        app_state['earnings_cache'][('Aggregate', period)] = payload
 
         await robust_broadcast(app_state['websockets'], payload)
         log.debug(f"Broadcast earnings update with {len(formatted_data)} estimates")

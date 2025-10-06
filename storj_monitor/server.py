@@ -362,25 +362,42 @@ async def websocket_handler(request):
                             await ws.send_json({"type": "alert_summary", "data": {"critical": 0, "warning": 0, "info": 0, "total": 0}})
                     
                     elif msg_type == 'get_earnings_data':
-                        # Phase 5.3: Get current earnings data
+                        # Phase 5.3: Get earnings data for specified period
                         view = data.get('view', ['Aggregate'])
+                        period_param = data.get('period', 'current')
                         nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
-                        view_tuple = tuple(nodes_to_query)
-
-                        # Try to serve from cache first
-                        if view_tuple in app_state.get('earnings_cache', {}):
-                            await ws.send_json(app_state['earnings_cache'][view_tuple])
-                            continue
-
+                        
                         loop = asyncio.get_running_loop()
                         from .config import DATABASE_FILE
                         from .financial_tracker import SATELLITE_NAMES
                         from .database import blocking_get_latest_earnings
                         
-                        # Get current period
+                        # Calculate period based on parameter
                         import datetime
                         now = datetime.datetime.now(datetime.timezone.utc)
-                        period = now.strftime('%Y-%m')
+                        
+                        if period_param == 'previous':
+                            # Previous month
+                            if now.month == 1:
+                                period = f"{now.year - 1}-12"
+                            else:
+                                period = f"{now.year}-{str(now.month - 1).zfill(2)}"
+                        elif period_param == '12months':
+                            # Not implemented yet - would need aggregation across 12 months
+                            # For now, return empty
+                            await ws.send_json({"type": "earnings_data", "data": []})
+                            continue
+                        else:
+                            # 'current' or any other value defaults to current month
+                            period = now.strftime('%Y-%m')
+                        
+                        # Create cache key including period
+                        view_tuple = tuple(nodes_to_query) + (period,)
+
+                        # Try to serve from cache first
+                        if view_tuple in app_state.get('earnings_cache', {}):
+                            await ws.send_json(app_state['earnings_cache'][view_tuple])
+                            continue
                         
                         earnings_data = await loop.run_in_executor(
                             app['db_executor'],
@@ -423,20 +440,17 @@ async def websocket_handler(request):
                         payload = {"type": "earnings_data", "data": formatted_data}
                         
                         # Debug log to show what breakdown values are being sent
+                        log.info(f"Sending earnings for period {period} with {len(formatted_data)} satellites")
                         for item in formatted_data:
                             breakdown = item.get('breakdown', {})
                             total_breakdown = sum(breakdown.values())
-                            log.info(
-                                f"[{item['node_name']}] Sending earnings: "
+                            log.debug(
+                                f"[{item['node_name']}] {item['satellite']}: "
                                 f"total_net=${item['total_net']:.2f}, "
-                                f"breakdown sum=${total_breakdown:.2f} "
-                                f"(egress=${breakdown.get('egress', 0):.2f}, "
-                                f"storage=${breakdown.get('storage', 0):.2f}, "
-                                f"repair=${breakdown.get('repair', 0):.2f}, "
-                                f"audit=${breakdown.get('audit', 0):.2f})"
+                                f"breakdown sum=${total_breakdown:.2f}"
                             )
                         
-                        # Store in cache
+                        # Store in cache with period included in key
                         if 'earnings_cache' not in app_state:
                             app_state['earnings_cache'] = {}
                         app_state['earnings_cache'][view_tuple] = payload
