@@ -307,70 +307,83 @@ export function updateStorageHistoryChart(historyData) {
     }
     
     // Aggregate data across selected nodes by timestamp
-    // Round timestamps to nearest 5 minutes to group data from different nodes
-    const aggregatedData = {};
+    // FIXED: Carry forward last known values for each node to prevent rollercoaster effect
     const BUCKET_SIZE_MS = 5 * 60 * 1000; // 5 minutes
     
+    // Step 1: Collect all raw data points per node
+    const nodeDataPoints = {};
     nodesToDisplay.forEach(nodeName => {
         const nodeHistory = storageHistoryByNode[nodeName];
         if (!nodeHistory) return;
         
-        nodeHistory.forEach(item => {
-            const rawTimestamp = new Date(item.timestamp).getTime();
-            // Round to nearest bucket (5-minute intervals)
-            const bucketedTimestamp = Math.round(rawTimestamp / BUCKET_SIZE_MS) * BUCKET_SIZE_MS;
-            
-            if (!aggregatedData[bucketedTimestamp]) {
-                aggregatedData[bucketedTimestamp] = {
-                    used_bytes: 0,
-                    trash_bytes: 0,
-                    available_bytes: 0,
-                    hasUsedData: false,
-                    hasAvailableData: false,
-                    nodeData: {}  // Track latest value per node to avoid double-counting
-                };
+        nodeDataPoints[nodeName] = nodeHistory.map(item => ({
+            timestamp: new Date(item.timestamp).getTime(),
+            used_bytes: item.used_bytes,
+            trash_bytes: item.trash_bytes,
+            available_bytes: item.available_bytes
+        })).sort((a, b) => a.timestamp - b.timestamp);
+    });
+    
+    // Step 2: Determine time range and create all buckets
+    const allTimestamps = [];
+    Object.values(nodeDataPoints).forEach(points => {
+        points.forEach(p => allTimestamps.push(p.timestamp));
+    });
+    
+    if (allTimestamps.length === 0) return;
+    
+    const minTimestamp = Math.min(...allTimestamps);
+    const maxTimestamp = Math.max(...allTimestamps);
+    const minBucket = Math.floor(minTimestamp / BUCKET_SIZE_MS) * BUCKET_SIZE_MS;
+    const maxBucket = Math.floor(maxTimestamp / BUCKET_SIZE_MS) * BUCKET_SIZE_MS;
+    
+    // Step 3: For each node, carry forward last known values across all buckets
+    const aggregatedData = {};
+    
+    for (let bucketTime = minBucket; bucketTime <= maxBucket; bucketTime += BUCKET_SIZE_MS) {
+        aggregatedData[bucketTime] = {
+            used_bytes: 0,
+            trash_bytes: 0,
+            available_bytes: 0,
+            hasUsedData: false,
+            hasAvailableData: false,
+            nodeCount: 0
+        };
+    }
+    
+    // Step 4: For each node, fill in values with carry-forward
+    nodesToDisplay.forEach(nodeName => {
+        const points = nodeDataPoints[nodeName];
+        if (!points || points.length === 0) return;
+        
+        let lastKnownValues = null;
+        let pointIndex = 0;
+        
+        for (let bucketTime = minBucket; bucketTime <= maxBucket; bucketTime += BUCKET_SIZE_MS) {
+            // Update lastKnownValues if we have a point in or before this bucket
+            while (pointIndex < points.length && points[pointIndex].timestamp <= bucketTime + BUCKET_SIZE_MS) {
+                lastKnownValues = points[pointIndex];
+                pointIndex++;
             }
             
-            const bucket = aggregatedData[bucketedTimestamp];
-            
-            // For each node, only keep the LATEST snapshot in this bucket
-            if (!bucket.nodeData[nodeName] || rawTimestamp > bucket.nodeData[nodeName].timestamp) {
-                // If we already had data for this node in this bucket, subtract it first
-                if (bucket.nodeData[nodeName]) {
-                    const oldData = bucket.nodeData[nodeName];
-                    if (oldData.used_bytes != null) {
-                        bucket.used_bytes -= oldData.used_bytes;
-                    }
-                    if (oldData.trash_bytes != null) {
-                        bucket.trash_bytes -= oldData.trash_bytes;
-                    }
-                    if (oldData.available_bytes != null) {
-                        bucket.available_bytes -= oldData.available_bytes;
-                    }
-                }
+            // If we have data for this node (either in this bucket or carried forward), add it
+            if (lastKnownValues && lastKnownValues.timestamp <= bucketTime + BUCKET_SIZE_MS) {
+                const bucket = aggregatedData[bucketTime];
                 
-                // Store this snapshot for this node
-                bucket.nodeData[nodeName] = {
-                    timestamp: rawTimestamp,
-                    used_bytes: item.used_bytes,
-                    trash_bytes: item.trash_bytes,
-                    available_bytes: item.available_bytes
-                };
-                
-                // Add new data
-                if (item.used_bytes != null) {
-                    bucket.used_bytes += item.used_bytes;
+                if (lastKnownValues.used_bytes != null) {
+                    bucket.used_bytes += lastKnownValues.used_bytes;
                     bucket.hasUsedData = true;
                 }
-                if (item.trash_bytes != null) {
-                    bucket.trash_bytes += item.trash_bytes;
+                if (lastKnownValues.trash_bytes != null) {
+                    bucket.trash_bytes += lastKnownValues.trash_bytes;
                 }
-                if (item.available_bytes != null) {
-                    bucket.available_bytes += item.available_bytes;
+                if (lastKnownValues.available_bytes != null) {
+                    bucket.available_bytes += lastKnownValues.available_bytes;
                     bucket.hasAvailableData = true;
                 }
+                bucket.nodeCount++;
             }
-        });
+        }
     });
     
     // Convert aggregated data to chart format
@@ -383,15 +396,19 @@ export function updateStorageHistoryChart(historyData) {
     let hasAvailableData = false;
     
     sortedTimestamps.forEach(timestamp => {
-        const data = aggregatedData[timestamp];
-        if (data.hasUsedData) {
-            usedData.push({ x: new Date(timestamp), y: data.used_bytes });
-            trashData.push({ x: new Date(timestamp), y: data.trash_bytes });
-            hasUsedData = true;
-        }
-        if (data.hasAvailableData) {
-            availableData.push({ x: new Date(timestamp), y: data.available_bytes });
-            hasAvailableData = true;
+        const bucket = aggregatedData[timestamp];
+        
+        // Only include buckets where we have data from at least one node
+        if (bucket.nodeCount > 0) {
+            if (bucket.hasUsedData) {
+                usedData.push({ x: new Date(timestamp), y: bucket.used_bytes });
+                trashData.push({ x: new Date(timestamp), y: bucket.trash_bytes });
+                hasUsedData = true;
+            }
+            if (bucket.hasAvailableData) {
+                availableData.push({ x: new Date(timestamp), y: bucket.available_bytes });
+                hasAvailableData = true;
+            }
         }
     });
     
