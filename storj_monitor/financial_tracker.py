@@ -680,6 +680,20 @@ class FinancialTracker:
         except Exception as e:
             log.error(f"[{self.node_name}] Failed to calculate storage earnings: {e}")
             return (0, 0.0, 0.0)
+
+    def _blocking_delete_current_month_estimates(self, db_path: str, period: str):
+        """Deletes all earnings estimates for the current month to prevent duplicates."""
+        import sqlite3
+        try:
+            with sqlite3.connect(db_path, timeout=10) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM earnings_estimates WHERE node_name = ? AND period = ?",
+                    (self.node_name, period)
+                )
+                log.info(f"[{self.node_name}] Deleted old estimates for {period} to replace with API data")
+        except Exception as e:
+            log.error(f"[{self.node_name}] Failed to delete current month estimates: {e}")
     
     async def forecast_payout(
         self,
@@ -973,11 +987,10 @@ async def financial_polling_task(app: Dict[str, Any]):
             )
         except Exception as e:
             log.debug(f"[{node_name}] Historical import skipped: {e}")
-    
+
     # Initial poll
-    await asyncio.sleep(10)  # Wait for other systems to initialize
-    
     loop = asyncio.get_running_loop()
+    await broadcast_earnings_update(app, loop)
     last_historical_import_day = datetime.datetime.now(datetime.timezone.utc).day
     
     while True:
@@ -1100,6 +1113,21 @@ async def broadcast_earnings_update(app: Dict[str, Any], loop=None):
             'data': formatted_data
         }
         
+        # Store in cache before broadcasting
+        if 'earnings_cache' not in app_state:
+            app_state['earnings_cache'] = {}
+        
+        # Cache per-node and aggregate views
+        nodes_in_payload = {item['node_name'] for item in formatted_data}
+        for node_name in nodes_in_payload:
+            node_payload = {
+                'type': 'earnings_data',
+                'data': [item for item in formatted_data if item['node_name'] == node_name]
+            }
+            app_state['earnings_cache'][(node_name,)] = node_payload
+            
+        app_state['earnings_cache'][('Aggregate',)] = payload
+
         await robust_broadcast(app_state['websockets'], payload)
         log.debug(f"Broadcast earnings update with {len(formatted_data)} estimates")
         

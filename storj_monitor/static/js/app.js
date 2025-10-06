@@ -583,8 +583,18 @@ function aggregateEarnings(earningsArray) {
     });
 }
 
-function updateEarningsBreakdown(breakdown) {
+function updateEarningsBreakdown(breakdown, totalEarnings) {
     const total = breakdown.egress + breakdown.storage + breakdown.repair + breakdown.audit;
+
+    if (total === 0 && totalEarnings > 0) {
+        // API data provides a total but no breakdown, show a message
+        document.querySelectorAll('.earnings-breakdown-item').forEach(item => {
+            item.querySelector('.breakdown-fill').style.width = '0%';
+            item.querySelector('.breakdown-amount').textContent = 'Pending';
+            item.querySelector('.breakdown-percent').textContent = '';
+        });
+        return;
+    }
     
     if (total === 0) {
         document.querySelectorAll('.earnings-breakdown-item').forEach(item => {
@@ -702,7 +712,7 @@ function updateEarningsCard(data) {
         storage: aggregated.storage,
         repair: aggregated.repair,
         audit: aggregated.audit
-    });
+    }, aggregated.total_earnings);
     
     // Update per-satellite earnings
     updateSatelliteEarnings(earningsArray);

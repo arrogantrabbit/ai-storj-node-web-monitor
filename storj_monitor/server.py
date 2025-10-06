@@ -365,7 +365,13 @@ async def websocket_handler(request):
                         # Phase 5.3: Get current earnings data
                         view = data.get('view', ['Aggregate'])
                         nodes_to_query = view if view != ['Aggregate'] else list(app['nodes'].keys())
-                        
+                        view_tuple = tuple(nodes_to_query)
+
+                        # Try to serve from cache first
+                        if view_tuple in app_state.get('earnings_cache', {}):
+                            await ws.send_json(app_state['earnings_cache'][view_tuple])
+                            continue
+
                         loop = asyncio.get_running_loop()
                         from .config import DATABASE_FILE
                         from .financial_tracker import SATELLITE_NAMES
@@ -415,6 +421,12 @@ async def websocket_handler(request):
                             })
                         
                         payload = {"type": "earnings_data", "data": formatted_data}
+                        
+                        # Store in cache
+                        if 'earnings_cache' not in app_state:
+                            app_state['earnings_cache'] = {}
+                        app_state['earnings_cache'][view_tuple] = payload
+                        
                         await ws.send_json(payload)
                     
                     elif msg_type == 'get_earnings_history':
