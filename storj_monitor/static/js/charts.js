@@ -77,14 +77,16 @@ export function updatePerformanceChart(performanceState, data, currentNodeView, 
             const historicalData = { rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] };
             data.forEach(point => { const ts = new Date(point.timestamp); historicalData.rate[0].push({x:ts, y:point.ingress_mbps}); historicalData.rate[1].push({x:ts, y:point.egress_mbps}); historicalData.volume[0].push({x:ts, y:point.ingress_bytes / 1e6}); historicalData.volume[1].push({x:ts, y:point.egress_bytes / 1e6}); historicalData.pieces[0].push({x:ts, y:point.ingress_pieces}); historicalData.pieces[1].push({x:ts, y:point.egress_pieces}); historicalData.concurrency[0].push({x:ts, y:point.concurrency}); });
             const dataToShow = historicalData[view];
-            if (view === 'concurrency') { datasetsToShow.push({ label: 'Operations (per sec)', data: dataToShow[0] }); }
-            else { const isAvg = performanceState.agg === 'avg' && currentNodeView.length > 1; const nodeCount = isAvg ? currentNodeView.length : 1; datasetsToShow.push({ label: 'Ingress (Upload)', data: dataToShow[0].map(p => ({ x: p.x, y: p.y / nodeCount })) }); datasetsToShow.push({ label: 'Egress (Download)', data: dataToShow[1].map(p => ({ x: p.x, y: p.y / nodeCount })) }); }
+            const isAvg = performanceState.agg === 'avg' && (currentNodeView.length > 1 || currentNodeView[0] === 'Aggregate');
+            const nodeCount = isAvg ? (currentNodeView[0] === 'Aggregate' ? availableNodes.length : currentNodeView.length) : 1;
+            if (view === 'concurrency') { datasetsToShow.push({ label: 'Operations (per sec)', data: dataToShow[0].map(p => ({ x: p.x, y: p.y / nodeCount })) }); }
+            else { datasetsToShow.push({ label: 'Ingress (Upload)', data: dataToShow[0].map(p => ({ x: p.x, y: p.y / nodeCount })) }); datasetsToShow.push({ label: 'Egress (Download)', data: dataToShow[1].map(p => ({ x: p.x, y: p.y / nodeCount })) }); }
         } else { // Live data from 'livePerformanceBins'
             const binsToRender = data[currentNodeView.join(',')] || {};
             const sortedTimestamps = Object.keys(binsToRender).map(Number).sort((a,b) => a - b);
             const sourceData = sortedTimestamps.map(ts => ({ x: new Date(ts), source: binsToRender[ts] }));
             const interval_sec = 2; // PERFORMANCE_INTERVAL_MS / 1000
-            const isAvg = performanceState.agg === 'avg' && currentNodeView.length > 1;
+            const isAvg = performanceState.agg === 'avg' && (currentNodeView.length > 1 || currentNodeView[0] === 'Aggregate');
             const nodeCount = isAvg ? (currentNodeView[0] === 'Aggregate' ? availableNodes.length : currentNodeView.length) : 1;
 
             if (view === 'concurrency') { const chartData = sourceData.map(p => ({ x: p.x, y: (p.source.total_ops / interval_sec) / nodeCount })); datasetsToShow.push({ label: 'Operations (per sec)', data: chartData }); }
