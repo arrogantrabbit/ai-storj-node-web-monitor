@@ -69,6 +69,11 @@ export function updatePerformanceChart(performanceState, data, currentNodeView, 
         const view = performanceState.view;
         let datasetsToShow = [];
         if (!isLiveView) { // Historical data from 'aggregated_performance_data'
+            // Ensure data is an array before processing
+            if (!Array.isArray(data)) {
+                console.error('updatePerformanceChart: Expected data to be an array, got:', typeof data);
+                return;
+            }
             const historicalData = { rate: [[], []], volume: [[], []], pieces: [[], []], concurrency: [[]] };
             data.forEach(point => { const ts = new Date(point.timestamp); historicalData.rate[0].push({x:ts, y:point.ingress_mbps}); historicalData.rate[1].push({x:ts, y:point.egress_mbps}); historicalData.volume[0].push({x:ts, y:point.ingress_bytes / 1e6}); historicalData.volume[1].push({x:ts, y:point.egress_bytes / 1e6}); historicalData.pieces[0].push({x:ts, y:point.ingress_pieces}); historicalData.pieces[1].push({x:ts, y:point.egress_pieces}); historicalData.concurrency[0].push({x:ts, y:point.concurrency}); });
             const dataToShow = historicalData[view];

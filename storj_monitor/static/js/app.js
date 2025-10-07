@@ -28,7 +28,8 @@ const VISIBILITY_STORAGE_KEY = 'storj-pro-monitor-card-visibility';
 let performanceState = {
     view: 'rate', // rate, volume, pieces, concurrency
     range: '5m', // 5m, 30m, 1h, 6h, 24h
-    agg: 'sum' // sum, avg
+    agg: 'sum', // sum, avg
+    cachedAggregatedData: null // Cache aggregated performance data for view switching
 };
 let latencyState = {
     range: '1h' // 30m, 1h, 6h, 12h, 24h
@@ -932,7 +933,9 @@ function handleWebSocketMessage(data) {
             break;
         }
         case 'aggregated_performance_data':
-            if (isCardVisible('performance-card')) charts.updatePerformanceChart(performanceState, data.performance_data);
+            // Cache the aggregated data for view switching
+            performanceState.cachedAggregatedData = data.performance_data;
+            if (isCardVisible('performance-card')) charts.updatePerformanceChart(performanceState, data.performance_data, currentNodeView, availableNodes);
             break;
         case 'stats_update': updateAllVisuals(data); break;
         case 'hashstore_updated': console.log("[WebSocket] Hashstore data updated. Requesting new data."); requestHashstoreData(); break;
@@ -1000,9 +1003,9 @@ function handleWebSocketMessage(data) {
 function setupEventListeners() {
     document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); charts.toggleSatelliteView(); if(isCardVisible('satellite-card')) charts.updateSatelliteChart(); });
     document.getElementById('size-view-toggles').addEventListener('click', function(e) { e.preventDefault(); const target = e.target; if (target.tagName === 'A' && !target.classList.contains('active')) { charts.setSizeChartViewMode(target.getAttribute('data-view')); document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active')); target.classList.add('active'); if(isCardVisible('size-charts-card')) charts.updateSizeBarChart(); } });
-    document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.view = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } });
-    document.getElementById('time-range-toggles').addEventListener('click', function(e) { e.preventDefault(); const newRange = e.target.getAttribute('data-range'); if (newRange === performanceState.range) return; performanceState.range = newRange; document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.createPerformanceChart(performanceState); if (newRange === '5m') { charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } else { const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange]; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours })); } } });
-    document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.agg = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } });
+    document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.view = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); const isLiveView = performanceState.range === '5m'; const dataToUse = isLiveView ? livePerformanceBins : performanceState.cachedAggregatedData; charts.updatePerformanceChart(performanceState, dataToUse, currentNodeView, availableNodes); } });
+    document.getElementById('time-range-toggles').addEventListener('click', function(e) { e.preventDefault(); const newRange = e.target.getAttribute('data-range'); if (newRange === performanceState.range) return; performanceState.range = newRange; performanceState.cachedAggregatedData = null; document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.createPerformanceChart(performanceState); if (newRange === '5m') { charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } else { const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange]; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours })); } } });
+    document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.agg = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); const isLiveView = performanceState.range === '5m'; const dataToUse = isLiveView ? livePerformanceBins : performanceState.cachedAggregatedData; charts.updatePerformanceChart(performanceState, dataToUse, currentNodeView, availableNodes); } });
     document.getElementById('latency-range-toggles').addEventListener('click', function(e) {
         e.preventDefault();
         const newRange = e.target.getAttribute('data-range');
