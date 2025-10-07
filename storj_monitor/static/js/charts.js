@@ -112,17 +112,17 @@ export function createSatelliteChart() {
         { label: 'Repair Upload', data: [], backgroundColor: '#8b5cf6' },
         { label: 'Download', data: [], backgroundColor: DOWNLOAD_COLOR },
         { label: 'Repair Download', data: [], backgroundColor: '#f59e0b' }
-    ] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true, title: { display: true, text: 'Pieces' } }, y: { stacked: true } }, plugins: { tooltip: { callbacks: { label: function(context) { let label = context.dataset.label || ''; if (label) { label += ': '; } if (context.parsed.x !== null) { if (satelliteViewIsBySize) { label += formatBytes(context.parsed.x); } else { label += new Intl.NumberFormat().format(context.parsed.x); } } return label; }, footer: function(tooltipItems) { const context = tooltipItems[0]; if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return ''; const satData = lastSatelliteData[context.dataIndex]; const lines = []; const totalUl = satData.uploads; if (totalUl > 0) lines.push(`Upload Success: ${(satData.ul_success/totalUl*100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); const totalPutRepair = satData.put_repair || 0; if (totalPutRepair > 0) lines.push(`Repair Upload Success: ${(satData.put_repair_success/totalPutRepair*100).toFixed(2)}% (${satData.put_repair_success}/${totalPutRepair})`); const totalDl = satData.downloads + satData.audits; if (totalDl > 0) lines.push(`Download Success: ${(satData.dl_success/totalDl*100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); const totalGetRepair = satData.get_repair || 0; if (totalGetRepair > 0) lines.push(`Repair Download Success: ${(satData.get_repair_success/totalGetRepair*100).toFixed(2)}% (${satData.get_repair_success}/${totalGetRepair})`); return lines; } } } } } });
+    ] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Satellite' } }, y: { title: { display: true, text: 'Pieces' } } }, plugins: { tooltip: { callbacks: { label: function(context) { let label = context.dataset.label || ''; if (label) { label += ': '; } if (context.parsed.y !== null) { if (satelliteViewIsBySize) { label += formatBytes(context.parsed.y); } else { label += new Intl.NumberFormat().format(context.parsed.y); } } return label; }, footer: function(tooltipItems) { const context = tooltipItems[0]; if (lastSatelliteData.length === 0 || context.dataIndex >= lastSatelliteData.length) return ''; const satData = lastSatelliteData[context.dataIndex]; const lines = []; const totalUl = satData.uploads; if (totalUl > 0) lines.push(`Upload Success: ${(satData.ul_success/totalUl*100).toFixed(2)}% (${satData.ul_success}/${totalUl})`); const totalPutRepair = satData.put_repair || 0; if (totalPutRepair > 0) lines.push(`Repair Upload Success: ${(satData.put_repair_success/totalPutRepair*100).toFixed(2)}% (${satData.put_repair_success}/${totalPutRepair})`); const totalDl = satData.downloads + satData.audits; if (totalDl > 0) lines.push(`Download Success: ${(satData.dl_success/totalDl*100).toFixed(2)}% (${satData.dl_success}/${totalDl})`); const totalGetRepair = satData.get_repair || 0; if (totalGetRepair > 0) lines.push(`Repair Download Success: ${(satData.get_repair_success/totalGetRepair*100).toFixed(2)}% (${satData.get_repair_success}/${totalGetRepair})`); return lines; } } } } } });
 }
 export function updateSatelliteChart(satStats) {
     if (!satelliteChart || !satStats) return;
     lastSatelliteData = satStats;
-    const xscale = satelliteChart.options.scales.x;
+    const yscale = satelliteChart.options.scales.y;
     satelliteChart.data.labels = satStats.map(s => SATELLITE_NAMES[s.satellite_id] || s.satellite_id.substring(0, 12));
     if (satelliteViewIsBySize) {
-        xscale.title.text = 'Data Transferred';
-        if (!xscale.ticks) xscale.ticks = {};
-        xscale.ticks.callback = (value) => formatBytes(value, 1);
+        yscale.title.text = 'Data Transferred';
+        if (!yscale.ticks) yscale.ticks = {};
+        yscale.ticks.callback = (value) => formatBytes(value, 1);
         satelliteChart.data.datasets[0].data = satStats.map(s => s.total_upload_size);
         satelliteChart.data.datasets[1].data = satStats.map(s => s.total_put_repair_size || 0);
         satelliteChart.data.datasets[2].data = satStats.map(s => s.total_download_size);
@@ -132,8 +132,8 @@ export function updateSatelliteChart(satStats) {
         satelliteChart.data.datasets[2].label = 'Download';
         satelliteChart.data.datasets[3].label = 'Repair Download';
     } else {
-        xscale.title.text = 'Pieces';
-        if (xscale.ticks) delete xscale.ticks.callback;
+        yscale.title.text = 'Pieces';
+        if (yscale.ticks) delete yscale.ticks.callback;
         satelliteChart.data.datasets[0].data = satStats.map(s => s.uploads);
         satelliteChart.data.datasets[1].data = satStats.map(s => s.put_repair || 0);
         satelliteChart.data.datasets[2].data = satStats.map(s => s.downloads + s.audits);
