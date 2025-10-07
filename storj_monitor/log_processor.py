@@ -22,21 +22,74 @@ log = logging.getLogger("StorjMonitor.LogProcessor")
 
 # --- New Helper Function for Parsing Size Strings ---
 def parse_size_to_bytes(size_str: str) -> int:
-    if not isinstance(size_str, str): return 0
+    """
+    Parse a size string with either binary (KiB, MiB, GiB, TiB) or decimal (KB, MB, GB, TB) units.
+    
+    Binary units use base 1024 (e.g., 1 KiB = 1024 bytes)
+    Decimal/SI units use base 1000 (e.g., 1 KB = 1000 bytes)
+    
+    Examples:
+        "7.05 GB" -> 7050000000 bytes
+        "7.05 GiB" -> 7568400588 bytes
+        "181.90 GB" -> 181900000000 bytes
+    """
+    if not isinstance(size_str, str):
+        return 0
+    
     size_str = size_str.strip().upper()
-    units = {"B": 1, "KIB": 1024, "MIB": 1024 ** 2, "GIB": 1024 ** 3, "TIB": 1024 ** 4}
+    
+    # Define both binary (1024-based) and decimal (1000-based) units
+    binary_units = {
+        "B": 1,
+        "KIB": 1024,
+        "MIB": 1024 ** 2,
+        "GIB": 1024 ** 3,
+        "TIB": 1024 ** 4,
+        "PIB": 1024 ** 5
+    }
+    
+    decimal_units = {
+        "B": 1,
+        "KB": 1000,
+        "MB": 1000 ** 2,
+        "GB": 1000 ** 3,
+        "TB": 1000 ** 4,
+        "PB": 1000 ** 5
+    }
+    
     try:
         # Split number from unit
         value_str = "".join(re.findall(r'[\d\.]', size_str))
         unit_str = "".join(re.findall(r'[A-Z]', size_str))
-        if not unit_str.endswith("B"): unit_str += "B"
-        if unit_str == "KB": unit_str = "KIB"  # Handle common case
-
+        
+        if not unit_str:
+            # No unit found, assume bytes
+            return int(float(value_str))
+        
+        # Ensure unit ends with 'B'
+        if not unit_str.endswith("B"):
+            unit_str += "B"
+        
         value = float(value_str)
-        unit_multiplier = next((v for k, v in units.items() if k.startswith(unit_str)), 1)
-        return int(value * unit_multiplier)
-
-    except (ValueError, IndexError, StopIteration):
+        
+        # Check binary units first (more specific: KIB, MIB, GIB, TIB)
+        if unit_str in binary_units:
+            return int(value * binary_units[unit_str])
+        
+        # Check decimal units (KB, MB, GB, TB)
+        if unit_str in decimal_units:
+            return int(value * decimal_units[unit_str])
+        
+        # Fallback: try to guess based on pattern
+        # If it looks like a binary unit variant, use binary
+        for bin_unit in binary_units:
+            if unit_str.startswith(bin_unit[:2]):  # e.g., "GI" from "GIB"
+                return int(value * binary_units[bin_unit])
+        
+        # Otherwise default to bytes
+        return int(value)
+        
+    except (ValueError, IndexError):
         return 0
 
 
