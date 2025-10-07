@@ -158,19 +158,143 @@ export function updateSizeBarChart(transferSizes) {
     lastTransferSizes = transferSizes;
     const allBuckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"];
     sizeBarChart.data.labels = allBuckets;
-    const processedData = allBuckets.map(bucketName => { const bucket = transferSizes.find(b => b.bucket === bucketName) || {}; return { dl_s: bucket.downloads_success || 0, dl_f: bucket.downloads_failed || 0, ul_s: bucket.uploads_success || 0, ul_f: bucket.uploads_failed || 0, }; });
+    const processedData = allBuckets.map(bucketName => {
+        const bucket = transferSizes.find(b => b.bucket === bucketName) || {};
+        return {
+            dl_s: bucket.downloads_success || 0,
+            dl_f: bucket.downloads_failed || 0,
+            ul_s: bucket.uploads_success || 0,
+            ul_f: bucket.uploads_failed || 0,
+            dl_s_size: bucket.downloads_success_size || 0,
+            dl_f_size: bucket.downloads_failed_size || 0,
+            ul_s_size: bucket.uploads_success_size || 0,
+            ul_f_size: bucket.uploads_failed_size || 0
+        };
+    });
     if (sizeChartViewMode !== sizeBarChart.currentViewMode) {
         switch (sizeChartViewMode) {
-            case 'counts': Object.assign(sizeBarChart.options.scales.x, { stacked: true }); Object.assign(sizeBarChart.options.scales.y, { stacked: true, title: { text: 'Count' }, min: undefined, max: undefined }); sizeBarChart.data.datasets = [{ label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' }, { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }]; sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => `${items[0].parsed.y} transfers`; break;
-            case 'percentages': Object.assign(sizeBarChart.options.scales.x, { stacked: true }); Object.assign(sizeBarChart.options.scales.y, { stacked: true, title: { text: 'Percentage (%)' }, min: 0, max: 100 }); sizeBarChart.data.datasets = [{ label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR }, { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' }, { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }]; sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => { const item = items[0]; const total = processedData.reduce((sum, d) => sum + d.dl_s + d.dl_f + d.ul_s + d.ul_f, 0); const bucketData = processedData[item.dataIndex]; const counts = [bucketData.dl_s, bucketData.ul_s, bucketData.dl_f, bucketData.ul_f]; return `${item.parsed.y.toFixed(2)}% (${counts[item.datasetIndex]} transfers)`; }; break;
-            case 'rates': Object.assign(sizeBarChart.options.scales.x, { stacked: false }); Object.assign(sizeBarChart.options.scales.y, { stacked: false, title: { text: 'Success Rate (%)' }, max: 100 }); sizeBarChart.data.datasets = [{ label: 'Download Success Rate', data: [], backgroundColor: DOWNLOAD_COLOR }, { label: 'Upload Success Rate', data: [], backgroundColor: UPLOAD_COLOR }]; sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => { const item = items[0]; const data = processedData[item.dataIndex]; return item.datasetIndex === 0 ? `Raw: ${data.dl_s}/${data.dl_s + data.dl_f}` : `Raw: ${data.ul_s}/${data.ul_s + data.ul_f}`; }; break;
+            case 'counts':
+                Object.assign(sizeBarChart.options.scales.x, { stacked: true });
+                Object.assign(sizeBarChart.options.scales.y, { stacked: true, title: { text: 'Count' }, min: undefined, max: undefined, ticks: {} });
+                delete sizeBarChart.options.scales.y.ticks.callback;
+                sizeBarChart.data.datasets = [
+                    { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
+                    { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
+                    { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' },
+                    { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
+                ];
+                sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => `${items[0].parsed.y} transfers`;
+                break;
+            case 'percentages':
+                Object.assign(sizeBarChart.options.scales.x, { stacked: true });
+                Object.assign(sizeBarChart.options.scales.y, { stacked: true, title: { text: 'Percentage by Count (%)' }, min: 0, max: 100, ticks: {} });
+                delete sizeBarChart.options.scales.y.ticks.callback;
+                sizeBarChart.data.datasets = [
+                    { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
+                    { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
+                    { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' },
+                    { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
+                ];
+                sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => {
+                    const item = items[0];
+                    const total = processedData.reduce((sum, d) => sum + d.dl_s + d.dl_f + d.ul_s + d.ul_f, 0);
+                    const bucketData = processedData[item.dataIndex];
+                    const counts = [bucketData.dl_s, bucketData.ul_s, bucketData.dl_f, bucketData.ul_f];
+                    return `${item.parsed.y.toFixed(2)}% (${counts[item.datasetIndex]} transfers)`;
+                };
+                break;
+            case 'percentages-size':
+                Object.assign(sizeBarChart.options.scales.x, { stacked: true });
+                Object.assign(sizeBarChart.options.scales.y, { stacked: true, title: { text: 'Percentage by Size (%)' }, min: 0, max: 100, ticks: {} });
+                delete sizeBarChart.options.scales.y.ticks.callback;
+                sizeBarChart.data.datasets = [
+                    { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
+                    { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
+                    { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' },
+                    { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
+                ];
+                sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => {
+                    const item = items[0];
+                    const totalSize = processedData.reduce((sum, d) => sum + d.dl_s_size + d.dl_f_size + d.ul_s_size + d.ul_f_size, 0);
+                    const bucketData = processedData[item.dataIndex];
+                    const sizes = [bucketData.dl_s_size, bucketData.ul_s_size, bucketData.dl_f_size, bucketData.ul_f_size];
+                    return `${item.parsed.y.toFixed(2)}% (${formatBytes(sizes[item.datasetIndex])})`;
+                };
+                break;
+            case 'rates':
+                Object.assign(sizeBarChart.options.scales.x, { stacked: false });
+                Object.assign(sizeBarChart.options.scales.y, { stacked: false, title: { text: 'Success Rate (%)' }, max: 100, ticks: {} });
+                delete sizeBarChart.options.scales.y.ticks.callback;
+                sizeBarChart.data.datasets = [
+                    { label: 'Download Success Rate', data: [], backgroundColor: DOWNLOAD_COLOR },
+                    { label: 'Upload Success Rate', data: [], backgroundColor: UPLOAD_COLOR }
+                ];
+                sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => {
+                    const item = items[0];
+                    const data = processedData[item.dataIndex];
+                    return item.datasetIndex === 0 ? `Raw: ${data.dl_s}/${data.dl_s + data.dl_f}` : `Raw: ${data.ul_s}/${data.ul_s + data.ul_f}`;
+                };
+                break;
+            case 'sizes':
+                Object.assign(sizeBarChart.options.scales.x, { stacked: true });
+                Object.assign(sizeBarChart.options.scales.y, { stacked: true, title: { text: 'Data Size' }, min: undefined, max: undefined });
+                if (!sizeBarChart.options.scales.y.ticks) sizeBarChart.options.scales.y.ticks = {};
+                sizeBarChart.options.scales.y.ticks.callback = (value) => formatBytes(value, 1);
+                sizeBarChart.data.datasets = [
+                    { label: 'Successful Downloads', data: [], backgroundColor: DOWNLOAD_COLOR },
+                    { label: 'Successful Uploads', data: [], backgroundColor: UPLOAD_COLOR },
+                    { label: 'Failed Downloads', data: [], backgroundColor: '#ef4444' },
+                    { label: 'Failed Uploads', data: [], backgroundColor: '#f97316' }
+                ];
+                sizeBarChart.options.plugins.tooltip.callbacks.footer = (items) => {
+                    const item = items[0];
+                    const bucketData = processedData[item.dataIndex];
+                    const sizes = [bucketData.dl_s_size, bucketData.ul_s_size, bucketData.dl_f_size, bucketData.ul_f_size];
+                    return `${formatBytes(item.parsed.y)} (${formatBytes(sizes[item.datasetIndex])} in this category)`;
+                };
+                break;
         }
         sizeBarChart.currentViewMode = sizeChartViewMode;
     }
     switch (sizeChartViewMode) {
-        case 'counts': sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s); sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s); sizeBarChart.data.datasets[2].data = processedData.map(d => d.dl_f); sizeBarChart.data.datasets[3].data = processedData.map(d => d.ul_f); break;
-        case 'percentages': const total = processedData.reduce((sum, d) => sum + d.dl_s + d.dl_f + d.ul_s + d.ul_f, 0); if (total > 0) { sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s / total * 100); sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s / total * 100); sizeBarChart.data.datasets[2].data = processedData.map(d => d.dl_f / total * 100); sizeBarChart.data.datasets[3].data = processedData.map(d => d.ul_f / total * 100); } break;
-        case 'rates': const dlRates = processedData.map(d => { const total = d.dl_s + d.dl_f; return total > 0 ? (d.dl_s / total * 100) : 0; }); const ulRates = processedData.map(d => { const total = d.ul_s + d.ul_f; return total > 0 ? (d.ul_s / total * 100) : 0; }); const minRate = Math.min(...dlRates.filter(r => r > 0), ...ulRates.filter(r => r > 0), 95); sizeBarChart.options.scales.y.min = Math.floor(Math.min(95, minRate < 95 ? minRate - 1 : 95)); sizeBarChart.data.datasets[0].data = dlRates; sizeBarChart.data.datasets[1].data = ulRates; break;
+        case 'counts':
+            sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s);
+            sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s);
+            sizeBarChart.data.datasets[2].data = processedData.map(d => d.dl_f);
+            sizeBarChart.data.datasets[3].data = processedData.map(d => d.ul_f);
+            break;
+        case 'percentages':
+            const total = processedData.reduce((sum, d) => sum + d.dl_s + d.dl_f + d.ul_s + d.ul_f, 0);
+            if (total > 0) {
+                sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s / total * 100);
+                sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s / total * 100);
+                sizeBarChart.data.datasets[2].data = processedData.map(d => d.dl_f / total * 100);
+                sizeBarChart.data.datasets[3].data = processedData.map(d => d.ul_f / total * 100);
+            }
+            break;
+        case 'percentages-size':
+            const totalSize = processedData.reduce((sum, d) => sum + d.dl_s_size + d.dl_f_size + d.ul_s_size + d.ul_f_size, 0);
+            if (totalSize > 0) {
+                sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s_size / totalSize * 100);
+                sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s_size / totalSize * 100);
+                sizeBarChart.data.datasets[2].data = processedData.map(d => d.dl_f_size / totalSize * 100);
+                sizeBarChart.data.datasets[3].data = processedData.map(d => d.ul_f_size / totalSize * 100);
+            }
+            break;
+        case 'rates':
+            const dlRates = processedData.map(d => { const total = d.dl_s + d.dl_f; return total > 0 ? (d.dl_s / total * 100) : 0; });
+            const ulRates = processedData.map(d => { const total = d.ul_s + d.ul_f; return total > 0 ? (d.ul_s / total * 100) : 0; });
+            const minRate = Math.min(...dlRates.filter(r => r > 0), ...ulRates.filter(r => r > 0), 95);
+            sizeBarChart.options.scales.y.min = Math.floor(Math.min(95, minRate < 95 ? minRate - 1 : 95));
+            sizeBarChart.data.datasets[0].data = dlRates;
+            sizeBarChart.data.datasets[1].data = ulRates;
+            break;
+        case 'sizes':
+            sizeBarChart.data.datasets[0].data = processedData.map(d => d.dl_s_size);
+            sizeBarChart.data.datasets[1].data = processedData.map(d => d.ul_s_size);
+            sizeBarChart.data.datasets[2].data = processedData.map(d => d.dl_f_size);
+            sizeBarChart.data.datasets[3].data = processedData.map(d => d.ul_f_size);
+            break;
     }
     sizeBarChart.update();
 }
