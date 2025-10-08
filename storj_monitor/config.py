@@ -67,8 +67,18 @@ ANALYTICS_BASELINE_UPDATE_HOURS = 24  # How often to update statistical baseline
 
 # --- Notification Settings (Phase 4) ---
 ENABLE_BROWSER_NOTIFICATIONS = True  # Enable browser push notifications
-ENABLE_EMAIL_NOTIFICATIONS = False  # Enable email notifications (not implemented yet)
-ENABLE_WEBHOOK_NOTIFICATIONS = False  # Enable webhook notifications (not implemented yet)
+ENABLE_EMAIL_NOTIFICATIONS = False
+EMAIL_SMTP_SERVER = os.getenv('EMAIL_SMTP_SERVER', 'smtp.gmail.com')
+EMAIL_SMTP_PORT = int(os.getenv('EMAIL_SMTP_PORT', 587))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() == 'true'
+EMAIL_USERNAME = os.getenv('EMAIL_USERNAME', '')
+EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', '') # Use environment variable for security
+EMAIL_TO_ADDRESSES = [addr.strip() for addr in os.getenv('EMAIL_TO_ADDRESSES', '').split(',') if addr.strip()]
+
+ENABLE_WEBHOOK_NOTIFICATIONS = False
+WEBHOOK_DISCORD_URL = os.getenv('WEBHOOK_DISCORD_URL', '')
+WEBHOOK_SLACK_URL = os.getenv('WEBHOOK_SLACK_URL', '')
+WEBHOOK_CUSTOM_URLS = [url.strip() for url in os.getenv('WEBHOOK_CUSTOM_URLS', '').split(',') if url.strip()]
 
 # --- Data Retention (Phase 4) ---
 DB_ALERTS_RETENTION_DAYS = 90  # How many days of alert history to keep

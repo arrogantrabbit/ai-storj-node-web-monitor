@@ -109,6 +109,7 @@ class AlertManager:
                 # Broadcast to websockets
                 from .websocket_utils import robust_broadcast
                 from .state import app_state
+                from .notification_handler import notification_handler
                 
                 await robust_broadcast(
                     app_state['websockets'],
@@ -125,6 +126,18 @@ class AlertManager:
                         }
                     },
                     node_name=node_name
+                )
+
+                # Send notifications via configured channels
+                await notification_handler.send_notification(
+                    alert_type=alert['alert_type'],
+                    severity=alert['severity'],
+                    message=alert['message'],
+                    details={
+                        'node_name': alert['node_name'],
+                        'title': alert['title'],
+                        **alert['metadata']
+                    }
                 )
                 
                 log.info(f"Generated {severity} alert for {node_name}: {title}")
