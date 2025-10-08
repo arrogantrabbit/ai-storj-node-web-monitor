@@ -368,40 +368,143 @@ def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queu
 
 
 async def network_log_reader_task(node_name: str, host: str, port: int, queue: asyncio.Queue):
-    """Connects to a remote log forwarder and reads timestamped log lines."""
+    """
+    Connects to a remote log forwarder and reads timestamped log lines.
+    Handles network interruptions gracefully with reconnection, keepalive detection,
+    and connection state notifications.
+    """
+    from .websocket_utils import robust_broadcast
+    
     log.info(f"[{node_name}] Starting network log reader for {host}:{port}")
     backoff = 2
+    max_backoff = 60
+    connection_timeout = 10
+    read_timeout = 30  # Timeout for readline operations (detects stale connections)
+    last_data_time = None
+    writer = None
+    reader = None
+    
+    # Initialize connection state tracking
+    if 'connection_states' not in app_state:
+        app_state['connection_states'] = {}
+    
+    def update_connection_state(state: str, error_msg: str = None):
+        """Update connection state and broadcast to clients."""
+        app_state['connection_states'][node_name] = {
+            'state': state,
+            'host': host,
+            'port': port,
+            'timestamp': time.time(),
+            'error': error_msg
+        }
+        # Create notification payload
+        payload = {
+            'type': 'connection_status',
+            'node_name': node_name,
+            'state': state,
+            'host': host,
+            'port': port,
+            'error': error_msg
+        }
+        # Schedule broadcast without awaiting to avoid blocking
+        asyncio.create_task(robust_broadcast(app_state['websockets'], payload, node_name=node_name))
+    
     while True:
         try:
-            reader, writer = await asyncio.open_connection(host, port)
+            # Update state: connecting
+            update_connection_state('connecting')
+            log.info(f"[{node_name}] Attempting to connect to {host}:{port}...")
+            
+            # Connect with timeout
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=connection_timeout
+            )
+            
+            # Update state: connected
             log.info(f"[{node_name}] Connected to remote log source at {host}:{port}")
+            update_connection_state('connected')
             backoff = 2  # Reset backoff on successful connection
+            last_data_time = time.time()
+            
+            # Read loop with timeout detection
             while True:
-                line_bytes = await reader.readline()
-                if not line_bytes:
-                    log.warning(f"[{node_name}] Connection to {host}:{port} closed by remote end.")
-                    break
-
-                line = line_bytes.decode('utf-8').strip()
-                parts = line.split(' ', 1)
-                if len(parts) == 2:
-                    try:
-                        ts = float(parts[0])
-                        log_line = parts[1]
-                        await queue.put((log_line, ts))
-                    except (ValueError, TypeError):
+                try:
+                    # Use wait_for to add timeout for readline
+                    line_bytes = await asyncio.wait_for(
+                        reader.readline(),
+                        timeout=read_timeout
+                    )
+                    
+                    if not line_bytes:
+                        log.warning(f"[{node_name}] Connection to {host}:{port} closed by remote end.")
+                        update_connection_state('disconnected', 'Connection closed by remote')
+                        break
+                    
+                    # Update last data time
+                    last_data_time = time.time()
+                    
+                    # Parse and enqueue the log line
+                    line = line_bytes.decode('utf-8', errors='replace').strip()
+                    parts = line.split(' ', 1)
+                    if len(parts) == 2:
+                        try:
+                            ts = float(parts[0])
+                            log_line = parts[1]
+                            await queue.put((log_line, ts))
+                        except (ValueError, TypeError):
+                            log.warning(f"[{node_name}] Received malformed line from {host}:{port}, ignoring: {line[:100]}")
+                    else:
                         log.warning(f"[{node_name}] Received malformed line from {host}:{port}, ignoring: {line[:100]}")
-                else:
-                    log.warning(f"[{node_name}] Received malformed line from {host}:{port}, ignoring: {line[:100]}")
-
+                
+                except asyncio.TimeoutError:
+                    # No data received within read_timeout - connection might be stale
+                    elapsed = time.time() - last_data_time
+                    log.warning(f"[{node_name}] No data received from {host}:{port} for {elapsed:.1f}s. Connection may be stale.")
+                    update_connection_state('disconnected', f'No data received for {elapsed:.1f}s')
+                    break
+        
         except asyncio.CancelledError:
             log.info(f"[{node_name}] Network log reader for {host}:{port} cancelled.")
+            update_connection_state('stopped', 'Task cancelled')
             break
-        except (ConnectionRefusedError, OSError, asyncio.TimeoutError) as e:
+        
+        except asyncio.TimeoutError:
+            error_msg = f"Connection timeout after {connection_timeout}s"
+            log.error(f"[{node_name}] {error_msg}")
+            update_connection_state('disconnected', error_msg)
+        
+        except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError) as e:
+            error_msg = f"Connection error: {type(e).__name__}"
             log.error(f"[{node_name}] Cannot connect to {host}:{port}: {e}. Retrying in {backoff}s.")
-        except Exception:
+            update_connection_state('disconnected', error_msg)
+        
+        except OSError as e:
+            error_msg = f"Network error: {e}"
+            log.error(f"[{node_name}] Network error connecting to {host}:{port}: {e}. Retrying in {backoff}s.")
+            update_connection_state('disconnected', error_msg)
+        
+        except Exception as e:
+            error_msg = f"Unexpected error: {type(e).__name__}"
             log.error(f"[{node_name}] Unexpected error in network log reader for {host}:{port}. Retrying in {backoff}s.",
                       exc_info=True)
-
+            update_connection_state('disconnected', error_msg)
+        
+        finally:
+            # Clean up connection
+            if writer and not writer.is_closing():
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass  # Ignore cleanup errors
+            writer = None
+            reader = None
+        
+        # Update state: reconnecting
+        if backoff > 2:  # Only show reconnecting if we've already failed once
+            update_connection_state('reconnecting', f'Retry in {backoff}s')
+        
+        log.info(f"[{node_name}] Reconnecting to {host}:{port} in {backoff}s...")
         await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 60)  # Exponential backoff up to 1 minute
+        backoff = min(backoff * 2, max_backoff)  # Exponential backoff up to max_backoff

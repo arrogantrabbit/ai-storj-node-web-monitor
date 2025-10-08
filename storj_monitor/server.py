@@ -131,6 +131,18 @@ async def websocket_handler(request):
     await ws.send_json({"type": "init", "nodes": node_names})
     await send_initial_stats(app, ws, ["Aggregate"])
     await ws.send_json(get_active_compactions_payload())
+    
+    # Send current connection states for network nodes
+    if 'connection_states' in app_state:
+        for node_name, state_data in app_state['connection_states'].items():
+            await ws.send_json({
+                'type': 'connection_status',
+                'node_name': node_name,
+                'state': state_data['state'],
+                'host': state_data['host'],
+                'port': state_data['port'],
+                'error': state_data.get('error')
+            })
 
     try:
         async for msg in ws:

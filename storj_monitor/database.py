@@ -145,7 +145,13 @@ def blocking_db_batch_write(db_path: str, events: list):
 
     with sqlite3.connect(db_path, timeout=10, detect_types=0) as conn:
         cursor = conn.cursor()
-        cursor.executemany('INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
+        # Use explicit column names to avoid schema mismatch issues
+        cursor.executemany(
+            '''INSERT INTO events (timestamp, action, status, size, piece_id, satellite_id,
+               remote_ip, country, latitude, longitude, error_reason, node_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            data_to_insert
+        )
         conn.commit()
     log.info(f"Successfully wrote {len(events)} events to the database.")
 
