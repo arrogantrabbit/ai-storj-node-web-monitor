@@ -58,6 +58,269 @@
              </div>
         </div>
 
+        <!-- Phase 3: Enhanced Monitoring Cards -->
+        
+        <div id="reputation-card" class="card">
+            <h3 class="card-title">Node Reputation Scores</h3>
+            <div class="card-content">
+                <div id="reputation-content">
+                    <p class="loading-message">Loading reputation data...</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="storage-health-card" class="card">
+            <div class="chart-header">
+                <h3 class="card-title">Storage Health & Capacity</h3>
+                <div id="storage-range-toggles" style="text-align: right; font-size: 0.9em;">
+                    <small>Growth Rate Window:</small>
+                    <a href="#" class="toggle-link" data-range="1d">1d</a> |
+                    <a href="#" class="toggle-link" data-range="3d">3d</a> |
+                    <a href="#" class="toggle-link active" data-range="7d">7d</a> |
+                    <a href="#" class="toggle-link" data-range="14d">14d</a> |
+                    <a href="#" class="toggle-link" data-range="30d">30d</a>
+                </div>
+            </div>
+            <div class="card-content">
+                <div id="storage-stats" class="stats-grid">
+                    <div class="stat">
+                        <div id="storage-used-percent" class="stat-value">...%</div>
+                        <div class="stat-label">Disk Used</div>
+                    </div>
+                    <div class="stat">
+                        <div id="storage-available" class="stat-value">...</div>
+                        <div class="stat-label">Available Space</div>
+                    </div>
+                    <div class="stat">
+                        <div id="storage-growth-rate" class="stat-value">...</div>
+                        <div class="stat-label">Growth Rate</div>
+                    </div>
+                    <div class="stat">
+                        <div id="storage-days-until-full" class="stat-value">...</div>
+                        <div class="stat-label">Days Until Full</div>
+                    </div>
+                </div>
+                <div style="position: relative; height: 250px; margin-top: 20px;">
+                    <canvas id="storageHistoryChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div id="latency-card" class="card">
+            <div class="chart-header">
+                <h3 class="card-title">Operation Latency Analytics</h3>
+                <div id="latency-range-toggles" style="text-align: right; font-size: 0.9em;">
+                    <small>Range:</small>
+                    <a href="#" class="toggle-link" data-range="30m">30m</a> |
+                    <a href="#" class="toggle-link active" data-range="1h">1h</a> |
+                    <a href="#" class="toggle-link" data-range="6h">6h</a> |
+                    <a href="#" class="toggle-link" data-range="12h">12h</a> |
+                    <a href="#" class="toggle-link" data-range="24h">24h</a>
+                </div>
+            </div>
+            <div class="card-content">
+                <div id="latency-stats" class="stats-grid" style="grid-template-columns: repeat(4, 1fr);">
+                    <div class="stat">
+                        <div id="latency-p50" class="stat-value">...</div>
+                        <div class="stat-label">p50 Latency</div>
+                    </div>
+                    <div class="stat">
+                        <div id="latency-p95" class="stat-value">...</div>
+                        <div class="stat-label">p95 Latency</div>
+                    </div>
+                    <div class="stat">
+                        <div id="latency-p99" class="stat-value">...</div>
+                        <div class="stat-label">p99 Latency</div>
+                    </div>
+                    <div class="stat">
+                        <div id="latency-mean" class="stat-value">...</div>
+                        <div class="stat-label">Mean Latency</div>
+                    </div>
+                </div>
+                <div style="position: relative; height: 250px; margin-top: 20px;">
+                    <canvas id="latencyHistogramChart"></canvas>
+                </div>
+                <div class="table-container" style="margin-top: 15px;">
+                    <h5>Slowest Recent Operations</h5>
+                    <table class="info-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Action</th>
+                                <th class="numeric">Duration</th>
+                                <th>Satellite</th>
+                                <th>Piece ID</th>
+                                <th title="Operation status: 'success' for completed operations, 'failed' for errors, 'timeout' for timed out operations, 'canceled' for interrupted operations">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="slow-operations-body">
+                            <tr><td colspan="5" style="text-align: center;">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="alerts-panel-card" class="card">
+            <div class="card-header-flex">
+                <h3 class="card-title">Active Alerts</h3>
+                <span id="alerts-badge" class="alerts-badge">0</span>
+            </div>
+            <div class="card-content">
+                <div id="alerts-container">
+                    <p class="no-alerts-message">No active alerts - all systems healthy ✓</p>
+                </div>
+            </div>
+        </div>
+        <div id="earnings-card" class="card">
+            <div class="chart-header">
+                <h3 class="card-title">Financial Earnings</h3>
+                <div id="earnings-period-toggles" style="text-align: right; font-size: 0.9em;">
+                    <small>Period:</small>
+                    <a href="#" class="toggle-link active" data-period="current">Current</a> |
+                    <a href="#" class="toggle-link" data-period="previous">Previous</a> |
+                    <a href="#" class="toggle-link" data-period="12months">12 Months</a>
+                </div>
+            </div>
+            <div class="card-content">
+                <div id="earnings-summary" class="earnings-summary">
+                    <div class="earnings-stat">
+                        <div id="earnings-total" class="earnings-stat-value">$0.00</div>
+                        <div class="stat-label">Total Earnings</div>
+                    </div>
+                    <div class="earnings-stat">
+                        <div id="earnings-forecast" class="earnings-stat-value">$0.00</div>
+                        <div class="stat-label">Forecast (Month)</div>
+                    </div>
+                    <div class="earnings-stat">
+                        <div id="earnings-held" class="earnings-stat-value">$0.00</div>
+                        <div class="stat-label">Held Amount</div>
+                    </div>
+                    <div class="earnings-stat">
+                        <div id="earnings-per-tb" class="earnings-stat-value">$0.00</div>
+                        <div class="stat-label">Per TB Stored</div>
+                    </div>
+                    <div class="earnings-stat">
+                        <div id="earnings-payout-days" class="earnings-stat-value">-- days</div>
+                        <div class="stat-label">Days Until Payout</div>
+                    </div>
+                </div>
+                
+                <div id="earnings-breakdown" class="earnings-breakdown">
+                    <h5>Earnings Breakdown</h5>
+                    <div id="earnings-breakdown-list">
+                        <div class="earnings-breakdown-item">
+                            <span class="breakdown-label">Egress</span>
+                            <span class="breakdown-bar"><span class="breakdown-fill egress-fill" style="width: 0%"></span></span>
+                            <span class="breakdown-amount">$0.00</span>
+                            <span class="breakdown-percent">(0%)</span>
+                        </div>
+                        <div class="earnings-breakdown-item">
+                            <span class="breakdown-label">Storage</span>
+                            <span class="breakdown-bar"><span class="breakdown-fill storage-fill" style="width: 0%"></span></span>
+                            <span class="breakdown-amount">$0.00</span>
+                            <span class="breakdown-percent">(0%)</span>
+                        </div>
+                        <div class="earnings-breakdown-item">
+                            <span class="breakdown-label">Repair</span>
+                            <span class="breakdown-bar"><span class="breakdown-fill repair-fill" style="width: 0%"></span></span>
+                            <span class="breakdown-amount">$0.00</span>
+                            <span class="breakdown-percent">(0%)</span>
+                        </div>
+                        <div class="earnings-breakdown-item">
+                            <span class="breakdown-label">Audit</span>
+                            <span class="breakdown-bar"><span class="breakdown-fill audit-fill" style="width: 0%"></span></span>
+                            <span class="breakdown-amount">$0.00</span>
+                            <span class="breakdown-percent">(0%)</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+                    <div id="satellite-earnings" class="satellite-earnings">
+                        <h5>Per-Satellite Earnings</h5>
+                        <div id="satellite-earnings-list">
+                            <p class="loading-message">Loading earnings data...</p>
+                        </div>
+                    </div>
+                    
+                    <div style="position: relative; height: 250px;">
+                        <h5 style="margin-top: 0;">Earnings Distribution</h5>
+                        <canvas id="earnings-breakdown-chart"></canvas>
+                    </div>
+                </div>
+                
+                <div style="position: relative; height: 300px; margin-top: 20px;">
+                    <h5>Earnings History</h5>
+                    <canvas id="earnings-chart"></canvas>
+                </div>
+                
+                <!-- Payout Accuracy Section -->
+                <div style="margin-top: 30px; padding: 15px; background: rgba(14, 165, 233, 0.05); border-radius: 8px;">
+                    <h5>Payout Accuracy Tracking</h5>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 10px;">
+                        <div class="stat">
+                            <div id="payout-accuracy-rate" class="stat-value">--</div>
+                            <div class="stat-label">Forecast Accuracy</div>
+                        </div>
+                        <div class="stat">
+                            <div id="payout-last-variance" class="stat-value">--</div>
+                            <div class="stat-label">Last Month Variance</div>
+                        </div>
+                        <div class="stat">
+                            <div id="payout-history-count" class="stat-value">--</div>
+                            <div class="stat-label">Historical Payouts</div>
+                        </div>
+                    </div>
+                    <p style="margin-top: 10px; font-size: 0.85em; color: #666;">
+                        <em>Accuracy tracking requires historical payout data. Import payouts via API or manual entry to enable this feature.</em>
+                    </p>
+                </div>
+                
+                <!-- ROI Calculator (Optional) -->
+                <div style="margin-top: 20px; padding: 15px; background: rgba(34, 197, 94, 0.05); border-radius: 8px;">
+                    <h5>ROI Calculator (Optional)</h5>
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-top: 10px;">
+                        <div>
+                            <label style="font-size: 0.9em;">Monthly Costs ($):</label>
+                            <input type="number" id="roi-monthly-costs" placeholder="Enter monthly costs"
+                                   class="roi-input"
+                                   step="0.01" min="0">
+                        </div>
+                        <div>
+                            <label style="font-size: 0.9em;">Initial Investment ($):</label>
+                            <input type="number" id="roi-initial-investment" placeholder="Hardware cost"
+                                   class="roi-input"
+                                   step="0.01" min="0">
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 15px;">
+                        <div class="stat">
+                            <div id="roi-monthly-profit" class="stat-value">$0.00</div>
+                            <div class="stat-label">Monthly Profit</div>
+                        </div>
+                        <div class="stat">
+                            <div id="roi-margin" class="stat-value">--%</div>
+                            <div class="stat-label">Profit Margin</div>
+                        </div>
+                        <div class="stat">
+                            <div id="roi-payback-months" class="stat-value">-- months</div>
+                            <div class="stat-label">Payback Period</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- CSV Export Button -->
+                <div style="margin-top: 20px; text-align: right;">
+                    <button id="export-earnings-csv-btn" class="export-btn" style="padding: 8px 16px; background: #0ea5e9; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                        Export Earnings to CSV
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+
+
         <div id="performance-card" class="card">
             <div class="chart-header">
                 <h3 id="performance-title" class="card-title">Live Performance</h3>
@@ -132,7 +395,9 @@
                 <div id="size-view-toggles">
                     <small>Show:</small>
                     <a href="#" class="toggle-link active" data-view="counts">Counts</a> |
-                    <a href="#" class="toggle-link" data-view="percentages">Percentages</a> |
+                    <a href="#" class="toggle-link" data-view="percentages">% by Count</a> |
+                    <a href="#" class="toggle-link" data-view="percentages-size">% by Size</a> |
+                    <a href="#" class="toggle-link" data-view="sizes">Sizes</a> |
                     <a href="#" class="toggle-link" data-view="rates">Success Rate</a>
                 </div>
             </div>
@@ -207,6 +472,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 
+    <script src="/static/js/AlertsPanel.js"></script>
     <script src="/static/js/app.js" type="module"></script>
 </body>
 </html>

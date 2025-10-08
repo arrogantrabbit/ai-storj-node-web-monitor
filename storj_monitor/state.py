@@ -1,7 +1,7 @@
 import asyncio
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from collections import Counter
 import heapq
 
@@ -30,11 +30,17 @@ class IncrementalStats:
     countries_dl: Counter = field(default_factory=Counter)
     countries_ul: Counter = field(default_factory=Counter)
 
-    # Transfer size buckets
+    # Transfer size buckets (counts)
     dls_success: Counter = field(default_factory=Counter)
     dls_failed: Counter = field(default_factory=Counter)
     uls_success: Counter = field(default_factory=Counter)
     uls_failed: Counter = field(default_factory=Counter)
+    
+    # Transfer size buckets (cumulative sizes in bytes)
+    dls_success_size: Counter = field(default_factory=Counter)
+    dls_failed_size: Counter = field(default_factory=Counter)
+    uls_success_size: Counter = field(default_factory=Counter)
+    uls_failed_size: Counter = field(default_factory=Counter)
 
     # Error aggregation
     error_agg: Dict[str, Dict] = field(default_factory=dict)
@@ -43,8 +49,8 @@ class IncrementalStats:
     # Hot pieces tracking
     hot_pieces: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
-    # Last processed event index for incremental updates
-    last_processed_index: int = 0
+    # Last processed event index per node for incremental updates
+    last_processed_indices: Dict[str, int] = field(default_factory=dict)
 
     def get_or_create_satellite(self, sat_id: str) -> Dict[str, int]:
         """Get or create satellite stats."""
@@ -52,7 +58,10 @@ class IncrementalStats:
             self.satellites[sat_id] = {
                 'uploads': 0, 'downloads': 0, 'audits': 0,
                 'ul_success': 0, 'dl_success': 0, 'audit_success': 0,
-                'total_upload_size': 0, 'total_download_size': 0
+                'total_upload_size': 0, 'total_download_size': 0,
+                'get_repair': 0, 'put_repair': 0,
+                'get_repair_success': 0, 'put_repair_success': 0,
+                'total_get_repair_size': 0, 'total_put_repair_size': 0
             }
         return self.satellites[sat_id]
 
@@ -102,11 +111,13 @@ class IncrementalStats:
                 self.total_dl_size += size
                 size_bucket = get_size_bucket(size)
                 self.dls_success[size_bucket] += 1
+                self.dls_success_size[size_bucket] += size
             else:
                 self.dl_fail += 1
                 self._aggregate_error(event['error_reason'], TOKEN_REGEX)
                 size_bucket = get_size_bucket(size)
                 self.dls_failed[size_bucket] += 1
+                self.dls_failed_size[size_bucket] += size
 
         elif category == 'put':
             sat_stats['uploads'] += 1
@@ -123,11 +134,53 @@ class IncrementalStats:
                 self.total_ul_size += size
                 size_bucket = get_size_bucket(size)
                 self.uls_success[size_bucket] += 1
+                self.uls_success_size[size_bucket] += size
             else:
                 self.ul_fail += 1
                 self._aggregate_error(event['error_reason'], TOKEN_REGEX)
                 size_bucket = get_size_bucket(size)
                 self.uls_failed[size_bucket] += 1
+                self.uls_failed_size[size_bucket] += size
+
+        elif category == 'get_repair':
+            sat_stats['get_repair'] += 1
+
+            # Update country stats
+            country = event['location']['country']
+            if country:
+                self.countries_dl[country] += size
+
+            if is_success:
+                sat_stats['get_repair_success'] += 1
+                sat_stats['total_get_repair_size'] += size
+                size_bucket = get_size_bucket(size)
+                self.dls_success[size_bucket] += 1
+                self.dls_success_size[size_bucket] += size
+            else:
+                self._aggregate_error(event['error_reason'], TOKEN_REGEX)
+                size_bucket = get_size_bucket(size)
+                self.dls_failed[size_bucket] += 1
+                self.dls_failed_size[size_bucket] += size
+
+        elif category == 'put_repair':
+            sat_stats['put_repair'] += 1
+
+            # Update country stats
+            country = event['location']['country']
+            if country:
+                self.countries_ul[country] += size
+
+            if is_success:
+                sat_stats['put_repair_success'] += 1
+                sat_stats['total_put_repair_size'] += size
+                size_bucket = get_size_bucket(size)
+                self.uls_success[size_bucket] += 1
+                self.uls_success_size[size_bucket] += size
+            else:
+                self._aggregate_error(event['error_reason'], TOKEN_REGEX)
+                size_bucket = get_size_bucket(size)
+                self.uls_failed[size_bucket] += 1
+                self.uls_failed_size[size_bucket] += size
 
     def _aggregate_error(self, reason: str, TOKEN_REGEX: re.Pattern):
         """Aggregate error reasons efficiently with optimized template building."""
@@ -208,8 +261,11 @@ class IncrementalStats:
         satellites = sorted([{'satellite_id': k, **v} for k, v in self.satellites.items()],
                             key=lambda x: x['uploads'] + x['downloads'], reverse=True)
         all_buckets = ["< 1 KB", "1-4 KB", "4-16 KB", "16-64 KB", "64-256 KB", "256 KB - 1 MB", "> 1 MB"]
-        transfer_sizes = [{'bucket': b, 'downloads_success': self.dls_success[b], 'downloads_failed': self.dls_failed[b],
-                           'uploads_success': self.uls_success[b], 'uploads_failed': self.uls_failed[b]} for b in all_buckets]
+        transfer_sizes = [{'bucket': b,
+                           'downloads_success': self.dls_success[b], 'downloads_failed': self.dls_failed[b],
+                           'uploads_success': self.uls_success[b], 'uploads_failed': self.uls_failed[b],
+                           'downloads_success_size': self.dls_success_size[b], 'downloads_failed_size': self.dls_failed_size[b],
+                           'uploads_success_size': self.uls_success_size[b], 'uploads_failed_size': self.uls_failed_size[b]} for b in all_buckets]
         sorted_errors = sorted(self.error_agg.items(), key=lambda item: item[1]['count'], reverse=True)
         final_errors = []
         for template, data in sorted_errors[:10]:
@@ -251,4 +307,5 @@ app_state: Dict[str, Any] = {
     'websocket_event_queue': [],  # Queue for batching websocket events
     'websocket_queue_lock': asyncio.Lock(),  # Lock for websocket queue operations
     'TOKEN_REGEX': re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b\d+\b'),  # Pre-compiled regex
+    'connection_states': {},  # { node_name: {'log_reader': {...}, 'api_client': {...}} }
 }

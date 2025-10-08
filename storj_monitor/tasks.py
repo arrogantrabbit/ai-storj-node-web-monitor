@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import time
-from datetime import timedelta
 
 from .state import app_state
 from .config import DB_WRITE_BATCH_INTERVAL_SECONDS, STATS_WINDOW_MINUTES, HOURLY_AGG_INTERVAL_MINUTES, \
@@ -128,11 +127,13 @@ async def incremental_stats_updater_task(app):
                         node_state = app_state['nodes'][node_name]
                         if node_state.get('has_new_events', False):
                             all_events = list(node_state['live_events'])
-                            if stats.last_processed_index < len(all_events):
-                                new_events = all_events[stats.last_processed_index:]
+                            # Get or initialize the last processed index for this node
+                            last_index = stats.last_processed_indices.get(node_name, 0)
+                            if last_index < len(all_events):
+                                new_events = all_events[last_index:]
                                 for event in new_events:
                                     stats.add_event(event, app_state['TOKEN_REGEX'])
-                                stats.last_processed_index = len(all_events)
+                                stats.last_processed_indices[node_name] = len(all_events)
                                 new_events_processed = True
 
                 if new_events_processed:
@@ -220,6 +221,47 @@ async def websocket_batch_broadcaster_task(app):
             log.error("Error in websocket_batch_broadcaster_task:", exc_info=True)
 
 
+async def connection_status_broadcaster_task(app):
+    """
+    Periodically broadcasts connection status to all WebSocket clients.
+    """
+    log.info("Connection status broadcaster task started.")
+    broadcast_interval = 10  # seconds
+    
+    while True:
+        try:
+            await asyncio.sleep(broadcast_interval)
+            
+            # Gather connection states
+            connection_states = {}
+            
+            # Get API client states
+            for node_name, client in app.get('api_clients', {}).items():
+                connection_states[node_name] = {
+                    'api_client': client.get_connection_state()
+                }
+            
+            # Get log reader states from app_state
+            for node_name, states in app_state.get('connection_states', {}).items():
+                if node_name not in connection_states:
+                    connection_states[node_name] = {}
+                connection_states[node_name].update(states)
+            
+            # Broadcast to all connected clients
+            if connection_states:
+                payload = {
+                    "type": "connection_status",
+                    "states": connection_states
+                }
+                await robust_broadcast(app_state['websockets'], payload)
+                
+        except asyncio.CancelledError:
+            log.info("Connection status broadcaster task cancelled")
+            break
+        except Exception:
+            log.error("Error in connection_status_broadcaster_task:", exc_info=True)
+
+
 async def start_background_tasks(app):
     import concurrent.futures
     import sys
@@ -227,7 +269,10 @@ async def start_background_tasks(app):
     from collections import deque
     from .log_processor import blocking_log_reader, network_log_reader_task, log_processor_task
     from .database import blocking_backfill_hourly_stats, load_initial_state_from_db
-    from .config import GEOIP_DATABASE_PATH
+    from .config import (GEOIP_DATABASE_PATH, DATABASE_FILE, DB_THREAD_POOL_SIZE,
+                        DB_CONNECTION_POOL_SIZE, DB_CONNECTION_TIMEOUT)
+    from .storj_api_client import auto_discover_api_endpoint, setup_api_client
+    from .db_utils import init_connection_pool
 
     log.info("Starting background tasks...")
     try:
@@ -237,10 +282,16 @@ async def start_background_tasks(app):
         log.critical(f"GeoIP database not found at '{GEOIP_DATABASE_PATH}'. Please download it. Exiting.")
         sys.exit(1)
 
-    app['db_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+    # Initialize database connection pool for better concurrency
+    init_connection_pool(DATABASE_FILE, DB_CONNECTION_POOL_SIZE, DB_CONNECTION_TIMEOUT)
+    log.info(f"Database connection pool initialized with {DB_CONNECTION_POOL_SIZE} connections")
+
+    app['db_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=DB_THREAD_POOL_SIZE)
+    log.info(f"Database thread pool initialized with {DB_THREAD_POOL_SIZE} workers")
     app['log_executor'] = concurrent.futures.ThreadPoolExecutor(max_workers=len(app['nodes']) + 1)
     app['tasks'] = []
     app['log_reader_shutdown_events'] = {}
+    app['api_clients'] = {}  # Initialize API clients dict
 
     loop = asyncio.get_running_loop()
 
@@ -251,47 +302,113 @@ async def start_background_tasks(app):
     app_state['nodes'] = initial_node_states
     log.info("Initial state has been populated from the database.")
 
+    # Initialize nodes with log readers and API clients
     for node_name, node_config in app['nodes'].items():
         if node_name not in app_state['nodes']:
-            app_state['nodes'][node_name] = {'live_events': deque(), 'active_compactions': {}, 'unprocessed_performance_events': [], 'has_new_events': False}
+            app_state['nodes'][node_name] = {
+                'live_events': deque(),
+                'active_compactions': {},
+                'unprocessed_performance_events': [],
+                'has_new_events': False
+            }
+        
+        # Setup log reader
         line_queue = asyncio.Queue(maxsize=5000)
         if node_config['type'] == 'file':
             import threading
             shutdown_event = threading.Event()
             app['log_reader_shutdown_events'][node_name] = shutdown_event
-            loop.run_in_executor(app['log_executor'], blocking_log_reader, node_config['path'], loop, line_queue, shutdown_event)
+            loop.run_in_executor(
+                app['log_executor'],
+                blocking_log_reader,
+                node_config['path'],
+                loop,
+                line_queue,
+                shutdown_event
+            )
         elif node_config['type'] == 'network':
-            app['tasks'].append(asyncio.create_task(network_log_reader_task(node_name, node_config['host'], node_config['port'], line_queue)))
+            app['tasks'].append(
+                asyncio.create_task(
+                    network_log_reader_task(
+                        node_name,
+                        node_config['host'],
+                        node_config['port'],
+                        line_queue
+                    )
+                )
+            )
         app['tasks'].append(asyncio.create_task(log_processor_task(app, node_name, line_queue)))
+        
+        # Setup API client (Phase 1.2)
+        node_config_with_name = {**node_config, 'name': node_name}
+        api_endpoint = await auto_discover_api_endpoint(node_config_with_name)
+        if api_endpoint:
+            await setup_api_client(app, node_name, api_endpoint)
 
     app['tasks'].extend([
         asyncio.create_task(prune_live_events_task(app)),
         asyncio.create_task(incremental_stats_updater_task(app)),
         asyncio.create_task(performance_aggregator_task(app)),
         asyncio.create_task(websocket_batch_broadcaster_task(app)),
+        asyncio.create_task(connection_status_broadcaster_task(app)),
         asyncio.create_task(debug_logger_task(app)),
         asyncio.create_task(database_writer_task(app)),
         asyncio.create_task(hourly_aggregator_task(app)),
         asyncio.create_task(database_pruner_task(app))
     ])
+    log.info("Connection status broadcaster task initialized")
+    
+    # Add reputation and storage polling tasks if we have any API clients
+    if app['api_clients']:
+        from .reputation_tracker import reputation_polling_task
+        from .storage_tracker import storage_polling_task
+        
+        log.info(f"Enhanced monitoring enabled for {len(app['api_clients'])} node(s)")
+        app['tasks'].append(asyncio.create_task(reputation_polling_task(app)))  # Phase 1.3
+        app['tasks'].append(asyncio.create_task(storage_polling_task(app)))  # Phase 2.2
+    
+    # Add alert evaluation task (Phase 4)
+    from .alert_manager import alert_evaluation_task
+    app['tasks'].append(asyncio.create_task(alert_evaluation_task(app)))
+    log.info("Alert evaluation task initialized")
+    
+    # Add financial tracking task (Phase 5.2)
+    from .financial_tracker import financial_polling_task
+    app['tasks'].append(asyncio.create_task(financial_polling_task(app)))
+    log.info("Financial tracking task initialized")
 
 
 async def cleanup_background_tasks(app):
     log.warning("Application cleanup started.")
+    
+    # Cancel all background tasks
     for task in app.get('tasks', []):
         task.cancel()
     if 'tasks' in app:
         await asyncio.gather(*app['tasks'], return_exceptions=True)
     log.info("Asyncio background tasks cancelled.")
 
+    # Shutdown log reader threads
     for event in app.get('log_reader_shutdown_events', {}).values():
         event.set()
 
+    # Close API clients (Phase 1.2)
+    if 'api_clients' in app:
+        from .storj_api_client import cleanup_api_clients
+        await cleanup_api_clients(app)
+
+    # Close GeoIP reader
     if 'geoip_reader' in app and hasattr(app['geoip_reader'], 'close'):
         app['geoip_reader'].close()
         log.info("GeoIP database reader closed.")
 
+    # Cleanup database connection pool
+    from .db_utils import cleanup_connection_pool
+    cleanup_connection_pool()
+    log.info("Database connection pool cleaned up.")
+
+    # Shutdown executors
     for executor_name in ['db_executor', 'log_executor']:
         if executor_name in app and app[executor_name]:
             app[executor_name].shutdown(wait=True)
-    log.info(f"{executor_name} shut down.")
+            log.info(f"{executor_name} shut down.")

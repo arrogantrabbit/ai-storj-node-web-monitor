@@ -52,7 +52,7 @@ async def tail_log_file(log_path: str):
             log.error(f"'tail' process exited with error: {stderr_output.decode('utf-8', errors='replace').strip()}")
 
     except FileNotFoundError:
-        log.critical(f"Fatal: 'tail' command not found. Please ensure it is installed and in your PATH.")
+        log.critical("Fatal: 'tail' command not found. Please ensure it is installed and in your PATH.")
         # In a real-world scenario, you might want to trigger a more graceful shutdown.
         # For simplicity, we'll let the exception propagate to the main loop.
         raise
