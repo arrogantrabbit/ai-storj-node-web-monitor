@@ -35,7 +35,6 @@ let chartUpdateTimer = null;
 let hashstoreMasterData = [];
 let hashstoreFilters = { satellite: 'all', store: 'all' };
 let hashstoreSort = { column: 'last_run_iso', direction: 'desc' };
-let nodeConnectionStates = {};  // Track connection status for network nodes
 let ws;
 
 // --- Helper Functions ---
@@ -216,9 +215,6 @@ function handleWebSocketMessage(data) {
                 ws.send(JSON.stringify({ type: 'get_historical_performance', view: currentNodeView, points: MAX_PERF_POINTS, interval_sec: PERFORMANCE_INTERVAL_MS / 1000 }));
             }
             break;
-        case 'connection_status':
-            handleConnectionStatusUpdate(data);
-            break;
         case 'log_entry': processLogEntry(data); break;
         case 'log_entry_batch': processBatchedLogEntries(data.events); break;
         case 'performance_batch_update': if (isHistoricalDataLoaded) processLivePerformanceUpdate(data); break;
@@ -251,89 +247,6 @@ function handleWebSocketMessage(data) {
         case 'hashstore_stats_data': updateHashstorePanel(data.data); break;
         case 'active_compactions_update': updateActiveCompactions(data.compactions); break;
     }
-}
-
-// --- Connection Status Management ---
-function handleConnectionStatusUpdate(data) {
-    const { node_name, state, host, port, error } = data;
-    
-    // Update state tracking
-    nodeConnectionStates[node_name] = {
-        state: state,
-        host: host,
-        port: port,
-        error: error,
-        timestamp: Date.now()
-    };
-    
-    // Update UI
-    renderNodeSelector();
-    
-    // Show notification for significant state changes
-    if (state === 'connected') {
-        showConnectionNotification(node_name, `Connected to ${host}:${port}`, 'success');
-    } else if (state === 'disconnected' && error) {
-        showConnectionNotification(node_name, `Disconnected: ${error}`, 'error');
-    } else if (state === 'reconnecting') {
-        showConnectionNotification(node_name, `Reconnecting to ${host}:${port}...`, 'warning');
-    }
-}
-
-function showConnectionNotification(nodeName, message, type) {
-    // Create or update notification element
-    let notificationContainer = document.getElementById('connection-notifications');
-    if (!notificationContainer) {
-        notificationContainer = document.createElement('div');
-        notificationContainer.id = 'connection-notifications';
-        notificationContainer.style.cssText = 'position: fixed; top: 70px; right: 20px; z-index: 9999; max-width: 350px;';
-        document.body.appendChild(notificationContainer);
-    }
-    
-    const notification = document.createElement('div');
-    notification.className = `connection-notification connection-notification-${type}`;
-    notification.style.cssText = `
-        background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#ff9800'};
-        color: white;
-        padding: 12px 16px;
-        margin-bottom: 10px;
-        border-radius: 4px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-        animation: slideIn 0.3s ease-out;
-    `;
-    notification.innerHTML = `<strong>${nodeName}:</strong> ${message}`;
-    
-    notificationContainer.appendChild(notification);
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        notification.style.animation = 'slideOut 0.3s ease-in';
-        setTimeout(() => notification.remove(), 300);
-    }, 5000);
-}
-
-function getConnectionStatusIcon(state) {
-    switch(state) {
-        case 'connected': return '🟢';
-        case 'connecting': return '🟡';
-        case 'reconnecting': return '🟠';
-        case 'disconnected': return '🔴';
-        case 'stopped': return '⚫';
-        default: return '⚪';
-    }
-}
-
-function getConnectionStatusTooltip(nodeName) {
-    const status = nodeConnectionStates[nodeName];
-    if (!status) return null;
-    
-    let tooltip = `Status: ${status.state}\nHost: ${status.host}:${status.port}`;
-    if (status.error) {
-        tooltip += `\nError: ${status.error}`;
-    }
-    const elapsed = Math.floor((Date.now() - status.timestamp) / 1000);
-    tooltip += `\nLast update: ${elapsed}s ago`;
-    
-    return tooltip;
 }
 
 // --- UI Event Listeners ---
@@ -389,21 +302,9 @@ function renderNodeSelector() {
         const link = document.createElement('a');
         link.href = '#';
         link.className = 'node-link';
+        link.textContent = name;
         link.setAttribute('data-view', name);
         if (currentNodeView.includes(name)) link.classList.add('active');
-        
-        // Add connection status indicator for network nodes
-        if (nodeConnectionStates[name]) {
-            const status = nodeConnectionStates[name];
-            const statusIcon = document.createElement('span');
-            statusIcon.className = 'connection-status-icon';
-            statusIcon.textContent = getConnectionStatusIcon(status.state);
-            statusIcon.title = getConnectionStatusTooltip(name);
-            statusIcon.style.cssText = 'margin-right: 4px; font-size: 12px;';
-            link.appendChild(statusIcon);
-        }
-        
-        link.appendChild(document.createTextNode(name));
         selector.appendChild(link);
     });
 }

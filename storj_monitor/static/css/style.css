@@ -1,6 +1,6 @@
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color 0.3s, color 0.3s; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color: 0.3s, color: 0.3s; }
 .container { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; max-width: 1800px; margin: auto; }
-.card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s, grid-column 0.3s ease, grid-row 0.3s ease; }
+.card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color: 0.3s, grid-column 0.3s ease, grid-row 0.3s ease; }
 .header-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 0; flex-wrap: wrap; gap: 20px; }
 h1 { margin: 0; font-size: 1.8em; color: #1c1e21; }
 
@@ -139,47 +139,4 @@ body.map-maximized { overflow: hidden; }
     #display-menu-btn:hover { background: #495057; }
     #display-menu-dropdown { background: #2a2a2a; border-color: #555; }
     #display-menu-dropdown h5 { color: #fff; border-bottom-color: #444; }
-}
-
-/* --- Connection Status Notifications --- */
-@keyframes slideIn {
-    from {
-        transform: translateX(400px);
-        opacity: 0;
-    }
-    to {
-        transform: translateX(0);
-        opacity: 1;
-    }
-}
-
-@keyframes slideOut {
-    from {
-        transform: translateX(0);
-        opacity: 1;
-    }
-    to {
-        transform: translateX(400px);
-        opacity: 0;
-    }
-}
-
-.connection-status-icon {
-    display: inline-block;
-    margin-right: 4px;
-    font-size: 10px;
-    vertical-align: middle;
-    line-height: 1;
-}
-
-/* Connection overlay for WebSocket disconnection */
-#connection-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0,0,0,0.7); display: flex; justify-content: center; align-items: center; z-index: 9999; }
-#connection-overlay .message { background: white; padding: 30px; border-radius: 10px; text-align: center; max-width: 400px; }
-#connection-overlay .message h2 { margin-top: 0; color: #333; }
-#connection-overlay .message p { color: #666; }
-
-@media (prefers-color-scheme: dark) {
-    #connection-overlay .message { background: #2a2a2a; }
-    #connection-overlay .message h2 { color: #fff; }
-    #connection-overlay .message p { color: #aaa; }
 }
