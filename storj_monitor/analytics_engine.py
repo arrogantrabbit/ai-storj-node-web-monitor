@@ -8,6 +8,7 @@ import logging
 import datetime
 from typing import Dict, List, Any, Optional, Tuple
 import statistics
+from .config import MIN_STORAGE_DATA_POINTS_FOR_FORECAST
 
 log = logging.getLogger("StorjMonitor.Analytics")
 
@@ -461,9 +462,11 @@ class AnalyticsEngine:
                 for s in storage_history
             ]
             
-            growth_rate = self.calculate_rate_of_change(values_with_time, window_hours=168)
+            growth_rate = None
+            if len(values_with_time) >= MIN_STORAGE_DATA_POINTS_FOR_FORECAST:
+                growth_rate = self.calculate_rate_of_change(values_with_time, window_hours=168)
             
-            if growth_rate and growth_rate > 0:
+            if growth_rate is not None and growth_rate > 0:
                 available_bytes = latest.get('available_bytes', 0)
                 hours_until_full = available_bytes / growth_rate if growth_rate > 0 else float('inf')
                 days_until_full = hours_until_full / 24

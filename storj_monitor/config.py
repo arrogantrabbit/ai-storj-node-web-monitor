@@ -51,6 +51,7 @@ STORAGE_WARNING_PERCENT = 80  # 80% full
 STORAGE_CRITICAL_PERCENT = 95  # 95% full
 STORAGE_FORECAST_WARNING_DAYS = 30  # Alert if full within 30 days
 STORAGE_FORECAST_CRITICAL_DAYS = 7  # Critical if full within 7 days
+MIN_STORAGE_DATA_POINTS_FOR_FORECAST = 12 # Minimum data points required for growth rate forecast
 
 # --- Performance Thresholds (Phase 2.1) ---
 LATENCY_WARNING_MS = 5000  # 5 seconds

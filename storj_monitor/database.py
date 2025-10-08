@@ -117,13 +117,6 @@ def init_db():
         cursor.execute('CREATE INDEX idx_events_financial_traffic ON events (node_name, satellite_id, timestamp, status, action);')
         log.info("Financial traffic index created.")
     
-    # PERFORMANCE OPTIMIZATION: Add index for storage snapshot queries
-    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_storage_earnings'")
-    if not cursor.fetchone():
-        log.info("Creating storage earnings index...")
-        cursor.execute('CREATE INDEX idx_storage_earnings ON storage_snapshots (node_name, timestamp DESC, used_bytes);')
-        log.info("Storage earnings index created.")
-    
     # PERFORMANCE OPTIMIZATION: Add index for latency queries
     cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_events_latency'")
     if not cursor.fetchone():
@@ -166,6 +159,13 @@ def init_db():
         )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_storage_node_time ON storage_snapshots (node_name, timestamp);')
+
+    # PERFORMANCE OPTIMIZATION: Add index for storage snapshot queries
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_storage_earnings'")
+    if not cursor.fetchone():
+        log.info("Creating storage earnings index...")
+        cursor.execute('CREATE INDEX idx_storage_earnings ON storage_snapshots (node_name, timestamp DESC, used_bytes);')
+        log.info("Storage earnings index created.")
     
     # --- Alerts Table (Phase 4) ---
     cursor.execute('''
