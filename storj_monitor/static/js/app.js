@@ -830,17 +830,44 @@ function updateEarningsCard(data) {
     }
     document.getElementById('earnings-forecast').textContent = `$${forecast.toFixed(2)}`;
     
+    // Calculate and update earnings per TB stored
+    // Get current storage data to calculate per-TB rate
+    if (storageState.cachedData && storageState.cachedData.length > 0) {
+        let totalStoredTB = 0;
+        storageState.cachedData.forEach(node => {
+            const usedBytes = node.used_bytes || 0;
+            totalStoredTB += usedBytes / (1024 ** 4); // Convert to TB
+        });
+        
+        if (totalStoredTB > 0) {
+            const earningsPerTB = aggregated.total_earnings / totalStoredTB;
+            document.getElementById('earnings-per-tb').textContent = `$${earningsPerTB.toFixed(2)}`;
+        } else {
+            document.getElementById('earnings-per-tb').textContent = 'N/A';
+        }
+    } else {
+        document.getElementById('earnings-per-tb').textContent = 'N/A';
+    }
+    
     // Update days since last payout
     const daysSinceLastPayout = calculateDaysSinceLastPayout();
     document.getElementById('earnings-payout-days').textContent = `${daysSinceLastPayout} days`;
     
-    // Update breakdown with actual data
+    // Update breakdown bars with actual data
     updateEarningsBreakdown({
         egress: aggregated.egress,
         storage: aggregated.storage,
         repair: aggregated.repair,
         audit: aggregated.audit
     }, aggregated.total_earnings);
+    
+    // Update breakdown chart
+    charts.updateEarningsBreakdownChart({
+        egress: aggregated.egress,
+        storage: aggregated.storage,
+        repair: aggregated.repair,
+        audit: aggregated.audit
+    });
     
     // Update per-satellite earnings
     updateSatelliteEarnings(earningsArray);
@@ -1157,7 +1184,136 @@ function setupEventListeners() {
         e.target.classList.add('active');
         requestEarningsData(newPeriod);
     });
+    
+    // CSV Export button handler
+    document.getElementById('export-earnings-csv-btn').addEventListener('click', function(e) {
+        e.preventDefault();
+        exportEarningsToCSV();
+    });
+    
+    // ROI Calculator event listeners
+    document.getElementById('roi-monthly-costs').addEventListener('input', calculateROI);
+    document.getElementById('roi-initial-investment').addEventListener('input', calculateROI);
 }
+
+function calculateROI() {
+    const monthlyCosts = parseFloat(document.getElementById('roi-monthly-costs').value) || 0;
+    const initialInvestment = parseFloat(document.getElementById('roi-initial-investment').value) || 0;
+    
+    // Get current monthly earnings (use forecast if available)
+    const forecastText = document.getElementById('earnings-forecast').textContent;
+    const monthlyEarnings = parseFloat(forecastText.replace('$', '')) || 0;
+    
+    // Calculate metrics
+    const monthlyProfit = monthlyEarnings - monthlyCosts;
+    const profitMargin = monthlyEarnings > 0 ? (monthlyProfit / monthlyEarnings * 100) : 0;
+    const paybackMonths = monthlyProfit > 0 ? (initialInvestment / monthlyProfit) : null;
+    
+    // Update display
+    document.getElementById('roi-monthly-profit').textContent = `$${monthlyProfit.toFixed(2)}`;
+    document.getElementById('roi-monthly-profit').className = `stat-value ${monthlyProfit >= 0 ? 'rate-good' : 'rate-bad'}`;
+    
+    document.getElementById('roi-margin').textContent = `${profitMargin.toFixed(1)}%`;
+    document.getElementById('roi-margin').className = `stat-value ${profitMargin >= 0 ? 'rate-good' : 'rate-bad'}`;
+    
+    if (paybackMonths !== null && initialInvestment > 0) {
+        if (paybackMonths > 120) {
+            document.getElementById('roi-payback-months').textContent = '>10 years';
+        } else if (paybackMonths > 12) {
+            document.getElementById('roi-payback-months').textContent = `${(paybackMonths / 12).toFixed(1)} years`;
+        } else {
+            document.getElementById('roi-payback-months').textContent = `${paybackMonths.toFixed(1)} months`;
+        }
+    } else {
+        document.getElementById('roi-payback-months').textContent = '-- months';
+    }
+}
+
+async function updatePayoutAccuracy() {
+    // This would fetch payout history from database
+    // For now, show placeholder values
+    // In a full implementation, this would query the payout_history table
+    document.getElementById('payout-accuracy-rate').textContent = 'N/A';
+    document.getElementById('payout-last-variance').textContent = 'N/A';
+    document.getElementById('payout-history-count').textContent = '0';
+}
+
+function exportEarningsToCSV() {
+    // Get current earnings state
+    if (!earningsState.cachedData) {
+        alert('No earnings data available to export');
+        return;
+    }
+    
+    // Prepare CSV data
+    const csvRows = [];
+    
+    // Header
+    csvRows.push([
+        'Node Name',
+        'Satellite',
+        'Period',
+        'Total Net ($)',
+        'Total Gross ($)',
+        'Held Amount ($)',
+        'Egress Earnings ($)',
+        'Storage Earnings ($)',
+        'Repair Earnings ($)',
+        'Audit Earnings ($)',
+        'Forecast Month End ($)',
+        'Confidence'
+    ].join(','));
+    
+    // Get period name for filename
+    const periodName = earningsState.period === 'current' ? 'current' :
+                      earningsState.period === 'previous' ? 'previous' :
+                      earningsState.period === '12months' ? '12months' : earningsState.period;
+    
+    // Data rows from cached data
+    const data = Array.isArray(earningsState.cachedData) ? earningsState.cachedData :
+                 earningsState.cachedData?.data || [];
+    
+    data.forEach(item => {
+        const breakdown = item.breakdown || {};
+        csvRows.push([
+            item.node_name || '',
+            item.satellite || '',
+            periodName,
+            item.total_net || 0,
+            item.total_gross || 0,
+            item.held_amount || 0,
+            breakdown.egress || 0,
+            breakdown.storage || 0,
+            breakdown.repair || 0,
+            breakdown.audit || 0,
+            item.forecast_month_end || '',
+            item.confidence || ''
+        ].join(','));
+    });
+    
+    // Create CSV blob and download
+    const csvContent = csvRows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    // Generate filename with timestamp
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-').substring(0, 19);
+    const viewName = currentNodeView.length === 1 && currentNodeView[0] === 'Aggregate' ? 'aggregate' :
+                     currentNodeView.length === 1 ? currentNodeView[0] : 'multi-node';
+    const filename = `storj-earnings-${viewName}-${periodName}-${timestamp}.csv`;
+    
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    log.info(`Exported earnings data to ${filename}`);
+}
+
 function renderNodeSelector() {
     const selector = document.getElementById('node-selector');
     selector.innerHTML = '';
@@ -1213,6 +1369,7 @@ document.addEventListener('DOMContentLoaded', () => {
     charts.createStorageHistoryChart();
     charts.createLatencyHistogramChart();
     charts.createEarningsHistoryChart();
+    charts.createEarningsBreakdownChart();
     connectionManager.connect();
     initializeDisplayMenu();
     setupEventListeners();

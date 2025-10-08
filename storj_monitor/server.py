@@ -421,9 +421,66 @@ async def websocket_handler(request):
                             else:
                                 period = f"{now.year}-{str(now.month - 1).zfill(2)}"
                         elif period_param == '12months':
-                            # Not implemented yet - would need aggregation across 12 months
-                            # For now, return empty
-                            await ws.send_json({"type": "earnings_data", "data": []})
+                            # Aggregate last 12 months of data
+                            import datetime
+                            now = datetime.datetime.now(datetime.timezone.utc)
+                            
+                            # Get data for last 12 complete months
+                            earnings_data = []
+                            for months_ago in range(12):
+                                month_date = now - datetime.timedelta(days=30 * months_ago)
+                                month_period = month_date.strftime('%Y-%m')
+                                
+                                month_data = await loop.run_in_executor(
+                                    app['db_executor'],
+                                    blocking_get_latest_earnings,
+                                    DATABASE_FILE,
+                                    nodes_to_query,
+                                    month_period
+                                )
+                                earnings_data.extend(month_data)
+                            
+                            # Format aggregated data
+                            formatted_data = []
+                            # Group by node and satellite for 12-month totals
+                            from collections import defaultdict
+                            aggregated = defaultdict(lambda: {
+                                'total_net': 0, 'total_gross': 0, 'held_amount': 0,
+                                'egress': 0, 'storage': 0, 'repair': 0, 'audit': 0
+                            })
+                            
+                            for estimate in earnings_data:
+                                key = (estimate['node_name'], estimate['satellite'])
+                                agg = aggregated[key]
+                                agg['total_net'] += estimate.get('total_earnings_net', 0)
+                                agg['total_gross'] += estimate.get('total_earnings_gross', 0)
+                                agg['held_amount'] += estimate.get('held_amount', 0)
+                                agg['egress'] += estimate.get('egress_earnings_net', 0)
+                                agg['storage'] += estimate.get('storage_earnings_net', 0)
+                                agg['repair'] += estimate.get('repair_earnings_net', 0)
+                                agg['audit'] += estimate.get('audit_earnings_net', 0)
+                            
+                            # Convert to response format
+                            for (node_name, satellite), data in aggregated.items():
+                                sat_name = SATELLITE_NAMES.get(satellite, satellite[:8])
+                                formatted_data.append({
+                                    'node_name': node_name,
+                                    'satellite': sat_name,
+                                    'total_net': round(data['total_net'], 2),
+                                    'total_gross': round(data['total_gross'], 2),
+                                    'held_amount': round(data['held_amount'], 2),
+                                    'breakdown': {
+                                        'egress': round(data['egress'], 2),
+                                        'storage': round(data['storage'], 2),
+                                        'repair': round(data['repair'], 2),
+                                        'audit': round(data['audit'], 2)
+                                    },
+                                    'forecast_month_end': None,  # No forecast for historical aggregate
+                                    'confidence': None
+                                })
+                            
+                            payload = {"type": "earnings_data", "data": formatted_data}
+                            await ws.send_json(payload)
                             continue
                         else:
                             # 'current' or any other value defaults to current month
