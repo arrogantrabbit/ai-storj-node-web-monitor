@@ -21,7 +21,7 @@ log = logging.getLogger("StorjMonitor.APIClient")
 class StorjNodeAPIClient:
     """
     Client for interacting with Storj Node API.
-    Each node gets its own client instance.
+    Each node gets its own client instance with automatic reconnection.
     """
     
     def __init__(self, node_name: str, api_endpoint: str, timeout: int = NODE_API_TIMEOUT):
@@ -31,11 +31,28 @@ class StorjNodeAPIClient:
         self.session: Optional[aiohttp.ClientSession] = None
         self.is_available = False
         self._last_error = None
+        self._health_check_task: Optional[asyncio.Task] = None
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 10
+        self._health_check_interval = 30  # seconds
+        self._last_successful_request = None
+        self._connection_state = 'disconnected'  # disconnected, connecting, connected, error
         
     async def start(self):
-        """Initialize the API client and verify connectivity."""
-        # Create session with redirect support (Storj API uses 301 redirects for trailing slash)
+        """Initialize the API client and verify connectivity with auto-reconnect."""
+        self._connection_state = 'connecting'
+        await self._connect()
+        
+        # Start health check task
+        self._health_check_task = asyncio.create_task(self._health_check_loop())
+        
+    async def _connect(self):
+        """Establish connection to API endpoint."""
         try:
+            # Create session with redirect support (Storj API uses 301 redirects for trailing slash)
+            if self.session:
+                await self.session.close()
+                
             self.session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
                 connector=aiohttp.TCPConnector(limit=10),
@@ -52,6 +69,9 @@ class StorjNodeAPIClient:
             
             if data and 'nodeID' in data:
                 self.is_available = True
+                self._connection_state = 'connected'
+                self._reconnect_attempts = 0
+                self._last_successful_request = asyncio.get_event_loop().time()
                 node_id = data.get('nodeID', 'unknown')[:12]
                 wallet = data.get('wallet', 'unknown')[:12]
                 version = data.get('version', 'unknown')
@@ -59,36 +79,99 @@ class StorjNodeAPIClient:
                     f"[{self.node_name}] API client connected to {self.api_endpoint} "
                     f"(Node ID: {node_id}..., Wallet: {wallet}..., Version: {version})"
                 )
+                return True
             else:
                 log.warning(
                     f"[{self.node_name}] API endpoint responded but data format unexpected. "
                     f"Data type: {type(data)}, Has nodeID: {data and 'nodeID' in data if data else 'No data'}"
                 )
                 self.is_available = False
+                self._connection_state = 'error'
+                return False
         except Exception as e:
             self._last_error = str(e)
-            log.error(f"[{self.node_name}] Failed to connect to API: {e}", exc_info=True)
+            self._connection_state = 'error'
+            log.error(f"[{self.node_name}] Failed to connect to API: {e}")
             self.is_available = False
             # Clean up session if initialization failed
             if self.session:
                 await self.session.close()
                 self.session = None
+            return False
+    
+    async def _health_check_loop(self):
+        """Periodically check API health and reconnect if needed."""
+        while True:
+            try:
+                await asyncio.sleep(self._health_check_interval)
+                
+                # Check if we're connected
+                if not self.is_available:
+                    # Attempt reconnection
+                    if self._reconnect_attempts < self._max_reconnect_attempts:
+                        self._reconnect_attempts += 1
+                        backoff = min(2 ** self._reconnect_attempts, 300)  # Max 5 minutes
+                        log.info(
+                            f"[{self.node_name}] API reconnection attempt {self._reconnect_attempts}/"
+                            f"{self._max_reconnect_attempts} in {backoff}s"
+                        )
+                        await asyncio.sleep(backoff)
+                        await self._connect()
+                    else:
+                        log.warning(
+                            f"[{self.node_name}] Max reconnection attempts reached. "
+                            f"Will retry in {self._health_check_interval * 2}s"
+                        )
+                        await asyncio.sleep(self._health_check_interval)
+                        self._reconnect_attempts = 0  # Reset for next cycle
+                else:
+                    # Perform health check
+                    try:
+                        data = await self.get_dashboard()
+                        if data and 'nodeID' in data:
+                            self._last_successful_request = asyncio.get_event_loop().time()
+                            log.debug(f"[{self.node_name}] API health check passed")
+                        else:
+                            log.warning(f"[{self.node_name}] API health check failed - invalid response")
+                            self.is_available = False
+                            self._connection_state = 'error'
+                    except Exception as e:
+                        log.warning(f"[{self.node_name}] API health check failed: {e}")
+                        self.is_available = False
+                        self._connection_state = 'error'
+                        
+            except asyncio.CancelledError:
+                log.info(f"[{self.node_name}] Health check loop cancelled")
+                break
+            except Exception as e:
+                log.error(f"[{self.node_name}] Error in health check loop: {e}", exc_info=True)
     
     async def stop(self):
         """Clean up the API client."""
+        # Cancel health check task
+        if self._health_check_task:
+            self._health_check_task.cancel()
+            try:
+                await self._health_check_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Close session
         if self.session:
             await self.session.close()
             log.info(f"[{self.node_name}] API client connection closed")
+        
+        self._connection_state = 'disconnected'
     
     async def _get(self, path: str) -> Optional[Dict[str, Any]]:
-        """Generic GET request to API endpoint with redirect support."""
+        """Generic GET request to API endpoint with redirect support and auto-recovery."""
         if not self.session:
             log.debug(f"[{self.node_name}] No session available for {path}")
+            # Try to reconnect if we don't have a session
+            if await self._connect():
+                # Session created, retry the request
+                return await self._get(path)
             return None
-        
-        # Note: During start(), is_available is not yet set, so we skip this check during init
-        # if not self.is_available:
-        #     return None
         
         # Ensure path has trailing slash (Storj API requirement)
         if not path.endswith('/'):
@@ -104,6 +187,7 @@ class StorjNodeAPIClient:
                 
                 if resp.status == 200:
                     json_data = await resp.json()
+                    self._last_successful_request = asyncio.get_event_loop().time()
                     # Handle null/None responses (valid JSON for periods with no data)
                     if json_data is None:
                         log.debug(f"[{self.node_name}] API returned null for {path}")
@@ -121,19 +205,39 @@ class StorjNodeAPIClient:
                         f"[{self.node_name}] API returned status {resp.status} for {path}. "
                         f"Response preview: {response_text[:200]}"
                     )
+                    # Mark as unavailable on persistent errors
+                    if resp.status >= 500:
+                        self.is_available = False
+                        self._connection_state = 'error'
                     return None
         except asyncio.TimeoutError:
             log.warning(f"[{self.node_name}] API request timeout for {path}")
+            self.is_available = False
+            self._connection_state = 'error'
             return None
         except aiohttp.ClientError as e:
             log.error(f"[{self.node_name}] API request failed for {path}: {e}")
+            self.is_available = False
+            self._connection_state = 'error'
             return None
         except Exception as e:
             log.error(
                 f"[{self.node_name}] Unexpected error in API request for {path}: {e}",
                 exc_info=True
             )
+            self.is_available = False
+            self._connection_state = 'error'
             return None
+    
+    def get_connection_state(self) -> Dict[str, Any]:
+        """Get current connection state for monitoring."""
+        return {
+            'state': self._connection_state,
+            'is_available': self.is_available,
+            'last_error': self._last_error,
+            'reconnect_attempts': self._reconnect_attempts,
+            'last_successful_request': self._last_successful_request
+        }
     
     async def get_dashboard(self) -> Optional[Dict]:
         """

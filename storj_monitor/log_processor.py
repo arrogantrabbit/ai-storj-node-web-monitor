@@ -550,18 +550,49 @@ def blocking_log_reader(log_path: str, loop: asyncio.AbstractEventLoop, aio_queu
 
 
 async def network_log_reader_task(node_name: str, host: str, port: int, queue: asyncio.Queue):
-    """Connects to a remote log forwarder and reads timestamped log lines."""
+    """
+    Connects to a remote log forwarder and reads timestamped log lines.
+    Features automatic reconnection with exponential backoff and connection state tracking.
+    """
     log.info(f"[{node_name}] Starting network log reader for {host}:{port}")
     backoff = 2
+    max_backoff = 60
+    reconnect_attempts = 0
+    max_reconnect_attempts = 0  # 0 = unlimited retries
+    connection_state = 'disconnected'
+    
+    # Update connection state in app_state
+    def update_connection_state(state: str, error: str = None):
+        nonlocal connection_state
+        connection_state = state
+        if node_name in app_state.get('connection_states', {}):
+            app_state['connection_states'][node_name]['log_reader'] = {
+                'state': state,
+                'host': host,
+                'port': port,
+                'reconnect_attempts': reconnect_attempts,
+                'last_error': error
+            }
+    
+    # Initialize connection state
+    if node_name not in app_state.get('connection_states', {}):
+        app_state.setdefault('connection_states', {})[node_name] = {}
+    update_connection_state('connecting')
+    
     while True:
         try:
+            update_connection_state('connecting')
             reader, writer = await asyncio.open_connection(host, port)
             log.info(f"[{node_name}] Connected to remote log source at {host}:{port}")
+            update_connection_state('connected')
             backoff = 2  # Reset backoff on successful connection
+            reconnect_attempts = 0
+            
             while True:
                 line_bytes = await reader.readline()
                 if not line_bytes:
                     log.warning(f"[{node_name}] Connection to {host}:{port} closed by remote end.")
+                    update_connection_state('disconnected', 'Connection closed by remote')
                     break
 
                 line = line_bytes.decode('utf-8').strip()
@@ -578,12 +609,39 @@ async def network_log_reader_task(node_name: str, host: str, port: int, queue: a
 
         except asyncio.CancelledError:
             log.info(f"[{node_name}] Network log reader for {host}:{port} cancelled.")
+            update_connection_state('stopped')
             break
-        except (ConnectionRefusedError, OSError, asyncio.TimeoutError) as e:
-            log.error(f"[{node_name}] Cannot connect to {host}:{port}: {e}. Retrying in {backoff}s.")
-        except Exception:
-            log.error(f"[{node_name}] Unexpected error in network log reader for {host}:{port}. Retrying in {backoff}s.",
-                      exc_info=True)
+        except (ConnectionRefusedError, OSError) as e:
+            reconnect_attempts += 1
+            error_msg = f"Connection error: {str(e)}"
+            update_connection_state('error', error_msg)
+            
+            if max_reconnect_attempts > 0 and reconnect_attempts >= max_reconnect_attempts:
+                log.error(
+                    f"[{node_name}] Max reconnection attempts ({max_reconnect_attempts}) reached for {host}:{port}. "
+                    f"Stopping reconnection."
+                )
+                break
+            
+            log.error(
+                f"[{node_name}] Cannot connect to {host}:{port}: {e}. "
+                f"Attempt {reconnect_attempts}. Retrying in {backoff}s."
+            )
+        except asyncio.TimeoutError as e:
+            reconnect_attempts += 1
+            error_msg = "Connection timeout"
+            update_connection_state('error', error_msg)
+            log.error(f"[{node_name}] Connection timeout to {host}:{port}. Retrying in {backoff}s.")
+        except Exception as e:
+            reconnect_attempts += 1
+            error_msg = f"Unexpected error: {str(e)}"
+            update_connection_state('error', error_msg)
+            log.error(
+                f"[{node_name}] Unexpected error in network log reader for {host}:{port}. "
+                f"Retrying in {backoff}s.",
+                exc_info=True
+            )
 
+        # Wait before reconnecting
         await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 60)  # Exponential backoff up to 1 minute
+        backoff = min(backoff * 2, max_backoff)  # Exponential backoff up to max_backoff

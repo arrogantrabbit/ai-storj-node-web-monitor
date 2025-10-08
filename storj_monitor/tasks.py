@@ -221,6 +221,47 @@ async def websocket_batch_broadcaster_task(app):
             log.error("Error in websocket_batch_broadcaster_task:", exc_info=True)
 
 
+async def connection_status_broadcaster_task(app):
+    """
+    Periodically broadcasts connection status to all WebSocket clients.
+    """
+    log.info("Connection status broadcaster task started.")
+    broadcast_interval = 10  # seconds
+    
+    while True:
+        try:
+            await asyncio.sleep(broadcast_interval)
+            
+            # Gather connection states
+            connection_states = {}
+            
+            # Get API client states
+            for node_name, client in app.get('api_clients', {}).items():
+                connection_states[node_name] = {
+                    'api_client': client.get_connection_state()
+                }
+            
+            # Get log reader states from app_state
+            for node_name, states in app_state.get('connection_states', {}).items():
+                if node_name not in connection_states:
+                    connection_states[node_name] = {}
+                connection_states[node_name].update(states)
+            
+            # Broadcast to all connected clients
+            if connection_states:
+                payload = {
+                    "type": "connection_status",
+                    "states": connection_states
+                }
+                await robust_broadcast(app_state['websockets'], payload)
+                
+        except asyncio.CancelledError:
+            log.info("Connection status broadcaster task cancelled")
+            break
+        except Exception:
+            log.error("Error in connection_status_broadcaster_task:", exc_info=True)
+
+
 async def start_background_tasks(app):
     import concurrent.futures
     import sys
@@ -309,11 +350,13 @@ async def start_background_tasks(app):
         asyncio.create_task(incremental_stats_updater_task(app)),
         asyncio.create_task(performance_aggregator_task(app)),
         asyncio.create_task(websocket_batch_broadcaster_task(app)),
+        asyncio.create_task(connection_status_broadcaster_task(app)),
         asyncio.create_task(debug_logger_task(app)),
         asyncio.create_task(database_writer_task(app)),
         asyncio.create_task(hourly_aggregator_task(app)),
         asyncio.create_task(database_pruner_task(app))
     ])
+    log.info("Connection status broadcaster task initialized")
     
     # Add reputation and storage polling tasks if we have any API clients
     if app['api_clients']:

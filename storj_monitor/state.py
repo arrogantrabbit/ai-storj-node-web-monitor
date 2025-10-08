@@ -307,4 +307,5 @@ app_state: Dict[str, Any] = {
     'websocket_event_queue': [],  # Queue for batching websocket events
     'websocket_queue_lock': asyncio.Lock(),  # Lock for websocket queue operations
     'TOKEN_REGEX': re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b\d+\b'),  # Pre-compiled regex
+    'connection_states': {},  # { node_name: {'log_reader': {...}, 'api_client': {...}} }
 }
