@@ -96,16 +96,10 @@ async def database_pruner_task(app):
             log.error("Error in database pruner task:", exc_info=True)
         await asyncio.sleep(3600 * DB_PRUNE_INTERVAL_HOURS)
 
-
 async def incremental_stats_updater_task(app):
-    """
-    Maintains incremental statistics for each active client view.
-    """
     log.info("Incremental stats updater task started.")
-
     while True:
         await asyncio.sleep(STATS_INTERVAL_SECONDS)
-
         try:
             active_views = {tuple(state.get('view', ['Aggregate'])) for state in app_state['websockets'].values()}
             if not active_views:
@@ -113,7 +107,6 @@ async def incremental_stats_updater_task(app):
 
             for view_tuple in active_views:
                 view_list = list(view_tuple)
-
                 if view_tuple not in app_state['incremental_stats']:
                     from .state import IncrementalStats
                     app_state['incremental_stats'][view_tuple] = IncrementalStats()
@@ -123,41 +116,48 @@ async def incremental_stats_updater_task(app):
                 new_events_processed = False
 
                 for node_name in nodes_to_process:
-                    if node_name in app_state['nodes']:
-                        node_state = app_state['nodes'][node_name]
-                        if node_state.get('has_new_events', False):
-                            all_events = list(node_state['live_events'])
-                            # Get or initialize the last processed index for this node
-                            last_index = stats.last_processed_indices.get(node_name, 0)
-                            if last_index < len(all_events):
-                                new_events = all_events[last_index:]
-                                for event in new_events:
-                                    stats.add_event(event, app_state['TOKEN_REGEX'])
-                                stats.last_processed_indices[node_name] = len(all_events)
-                                new_events_processed = True
+                    node_state = app_state['nodes'].get(node_name)
+                    if not node_state:
+                        continue
 
-                if new_events_processed:
-                    all_events_for_view = [event for node_name in nodes_to_process if node_name in app_state['nodes'] for event in app_state['nodes'][node_name]['live_events']]
-                    stats.update_live_stats(all_events_for_view)
-                    for node_name in nodes_to_process:
-                        if node_name in app_state['nodes']:
-                            app_state['nodes'][node_name]['has_new_events'] = False
+                    all_events = list(node_state['live_events'])
+                    last_index = stats.last_processed_indices.get(node_name, 0)
 
-                    historical_stats = get_historical_stats(view_list, app_state['nodes'])
-                    payload = stats.to_payload(historical_stats)
-                    app_state['stats_cache'][view_tuple] = payload
+                    # Verarbeite immer neue Events, unabhängig vom Flag
+                    if last_index < len(all_events):
+                        new_events = all_events[last_index:]
+                        for event in new_events:
+                            stats.add_event(event, app_state['TOKEN_REGEX'])
+                        stats.last_processed_indices[node_name] = len(all_events)
+                        new_events_processed = True
 
-                    # Broadcast only to websockets subscribed to this specific view
-                    recipients = {ws for ws, state in app_state['websockets'].items() if tuple(state.get('view', ['Aggregate'])) == view_tuple}
-                    for ws in recipients:
-                        try:
-                            await ws.send_json(payload)
-                        except (ConnectionResetError, asyncio.CancelledError):
-                            pass
+                # Auch wenn keine neuen Events, weiterhin regelmäßig updaten
+                all_events_for_view = [
+                    event
+                    for node_name in nodes_to_process
+                    if node_name in app_state['nodes']
+                    for event in app_state['nodes'][node_name]['live_events']
+                ]
+                stats.update_live_stats(all_events_for_view)
+
+                historical_stats = get_historical_stats(view_list, app_state['nodes'])
+                payload = stats.to_payload(historical_stats)
+                app_state['stats_cache'][view_tuple] = payload
+
+                # Broadcast an verbundene Clients
+                recipients = {
+                    ws
+                    for ws, state in app_state['websockets'].items()
+                    if tuple(state.get('view', ['Aggregate'])) == view_tuple
+                }
+                for ws in recipients:
+                    try:
+                        await ws.send_json(payload)
+                    except (ConnectionResetError, asyncio.CancelledError):
+                        pass
 
         except Exception:
             log.error("Error in incremental_stats_updater_task:", exc_info=True)
-
 
 async def performance_aggregator_task(app):
     log.info("Live performance aggregator task started.")
