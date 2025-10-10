@@ -919,6 +919,7 @@ function updateEarningsCard(data) {
 
 function requestEarningsData(period) {
     if (ws && ws.readyState === WebSocket.OPEN) {
+        showLoadingIndicator('earnings-card');
         ws.send(JSON.stringify({
             type: 'get_earnings_data',
             view: currentNodeView,
