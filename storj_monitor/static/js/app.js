@@ -131,10 +131,13 @@ function refreshCardData(cardId) {
             }));
             break;
         case 'earnings-card':
+            showLoadingIndicator(cardId);
             requestEarningsData();
             break;
         case 'hashstore-card':
         case 'hashstore-chart-card':
+            showLoadingIndicator('hashstore-card');
+            showLoadingIndicator('hashstore-chart-card');
             requestHashstoreData();
             break;
         case 'active-compactions-card':
