@@ -289,6 +289,14 @@ async def calculate_comparison_metrics(
     OPTIMIZED: Uses caching, concurrent execution, and pre-computed data
     from database for better performance.
     """
+    # Import at the top of function to avoid scope issues
+    import asyncio
+    import time as time_module  # Use a different name to avoid variable shadowing
+    from .database import (
+        blocking_get_latest_storage_with_forecast,
+        blocking_get_latest_reputation,
+    )
+    
     # Parse time range
     hours = parse_time_range(time_range)
     
@@ -319,13 +327,6 @@ async def calculate_comparison_metrics(
         if (time_module.time() - cache_time) < cache_ttl:
             log.info(f"[Comparison] Using cached results for {len(node_names)} nodes (type={comparison_type})")
             return cached_data
-    
-    import asyncio  # Make sure asyncio is imported
-    import time as time_module  # Use a different name to avoid variable shadowing
-    from .database import (
-        blocking_get_latest_storage_with_forecast,
-        blocking_get_latest_reputation,
-    )
     
     start_time = time_module.time()
     loop = asyncio.get_running_loop()  # Get the current event loop
