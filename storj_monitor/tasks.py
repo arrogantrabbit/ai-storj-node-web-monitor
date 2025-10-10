@@ -127,8 +127,7 @@ async def database_pruner_task(app):
 async def incremental_stats_updater_task(app):
     """
     Maintains incremental statistics for each active client view.
-    Prevents "stuck" aggregates by always updating live stats,
-    even when no new events have been received.
+    Each node keeps independent stats, and 'Aggregate' views sum them up safely.
     """
     log.info("Incremental stats updater task started.")
 
@@ -136,86 +135,110 @@ async def incremental_stats_updater_task(app):
         await asyncio.sleep(STATS_INTERVAL_SECONDS)
 
         try:
-            # Snapshot of websockets to avoid concurrent modification errors
-            websockets_snapshot = dict(app_state["websockets"])
+            # Snapshot to prevent runtime dictionary changes
+            websockets_snapshot = dict(app_state['websockets'])
             active_views = {
-                tuple(state.get("view", ["Aggregate"])) for state in websockets_snapshot.values()
+                tuple(state.get('view', ['Aggregate']))
+                for state in websockets_snapshot.values()
             }
+
+            # If no connected websockets, skip this iteration
             if not active_views:
                 continue
 
+            # --- STEP 1: Update per-node incremental stats ---
+            for node_name, node_state in app_state['nodes'].items():
+                all_events = list(node_state['live_events'])
+                if not all_events:
+                    continue
+
+                # Create or get per-node IncrementalStats
+                if node_name not in app_state['incremental_stats']:
+                    from .state import IncrementalStats
+                    app_state['incremental_stats'][node_name] = IncrementalStats()
+
+                node_stats = app_state['incremental_stats'][node_name]
+                last_index = node_stats.last_processed_indices.get(node_name, 0)
+
+                if last_index < len(all_events):
+                    new_events = all_events[last_index:]
+                    for event in new_events:
+                        node_stats.add_event(event, app_state['TOKEN_REGEX'])
+                    node_stats.last_processed_indices[node_name] = len(all_events)
+
+                # Update live stats (rolling 1-min window)
+                node_stats.update_live_stats(all_events)
+                node_state['has_new_events'] = False
+
+            # --- STEP 2: Update and broadcast for each active view ---
             for view_tuple in active_views:
                 view_list = list(view_tuple)
 
-                # Ensure a stats object exists for this view
-                if view_tuple not in app_state["incremental_stats"]:
-                    from .state import IncrementalStats
+                # Determine which nodes this view includes
+                if view_list == ['Aggregate']:
+                    nodes_to_include = list(app_state['nodes'].keys())
+                else:
+                    nodes_to_include = [n for n in view_list if n in app_state['nodes']]
 
-                    app_state["incremental_stats"][view_tuple] = IncrementalStats()
+                # Merge stats from multiple nodes (aggregate view)
+                from .state import IncrementalStats
+                combined_stats = IncrementalStats()
 
-                stats = app_state["incremental_stats"][view_tuple]
-                nodes_to_process = (
-                    view_list if view_list != ["Aggregate"] else list(app_state["nodes"].keys())
-                )
-                new_events_processed = False
+                all_events_for_view = []
+                for node_name in nodes_to_include:
+                    if node_name in app_state['incremental_stats']:
+                        node_stats = app_state['incremental_stats'][node_name]
+                        all_events_for_view.extend(app_state['nodes'][node_name]['live_events'])
+                        # Add up numeric counters and combine satellite/country data
+                        combined_stats.dl_success += node_stats.dl_success
+                        combined_stats.dl_fail += node_stats.dl_fail
+                        combined_stats.ul_success += node_stats.ul_success
+                        combined_stats.ul_fail += node_stats.ul_fail
+                        combined_stats.audit_success += node_stats.audit_success
+                        combined_stats.audit_fail += node_stats.audit_fail
+                        combined_stats.total_dl_size += node_stats.total_dl_size
+                        combined_stats.total_ul_size += node_stats.total_ul_size
+                        combined_stats.live_dl_bytes += node_stats.live_dl_bytes
+                        combined_stats.live_ul_bytes += node_stats.live_ul_bytes
 
-                # Process new events for each node
-                for node_name in nodes_to_process:
-                    node_state = app_state["nodes"].get(node_name)
-                    if not node_state:
-                        continue
-                    node_state = app_state["nodes"][node_name]
-                    if node_state.get("has_new_events", False):
-                        all_events = list(node_state["live_events"])
-                        # Get or initialize the last processed index for this node
-                        last_index = stats.last_processed_indices.get(node_name, 0)
-                        if last_index < len(all_events):
-                            new_events = all_events[last_index:]
-                            for event in new_events:
-                                stats.add_event(event, app_state["TOKEN_REGEX"])
-                            stats.last_processed_indices[node_name] = len(all_events)
-                            new_events_processed = True
+                        # Merge dict-based and counter-based stats
+                        for sat, sdata in node_stats.satellites.items():
+                            if sat not in combined_stats.satellites:
+                                combined_stats.satellites[sat] = sdata.copy()
+                            else:
+                                for k, v in sdata.items():
+                                    combined_stats.satellites[sat][k] = (
+                                        combined_stats.satellites[sat].get(k, 0) + v
+                                    )
 
-                    all_events = list(node_state["live_events"])
-                    last_index = stats.last_processed_indices.get(node_name, 0)
+                        combined_stats.countries_dl.update(node_stats.countries_dl)
+                        combined_stats.countries_ul.update(node_stats.countries_ul)
+                        combined_stats.dls_success.update(node_stats.dls_success)
+                        combined_stats.dls_failed.update(node_stats.dls_failed)
+                        combined_stats.uls_success.update(node_stats.uls_success)
+                        combined_stats.uls_failed.update(node_stats.uls_failed)
 
-                    if last_index < len(all_events):
-                        new_events = all_events[last_index:]
-                        for event in new_events:
-                            stats.add_event(event, app_state["TOKEN_REGEX"])
-                        stats.last_processed_indices[node_name] = len(all_events)
-                        new_events_processed = True
-                        node_state["has_new_events"] = False  # Only reset when processed
+                # Update live stats for combined view
+                combined_stats.update_live_stats(all_events_for_view)
 
-                # --- Always update live stats to keep aggregates current ---
-                all_events_for_view = [
-                    event
-                    for node_name in nodes_to_process
-                    if node_name in app_state["nodes"]
-                    for event in app_state["nodes"][node_name]["live_events"]
+                # Get historical data for this view
+                historical_stats = get_historical_stats(view_list, app_state['nodes'])
+                payload = combined_stats.to_payload(historical_stats)
+                app_state['stats_cache'][view_tuple] = payload
+
+                # Broadcast to clients subscribed to this view
+                recipients = [
+                    ws for ws, state in websockets_snapshot.items()
+                    if tuple(state.get('view', ['Aggregate'])) == view_tuple
                 ]
-                stats.update_live_stats(all_events_for_view)
-
-                historical_stats = get_historical_stats(view_list, app_state["nodes"])
-                payload = stats.to_payload(historical_stats)
-                app_state["stats_cache"][view_tuple] = payload
-
-                # --- Broadcast only if new data OR aggregate view ---
-                if new_events_processed or view_list == ["Aggregate"]:
-                    recipients = [
-                        ws
-                        for ws, state in websockets_snapshot.items()
-                        if tuple(state.get("view", ["Aggregate"])) == view_tuple
-                    ]
-                    for ws in recipients:
-                        try:
-                            await ws.send_json(payload)
-                        except (ConnectionResetError, asyncio.CancelledError):
-                            pass
+                for ws in recipients:
+                    try:
+                        await ws.send_json(payload)
+                    except (ConnectionResetError, asyncio.CancelledError, RuntimeError):
+                        pass
 
         except Exception:
             log.error("Error in incremental_stats_updater_task:", exc_info=True)
-
 
 async def performance_aggregator_task(app):
     log.info("Live performance aggregator task started.")
