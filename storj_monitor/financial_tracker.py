@@ -1103,6 +1103,9 @@ class FinancialTracker:
         """
         Import historical payout data from API to populate earnings history.
 
+        OPTIMIZED: Skips periods that already have data in the database to avoid
+        recalculating unchanging historical data on every server restart.
+
         Iterates through periods from 2022-01 to current month, querying paystubs
         for each period and storing them as earnings estimates.
 
@@ -1116,7 +1119,10 @@ class FinancialTracker:
             return
 
         try:
+            from .database import blocking_get_earnings_estimates
+
             imported_count = 0
+            skipped_count = 0
             now = datetime.datetime.now(datetime.timezone.utc)
             current_year = now.year
             current_month = now.month
@@ -1137,6 +1143,31 @@ class FinancialTracker:
                 period = f"{year}-{month:02d}"
 
                 try:
+                    # CRITICAL OPTIMIZATION: Check if we already have data for this period
+                    # Historical data never changes, so if it exists, skip it entirely
+                    existing_data = await loop.run_in_executor(
+                        executor,
+                        blocking_get_earnings_estimates,
+                        db_path,
+                        [self.node_name],
+                        None,  # satellite (None = all)
+                        period,
+                        30,  # days
+                    )
+
+                    if existing_data and len(existing_data) > 0:
+                        # Already have data for this period - skip it
+                        skipped_count += 1
+                        log.debug(
+                            f"[{self.node_name}] Skipping {period} - already have {len(existing_data)} satellite record(s)"
+                        )
+                        # Move to next month
+                        month += 1
+                        if month > 12:
+                            month = 1
+                            year += 1
+                        continue
+
                     # Query paystubs for this period
                     # API endpoint: /api/heldamount/paystubs/{period}/{period}
                     # Returns: list of paystubs, one per satellite, or None if no data
@@ -1211,9 +1242,15 @@ class FinancialTracker:
                     month = 1
                     year += 1
 
+            # Log summary
             if imported_count > 0:
                 log.info(
-                    f"[{self.node_name}] Successfully imported {imported_count} historical payout records"
+                    f"[{self.node_name}] Successfully imported {imported_count} new historical payout records "
+                    f"(skipped {skipped_count} existing periods)"
+                )
+            elif skipped_count > 0:
+                log.info(
+                    f"[{self.node_name}] All {skipped_count} historical periods already in database - no import needed"
                 )
             else:
                 log.info(f"[{self.node_name}] No historical payouts found (node may be new)")
@@ -1271,7 +1308,8 @@ async def financial_polling_task(app: dict[str, Any]):
     """
     Background task that polls earnings data for all nodes and broadcasts updates.
 
-    OPTIMIZATION: Uses aggressive caching to speed up calculations dramatically.
+    CRITICAL STARTUP OPTIMIZATION: Historical imports are now done lazily in background
+    to prevent 5+ minute startup delays. Only current month is calculated immediately.
 
     Args:
         app: Application context
@@ -1291,23 +1329,39 @@ async def financial_polling_task(app: dict[str, Any]):
         app["financial_trackers"][node_name] = FinancialTracker(node_name, api_client)
         log.info(f"[{node_name}] Financial tracker initialized")
 
-    # Attempt to import historical payouts (with caching, this should be fast)
-    log.info("Importing historical payout data from node APIs...")
-    loop = asyncio.get_running_loop()
-    for node_name, tracker in app["financial_trackers"].items():
-        try:
-            await tracker.import_historical_payouts(DATABASE_FILE, loop, app.get("db_executor"))
-        except Exception as e:
-            log.debug(f"[{node_name}] Historical import skipped: {e}")
+    # CRITICAL OPTIMIZATION: Skip expensive historical import on startup
+    # Historical data will be lazy-loaded when client requests it
+    log.info("Skipping historical import on startup for fast initialization")
+    log.info("Historical earnings will be imported on-demand when requested by client")
 
-    # Initial poll
+    # Initial poll for CURRENT MONTH ONLY (fast)
+    loop = asyncio.get_running_loop()
     await broadcast_earnings_update(app, loop)
     last_historical_import_day = datetime.datetime.now(datetime.timezone.utc).day
+    
+    # Mark that background historical import should run
+    app["historical_import_pending"] = True
 
     while True:
         try:
-            # Check if we should run daily historical import (catches new paystubs like Sept reported in Oct)
             now = datetime.datetime.now(datetime.timezone.utc)
+            
+            # OPTIMIZATION: Background historical import after startup
+            if app.get("historical_import_pending"):
+                # Run historical import in background ONCE after startup
+                log.info("Running background historical import (one-time after startup)...")
+                for node_name, tracker in app["financial_trackers"].items():
+                    try:
+                        # This is now async but won't block startup
+                        await tracker.import_historical_payouts(
+                            DATABASE_FILE, loop, app.get("db_executor")
+                        )
+                    except Exception as e:
+                        log.debug(f"[{node_name}] Historical import skipped: {e}")
+                app["historical_import_pending"] = False
+                log.info("Background historical import complete")
+            
+            # Check if we should run daily historical import (catches new paystubs like Sept reported in Oct)
             if now.day != last_historical_import_day:
                 log.info("Running daily historical paystub check...")
                 for node_name, tracker in app["financial_trackers"].items():

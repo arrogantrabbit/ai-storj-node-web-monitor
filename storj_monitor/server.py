@@ -1105,7 +1105,7 @@ async def websocket_handler(request):
                         await safe_send_json(ws, payload)
 
                     elif msg_type == "get_earnings_history":
-                        # Phase 5.3: Get earnings history
+                        # Phase 5.3: Get earnings history with LAZY IMPORT
                         node_name = data.get("node_name")
                         satellite = data.get("satellite")
                         days = data.get("days", 30)
@@ -1123,6 +1123,20 @@ async def websocket_handler(request):
                         loop = asyncio.get_running_loop()
                         from .config import DATABASE_FILE
                         from .database import blocking_get_earnings_estimates
+
+                        # OPTIMIZATION: Trigger on-demand historical import if not done yet
+                        tracker = app.get("financial_trackers", {}).get(node_name)
+                        if tracker and not hasattr(tracker, '_historical_imported'):
+                            log.info(f"[{node_name}] Lazy-loading historical earnings on first request...")
+                            try:
+                                await tracker.import_historical_payouts(
+                                    DATABASE_FILE, loop, app.get("db_executor")
+                                )
+                                tracker._historical_imported = True
+                                log.info(f"[{node_name}] Historical import complete")
+                            except Exception as e:
+                                log.warning(f"[{node_name}] Historical import failed: {e}")
+                                tracker._historical_imported = True  # Mark as attempted
 
                         history_data = await loop.run_in_executor(
                             app["db_executor"],
