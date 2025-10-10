@@ -11,7 +11,7 @@ log = logging.getLogger("StorjMonitor.WebsocketUtils")
 async def safe_send_json(ws, payload):
     """
     Safely send JSON data over WebSocket, handling connection errors gracefully.
-    
+
     Returns:
         bool: True if sent successfully, False if connection was closed/closing
     """
@@ -20,10 +20,12 @@ async def safe_send_json(ws, payload):
             return False
         await ws.send_json(payload)
         return True
-    except (ConnectionResetError,
-            aiohttp.client_exceptions.ClientConnectionResetError,
-            RuntimeError,
-            asyncio.CancelledError) as e:
+    except (
+        ConnectionResetError,
+        aiohttp.client_exceptions.ClientConnectionResetError,
+        RuntimeError,
+        asyncio.CancelledError,
+    ) as e:
         # Client disconnected or connection is closing - this is normal
         log.debug(f"Could not send broadcast to client (connection closing): {type(e).__name__}")
         return False
@@ -42,9 +44,12 @@ async def robust_broadcast(websockets_dict, payload, node_name: Optional[str] = 
     # If this is a node-specific message, filter the recipients to those
     # viewing the specific node or the aggregate view.
     if node_name:
-        recipients = {ws for ws, state in websockets_dict.items()
-                      if state.get("view") and (state.get("view") == ["Aggregate"] or node_name in state.get("view"))
-                      }
+        recipients = {
+            ws
+            for ws, state in websockets_dict.items()
+            if state.get("view")
+            and (state.get("view") == ["Aggregate"] or node_name in state.get("view"))
+        }
     else:  # Broadcast to all connected clients
         recipients = set(websockets_dict.keys())
 
@@ -58,7 +63,7 @@ async def robust_broadcast(websockets_dict, payload, node_name: Optional[str] = 
         # Wait for all send operations to complete.
         # return_exceptions=True prevents one failed send from stopping others.
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         # Count successful sends for debugging
         successful = sum(1 for r in results if r is True)
         if successful < len(results):

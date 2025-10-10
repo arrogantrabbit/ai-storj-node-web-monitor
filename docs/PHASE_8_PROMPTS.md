@@ -262,7 +262,7 @@ Target: >80% coverage for these three core modules
 
 Run tests with:
 ```bash
-pytest tests/test_config.py tests/test_database.py tests/test_log_processor.py -v --cov=storj_monitor.config --cov=storj_monitor.database --cov=storj_monitor.log_processor
+uv run pytest tests/test_config.py tests/test_database.py tests/test_log_processor.py -v --cov=storj_monitor.config --cov=storj_monitor.database --cov=storj_monitor.log_processor
 ```
 ```
 
@@ -357,7 +357,7 @@ Target: >80% coverage for all monitoring modules
 
 Run tests with:
 ```bash
-pytest tests/test_storj_api_client.py tests/test_reputation_tracker.py tests/test_storage_tracker.py tests/test_performance_analyzer.py -v
+uv run pytest tests/test_storj_api_client.py tests/test_reputation_tracker.py tests/test_storage_tracker.py tests/test_performance_analyzer.py -v
 ```
 ```
 
@@ -452,7 +452,7 @@ Target: >80% coverage for intelligence modules
 
 Run tests with:
 ```bash
-pytest tests/test_analytics_engine.py tests/test_anomaly_detector.py tests/test_alert_manager.py -v
+uv run pytest tests/test_analytics_engine.py tests/test_anomaly_detector.py tests/test_alert_manager.py -v
 ```
 ```
 
@@ -536,7 +536,7 @@ Target: >80% coverage for financial and notification modules
 
 Run tests with:
 ```bash
-pytest tests/test_financial_tracker.py tests/test_email_sender.py tests/test_webhook_sender.py tests/test_notification_handler.py -v
+uv run pytest tests/test_financial_tracker.py tests/test_email_sender.py tests/test_webhook_sender.py tests/test_notification_handler.py -v
 ```
 ```
 
@@ -597,7 +597,7 @@ Target: Critical integration paths tested
 
 Run tests with:
 ```bash
-pytest tests/integration/ -v
+uv run pytest tests/integration/ -v
 ```
 ```
 
@@ -665,13 +665,13 @@ line-ending = "auto"
 2. Run ruff check and fix issues:
 ```bash
 # Check all Python files
-ruff check storj_monitor/ tests/
+uv run ruff check storj_monitor/ tests/
 
 # Auto-fix issues where possible
-ruff check --fix storj_monitor/ tests/
+uv run ruff check --fix storj_monitor/ tests/
 
 # Format code
-ruff format storj_monitor/ tests/
+uv run ruff format storj_monitor/ tests/
 ```
 
 3. Fix common issues:
@@ -684,7 +684,7 @@ ruff format storj_monitor/ tests/
 
 4. Verify all checks pass:
 ```bash
-ruff check storj_monitor/ tests/ --no-fix
+uv run ruff check storj_monitor/ tests/ --no-fix
 ```
 
 Success criteria:
