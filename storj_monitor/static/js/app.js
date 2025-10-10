@@ -984,6 +984,7 @@ function handleWebSocketMessage(data) {
             isHistoricalDataLoaded = true;
             if (isCardVisible('performance-card') && viewKey === currentNodeView.join(',') && performanceState.range === '5m') {
                 charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes);
+                hideLoadingIndicator('performance-card');
             }
             break;
         }
