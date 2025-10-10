@@ -74,6 +74,31 @@ function formatCompactionDate(isoString) {
     return `${date.toLocaleDateString()} ${timeStr}`;
 }
 
+// --- Loading Indicator Functions ---
+function showLoadingIndicator(cardId) {
+    const cardElement = document.getElementById(cardId);
+    if (!cardElement) return;
+
+    let loadingOverlay = cardElement.querySelector('.loading-overlay');
+    if (!loadingOverlay) {
+        loadingOverlay = document.createElement('div');
+        loadingOverlay.className = 'loading-overlay';
+        loadingOverlay.innerHTML = '<div class="loader"></div>';
+        cardElement.appendChild(loadingOverlay);
+    }
+    loadingOverlay.classList.remove('hidden');
+}
+
+function hideLoadingIndicator(cardId) {
+    const cardElement = document.getElementById(cardId);
+    if (!cardElement) return;
+
+    const loadingOverlay = cardElement.querySelector('.loading-overlay');
+    if (loadingOverlay) {
+        loadingOverlay.classList.add('hidden');
+    }
+}
+
 // --- Card Visibility & Layout ---
 function isCardVisible(cardId) {
     return cardVisibilityState[cardId] !== false;
@@ -83,18 +108,21 @@ function refreshCardData(cardId) {
     // Apply cached data immediately if available, then request fresh data
     switch(cardId) {
         case 'reputation-card':
+            showLoadingIndicator(cardId);
             ws.send(JSON.stringify({
                 type: 'get_reputation_data',
                 view: currentNodeView
             }));
             break;
         case 'storage-health-card':
+            showLoadingIndicator(cardId);
             ws.send(JSON.stringify({
                 type: 'get_storage_data',
                 view: currentNodeView
             }));
             break;
         case 'latency-card':
+            showLoadingIndicator(cardId);
             const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range];
             ws.send(JSON.stringify({
                 type: 'get_latency_stats',
@@ -103,10 +131,13 @@ function refreshCardData(cardId) {
             }));
             break;
         case 'earnings-card':
+            showLoadingIndicator(cardId);
             requestEarningsData();
             break;
         case 'hashstore-card':
         case 'hashstore-chart-card':
+            showLoadingIndicator('hashstore-card');
+            showLoadingIndicator('hashstore-chart-card');
             requestHashstoreData();
             break;
         case 'active-compactions-card':
@@ -888,6 +919,7 @@ function updateEarningsCard(data) {
 
 function requestEarningsData(period) {
     if (ws && ws.readyState === WebSocket.OPEN) {
+        showLoadingIndicator('earnings-card');
         ws.send(JSON.stringify({
             type: 'get_earnings_data',
             view: currentNodeView,
@@ -956,21 +988,36 @@ function handleWebSocketMessage(data) {
             isHistoricalDataLoaded = true;
             if (isCardVisible('performance-card') && viewKey === currentNodeView.join(',') && performanceState.range === '5m') {
                 charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes);
+                hideLoadingIndicator('performance-card');
             }
             break;
         }
         case 'aggregated_performance_data':
             // Cache the aggregated data for view switching
             performanceState.cachedAggregatedData = data.performance_data;
-            if (isCardVisible('performance-card')) charts.updatePerformanceChart(performanceState, data.performance_data, currentNodeView, availableNodes);
+            if (isCardVisible('performance-card')) {
+                charts.updatePerformanceChart(performanceState, data.performance_data, currentNodeView, availableNodes);
+                hideLoadingIndicator('performance-card');
+            }
             break;
-        case 'stats_update': updateAllVisuals(data); break;
+        case 'stats_update':
+            updateAllVisuals(data);
+            hideLoadingIndicator('size-charts-card'); // Hide loading indicator after data update
+            break;
         case 'hashstore_updated': console.log("[WebSocket] Hashstore data updated. Requesting new data."); requestHashstoreData(); break;
-        case 'hashstore_stats_data': updateHashstorePanel(data.data); break;
+        case 'hashstore_stats_data':
+            updateHashstorePanel(data.data);
+            hideLoadingIndicator('hashstore-card');
+            hideLoadingIndicator('hashstore-chart-card');
+            break;
         case 'active_compactions_update': updateActiveCompactions(data.compactions); break;
-        case 'reputation_data': updateReputationCard(data.data); break;
+        case 'reputation_data':
+            updateReputationCard(data.data);
+            hideLoadingIndicator('reputation-card');
+            break;
         case 'latency_stats':
             updateLatencyCard(data.data);
+            hideLoadingIndicator('latency-card');
             // Request histogram data
             if (ws && ws.readyState === WebSocket.OPEN) {
                 const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range];
@@ -986,6 +1033,7 @@ function handleWebSocketMessage(data) {
             // Cache the storage data for immediate range switching
             storageState.cachedData = data.data;
             updateStorageHealthCard(data.data);
+            hideLoadingIndicator('storage-health-card');
             break;
         case 'storage_history': charts.updateStorageHistoryChart(data.data); break;
         case 'reputation_alerts': updateAlertsPanel(data.alerts, 'reputation'); break;
@@ -1017,6 +1065,7 @@ function handleWebSocketMessage(data) {
         case 'earnings_data':
             earningsState.cachedData = data.data;
             updateEarningsCard(data.data);
+            hideLoadingIndicator('earnings-card');
             break;
         case 'earnings_history':
             if (data.data && data.data.length > 0 && isCardVisible('earnings-card')) {
@@ -1029,9 +1078,9 @@ function handleWebSocketMessage(data) {
 // --- UI Event Listeners ---
 function setupEventListeners() {
     document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); charts.toggleSatelliteView(); if(isCardVisible('satellite-card')) charts.updateSatelliteChart(); });
-    document.getElementById('size-view-toggles').addEventListener('click', function(e) { e.preventDefault(); const target = e.target; if (target.tagName === 'A' && !target.classList.contains('active')) { charts.setSizeChartViewMode(target.getAttribute('data-view')); document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active')); target.classList.add('active'); if(isCardVisible('size-charts-card')) charts.updateSizeBarChart(); } });
+    document.getElementById('size-view-toggles').addEventListener('click', function(e) { e.preventDefault(); const target = e.target; if (target.tagName === 'A' && !target.classList.contains('active')) { showLoadingIndicator('size-charts-card'); charts.setSizeChartViewMode(target.getAttribute('data-view')); document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active')); target.classList.add('active'); if(isCardVisible('size-charts-card')) charts.updateSizeBarChart(); } });
     document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.view = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); const isLiveView = performanceState.range === '5m'; const dataToUse = isLiveView ? livePerformanceBins : performanceState.cachedAggregatedData; charts.updatePerformanceChart(performanceState, dataToUse, currentNodeView, availableNodes); } });
-    document.getElementById('time-range-toggles').addEventListener('click', function(e) { e.preventDefault(); const newRange = e.target.getAttribute('data-range'); if (newRange === performanceState.range) return; performanceState.range = newRange; performanceState.cachedAggregatedData = null; document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.createPerformanceChart(performanceState); if (newRange === '5m') { charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } else { const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange]; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours })); } } });
+    document.getElementById('time-range-toggles').addEventListener('click', function(e) { e.preventDefault(); const newRange = e.target.getAttribute('data-range'); if (newRange === performanceState.range) return; performanceState.range = newRange; performanceState.cachedAggregatedData = null; document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.createPerformanceChart(performanceState); if (newRange === '5m') { charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } else { showLoadingIndicator('performance-card'); const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange]; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours })); } } });
     document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.agg = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); const isLiveView = performanceState.range === '5m'; const dataToUse = isLiveView ? livePerformanceBins : performanceState.cachedAggregatedData; charts.updatePerformanceChart(performanceState, dataToUse, currentNodeView, availableNodes); } });
     document.getElementById('latency-range-toggles').addEventListener('click', function(e) {
         e.preventDefault();
@@ -1040,6 +1089,7 @@ function setupEventListeners() {
         latencyState.range = newRange;
         document.querySelectorAll('#latency-range-toggles .toggle-link').forEach(el => el.classList.remove('active'));
         e.target.classList.add('active');
+        showLoadingIndicator('latency-card');
         // Request latency data with new range
         if (ws && ws.readyState === WebSocket.OPEN) {
             const hours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[newRange];
@@ -1057,6 +1107,7 @@ function setupEventListeners() {
         storageState.range = newRange;
         document.querySelectorAll('#storage-range-toggles .toggle-link').forEach(el => el.classList.remove('active'));
         e.target.classList.add('active');
+        showLoadingIndicator('storage-health-card');
         
         // Immediately update display with cached data if available
         if (storageState.cachedData) {
@@ -1119,6 +1170,15 @@ function setupEventListeners() {
         initializePerformanceDataStateForView(currentNodeView);
         renderNodeSelector();
         heatmap.clearData();
+        
+        // Show loading indicators for cards that will be updated
+        showLoadingIndicator('performance-card');
+        showLoadingIndicator('reputation-card');
+        showLoadingIndicator('latency-card');
+        showLoadingIndicator('storage-health-card');
+        showLoadingIndicator('earnings-card');
+        showLoadingIndicator('hashstore-card');
+        showLoadingIndicator('hashstore-chart-card');
         
         // Clear storage and earnings history caches when switching views to force fresh data
         if (typeof charts !== 'undefined') {

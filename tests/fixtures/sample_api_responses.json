@@ -1,0 +1,88 @@
+{
+  "node_info": {
+    "id": "test-node-id-12345",
+    "wallet": "0x1234567890abcdef1234567890abcdef12345678",
+    "walletFeatures": ["zksync"],
+    "version": "v1.95.1",
+    "quicStatus": "ok",
+    "configuredPort": 28967,
+    "allowedSatellites": []
+  },
+  "satellites": [
+    {
+      "id": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S",
+      "url": "us1.storj.io:7777",
+      "disqualified": null,
+      "suspended": null,
+      "offline": null,
+      "nodeJoinedAt": "2024-01-01T00:00:00Z"
+    },
+    {
+      "id": "118UWpMCHzs6CvSgWd9BfFVjw5K9pZbJjkfZJexMtSkmKxvvAW",
+      "url": "saltlake.tardigrade.io:7777",
+      "disqualified": null,
+      "suspended": null,
+      "offline": null,
+      "nodeJoinedAt": "2024-01-01T00:00:00Z"
+    }
+  ],
+  "reputation": {
+    "audit": {
+      "score": 1.0,
+      "suspensionScore": 1.0,
+      "onlineScore": 1.0,
+      "successCount": 1000,
+      "totalCount": 1000,
+      "unknownScore": 1.0
+    },
+    "suspension": {
+      "score": 1.0
+    },
+    "online": {
+      "score": 1.0
+    }
+  },
+  "storage_summary": {
+    "diskSpace": {
+      "used": 5368709120,
+      "available": 53687091200,
+      "trash": 104857600,
+      "overused": 0
+    }
+  },
+  "earnings": {
+    "currentMonth": {
+      "egressBandwidth": 10737418240,
+      "egressBandwidthPayout": 20.00,
+      "egressRepairAudit": 1073741824,
+      "egressRepairAuditPayout": 2.00,
+      "diskSpace": 107374182400,
+      "diskSpacePayout": 1.50,
+      "held": 0.88,
+      "paid": 22.62
+    },
+    "previousMonth": {
+      "egressBandwidth": 9663676416,
+      "egressBandwidthPayout": 18.00,
+      "egressRepairAudit": 966367641,
+      "egressRepairAuditPayout": 1.80,
+      "diskSpace": 96636764160,
+      "diskSpacePayout": 1.35,
+      "held": 0.79,
+      "paid": 20.36
+    }
+  },
+  "payout_history": {
+    "2024-12": {
+      "egressBandwidth": 10737418240,
+      "egressBandwidthPayout": 20.00,
+      "egressRepairAudit": 1073741824,
+      "egressRepairAuditPayout": 2.00,
+      "diskSpace": 107374182400,
+      "diskSpacePayout": 1.50,
+      "held": 0.88,
+      "paid": 22.62,
+      "distributed": 21.74
+    }
+  }
+}

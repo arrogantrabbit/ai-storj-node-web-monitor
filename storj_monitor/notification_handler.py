@@ -1,15 +1,20 @@
 import asyncio
 import logging
-from typing import List, Dict, Any
+from typing import Any
 
 from storj_monitor.config import (
-    ENABLE_EMAIL_NOTIFICATIONS, EMAIL_TO_ADDRESSES,
-    ENABLE_WEBHOOK_NOTIFICATIONS, WEBHOOK_DISCORD_URL, WEBHOOK_SLACK_URL, WEBHOOK_CUSTOM_URLS
+    EMAIL_TO_ADDRESSES,
+    ENABLE_EMAIL_NOTIFICATIONS,
+    ENABLE_WEBHOOK_NOTIFICATIONS,
+    WEBHOOK_CUSTOM_URLS,
+    WEBHOOK_DISCORD_URL,
+    WEBHOOK_SLACK_URL,
 )
 from storj_monitor.email_sender import send_email_notification
 from storj_monitor.webhook_sender import send_webhook_notification
 
 logger = logging.getLogger(__name__)
+
 
 class NotificationHandler:
     def __init__(self):
@@ -20,13 +25,15 @@ class NotificationHandler:
         self.slack_webhook_url = WEBHOOK_SLACK_URL
         self.custom_webhook_urls = WEBHOOK_CUSTOM_URLS
 
-    async def send_notification(self, alert_type: str, severity: str, message: str, details: Dict[str, Any]):
+    async def send_notification(
+        self, alert_type: str, severity: str, message: str, details: dict[str, Any]
+    ):
         logger.info(f"Dispatching notification: {alert_type} - {severity} - {message}")
 
         tasks = []
         if self.email_enabled and self.email_recipients:
             tasks.append(self._send_email(alert_type, severity, message, details))
-        
+
         if self.webhook_enabled:
             tasks.append(self._send_webhooks(alert_type, severity, message, details))
 
@@ -35,60 +42,68 @@ class NotificationHandler:
         else:
             logger.warning("No notification channels enabled or configured.")
 
-    async def _send_email(self, alert_type: str, severity: str, message: str, details: Dict[str, Any]):
+    async def _send_email(
+        self, alert_type: str, severity: str, message: str, details: dict[str, Any]
+    ):
         try:
             await send_email_notification(
                 recipients=self.email_recipients,
                 subject=f"Storj Node Alert: {alert_type} - {severity}",
-                html_content=self._format_email_content(alert_type, severity, message, details)
+                html_content=self._format_email_content(alert_type, severity, message, details),
             )
             logger.info(f"Email notification sent for {alert_type} ({severity})")
         except Exception as e:
             logger.error(f"Failed to send email notification for {alert_type}: {e}")
 
-    async def _send_webhooks(self, alert_type: str, severity: str, message: str, details: Dict[str, Any]):
+    async def _send_webhooks(
+        self, alert_type: str, severity: str, message: str, details: dict[str, Any]
+    ):
         webhook_tasks = []
         if self.discord_webhook_url:
-            webhook_tasks.append(send_webhook_notification(
-                url=self.discord_webhook_url,
-                platform="discord",
-                alert_type=alert_type,
-                severity=severity,
-                message=message,
-                details=details
-            ))
+            webhook_tasks.append(
+                send_webhook_notification(
+                    url=self.discord_webhook_url,
+                    platform="discord",
+                    alert_type=alert_type,
+                    severity=severity,
+                    message=message,
+                    details=details,
+                )
+            )
         if self.slack_webhook_url:
-            webhook_tasks.append(send_webhook_notification(
-                url=self.slack_webhook_url,
-                platform="slack",
-                alert_type=alert_type,
-                severity=severity,
-                message=message,
-                details=details
-            ))
+            webhook_tasks.append(
+                send_webhook_notification(
+                    url=self.slack_webhook_url,
+                    platform="slack",
+                    alert_type=alert_type,
+                    severity=severity,
+                    message=message,
+                    details=details,
+                )
+            )
         for url in self.custom_webhook_urls:
-            webhook_tasks.append(send_webhook_notification(
-                url=url,
-                platform="custom",
-                alert_type=alert_type,
-                severity=severity,
-                message=message,
-                details=details
-            ))
-        
+            webhook_tasks.append(
+                send_webhook_notification(
+                    url=url,
+                    platform="custom",
+                    alert_type=alert_type,
+                    severity=severity,
+                    message=message,
+                    details=details,
+                )
+            )
+
         if webhook_tasks:
             await asyncio.gather(*webhook_tasks, return_exceptions=True)
             logger.info(f"Webhook notifications dispatched for {alert_type} ({severity})")
         else:
             logger.warning("No webhook URLs configured.")
 
-    def _format_email_content(self, alert_type: str, severity: str, message: str, details: Dict[str, Any]) -> str:
+    def _format_email_content(
+        self, alert_type: str, severity: str, message: str, details: dict[str, Any]
+    ) -> str:
         # Basic HTML formatting for email
-        color_map = {
-            "CRITICAL": "#FF0000",
-            "WARNING": "#FFA500",
-            "INFO": "#0000FF"
-        }
+        color_map = {"CRITICAL": "#FF0000", "WARNING": "#FFA500", "INFO": "#0000FF"}
         severity_color = color_map.get(severity.upper(), "#000000")
 
         html = f"""
@@ -122,5 +137,6 @@ class NotificationHandler:
         </html>
         """
         return html
+
 
 notification_handler = NotificationHandler()

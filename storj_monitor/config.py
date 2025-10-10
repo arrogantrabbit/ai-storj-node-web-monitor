@@ -1,13 +1,13 @@
 import os
 
 # --- Configuration ---
-GEOIP_DATABASE_PATH = 'GeoLite2-City.mmdb'
+GEOIP_DATABASE_PATH = "GeoLite2-City.mmdb"
 # The database file path.
 # This is a relative path by default, so it will be created in the current
 # working directory. The service files (systemd, rc.d) are configured to set
 # the working directory to a data location like /var/lib/storj_monitor.
 # It can be overridden with the STORJ_MONITOR_DB_PATH environment variable.
-DATABASE_FILE = os.getenv('STORJ_MONITOR_DB_PATH', 'storj_stats.db')
+DATABASE_FILE = os.getenv("STORJ_MONITOR_DB_PATH", "storj_stats.db")
 
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8765
@@ -51,7 +51,7 @@ STORAGE_WARNING_PERCENT = 80  # 80% full
 STORAGE_CRITICAL_PERCENT = 95  # 95% full
 STORAGE_FORECAST_WARNING_DAYS = 30  # Alert if full within 30 days
 STORAGE_FORECAST_CRITICAL_DAYS = 7  # Critical if full within 7 days
-MIN_STORAGE_DATA_POINTS_FOR_FORECAST = 12 # Minimum data points required for growth rate forecast
+MIN_STORAGE_DATA_POINTS_FOR_FORECAST = 12  # Minimum data points required for growth rate forecast
 
 # --- Performance Thresholds (Phase 2.1) ---
 LATENCY_WARNING_MS = 5000  # 5 seconds
@@ -68,17 +68,21 @@ ANALYTICS_BASELINE_UPDATE_HOURS = 24  # How often to update statistical baseline
 # --- Notification Settings (Phase 4) ---
 ENABLE_BROWSER_NOTIFICATIONS = True  # Enable browser push notifications
 ENABLE_EMAIL_NOTIFICATIONS = False
-EMAIL_SMTP_SERVER = os.getenv('EMAIL_SMTP_SERVER', 'smtp.gmail.com')
-EMAIL_SMTP_PORT = int(os.getenv('EMAIL_SMTP_PORT', 587))
-EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() == 'true'
-EMAIL_USERNAME = os.getenv('EMAIL_USERNAME', '')
-EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', '') # Use environment variable for security
-EMAIL_TO_ADDRESSES = [addr.strip() for addr in os.getenv('EMAIL_TO_ADDRESSES', '').split(',') if addr.strip()]
+EMAIL_SMTP_SERVER = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", 587))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() == "true"
+EMAIL_USERNAME = os.getenv("EMAIL_USERNAME", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")  # Use environment variable for security
+EMAIL_TO_ADDRESSES = [
+    addr.strip() for addr in os.getenv("EMAIL_TO_ADDRESSES", "").split(",") if addr.strip()
+]
 
 ENABLE_WEBHOOK_NOTIFICATIONS = False
-WEBHOOK_DISCORD_URL = os.getenv('WEBHOOK_DISCORD_URL', '')
-WEBHOOK_SLACK_URL = os.getenv('WEBHOOK_SLACK_URL', '')
-WEBHOOK_CUSTOM_URLS = [url.strip() for url in os.getenv('WEBHOOK_CUSTOM_URLS', '').split(',') if url.strip()]
+WEBHOOK_DISCORD_URL = os.getenv("WEBHOOK_DISCORD_URL", "")
+WEBHOOK_SLACK_URL = os.getenv("WEBHOOK_SLACK_URL", "")
+WEBHOOK_CUSTOM_URLS = [
+    url.strip() for url in os.getenv("WEBHOOK_CUSTOM_URLS", "").split(",") if url.strip()
+]
 
 # --- Data Retention (Phase 4) ---
 DB_ALERTS_RETENTION_DAYS = 90  # How many days of alert history to keep
@@ -101,13 +105,17 @@ HELD_AMOUNT_MONTHS_1_TO_3 = 0.75  # 75% held for months 1-3
 HELD_AMOUNT_MONTHS_4_TO_6 = 0.50  # 50% held for months 4-6
 HELD_AMOUNT_MONTHS_7_TO_9 = 0.25  # 25% held for months 7-9
 HELD_AMOUNT_MONTHS_10_TO_15 = 0.00  # 0% held for months 10-15
-HELD_AMOUNT_MONTH_16_PLUS = 0.00  # 0% held for month 16+, plus 50% of accumulated held amount returned
+HELD_AMOUNT_MONTH_16_PLUS = (
+    0.00  # 0% held for month 16+, plus 50% of accumulated held amount returned
+)
 NODE_MONTHLY_COSTS = {}  # Optional: {'node_name': monthly_cost_usd} for profitability analysis
 DB_EARNINGS_RETENTION_DAYS = 365  # How many days of earnings estimates to keep
 
 
 # --- Global Constants ---
-SATELLITE_NAMES = {'121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6': 'ap1',
-                   '12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S': 'us1',
-                   '12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs': 'eu1',
-                   '1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE': 'saltlake'}
+SATELLITE_NAMES = {
+    "121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6": "ap1",
+    "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S": "us1",
+    "12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs": "eu1",
+    "1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE": "saltlake",
+}

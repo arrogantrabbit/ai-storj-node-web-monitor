@@ -10,6 +10,16 @@ dependencies = [
   "aiohttp",
   "geoip2",
   "watchdog",
+  "pytest",
+  "pytest-asyncio",
+  "pytest-cov",
+  "pytest-mock",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "pre-commit",
 ]
 
 [project.scripts]

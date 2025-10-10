@@ -1,0 +1,56 @@
+# Ruff configuration for Storj Node Monitor
+
+# Line length
+line-length = 100
+
+# Exclude directories
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[lint]
+# Enable pycodestyle (E), pyflakes (F), isort (I), and more
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "W",    # pycodestyle warnings
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+]
+
+# Ignore specific rules
+ignore = [
+    "E501",  # Line too long (let formatter handle)
+    "B008",  # Do not perform function call in argument defaults
+    "SIM102", # Use single if statement - sometimes nested is clearer
+    "SIM105", # Use contextlib.suppress - explicit try/except is clearer
+    "SIM115", # Use context manager - not always applicable
+    "SIM117", # Nested with statements - common in tests with multiple mocks
+    "N803",  # Argument casing - allow uppercase for regex patterns
+    "N806",  # Variable casing - allow uppercase constants in functions
+]
+
+[lint.per-file-ignores]
+# Ignore import errors in __init__.py
+"__init__.py" = ["F401", "F403"]
+
+[format]
+# Use double quotes
+quote-style = "double"
+
+# Indent with spaces
+indent-style = "space"
+
+# Line endings
+line-ending = "auto"
