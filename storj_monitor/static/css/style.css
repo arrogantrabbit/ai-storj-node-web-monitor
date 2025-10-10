@@ -1,6 +1,6 @@
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; transition: background-color 0.3s, color 0.3s; }
 .container { display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px; max-width: 1800px; margin: auto; }
-.card { background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s, grid-column 0.3s ease, grid-row 0.3s ease; }
+.card { position: relative; background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; transition: background-color 0.3s, grid-column 0.3s ease, grid-row 0.3s ease; }
 .header-card { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; margin-bottom: 0; flex-wrap: wrap; gap: 20px; }
 h1 { margin: 0; font-size: 1.8em; color: #1c1e21; }
 
@@ -1009,6 +1009,51 @@ body.map-maximized { overflow: hidden; }
     }
 }
 
+
+.loading-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 10;
+    border-radius: 8px;
+    transition: opacity 0.3s ease-in-out;
+}
+
+.loading-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.loader {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #007bff;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Dark mode for loading indicator */
+@media (prefers-color-scheme: dark) {
+    .loading-overlay {
+        background: rgba(30, 30, 30, 0.7);
+    }
+
+    .loader {
+        border-top: 4px solid #4dabf7;
+    }
+}
 
 /* ROI Calculator Inputs - Dark Mode Support */
 .roi-input {
