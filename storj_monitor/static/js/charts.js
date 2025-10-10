@@ -990,3 +990,200 @@ export function updateEarningsBreakdownChart(breakdownData) {
     earningsBreakdownChartInstance.data.datasets[0].data = data;
     earningsBreakdownChartInstance.update();
 }
+
+// --- Phase 9: Multi-Node Comparison Charts ---
+
+function isDarkMode() {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+/**
+ * Create comparison bar chart
+ */
+export function createComparisonBarChart(ctx) {
+    if (!ctx) return null;
+    
+    return new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: []
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: {
+                    display: true,
+                    text: 'Success Rates Comparison',
+                    color: isDarkMode() ? '#e0e0e0' : '#333'
+                },
+                legend: {
+                    display: true,
+                    position: 'bottom',
+                    labels: {
+                        color: isDarkMode() ? '#e0e0e0' : '#333'
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    max: 100,
+                    ticks: {
+                        color: isDarkMode() ? '#e0e0e0' : '#333',
+                        callback: function(value) {
+                            return value + '%';
+                        }
+                    },
+                    grid: {
+                        color: isDarkMode() ? '#444' : '#e0e0e0'
+                    }
+                },
+                x: {
+                    ticks: {
+                        color: isDarkMode() ? '#e0e0e0' : '#333'
+                    },
+                    grid: {
+                        color: isDarkMode() ? '#444' : '#e0e0e0'
+                    }
+                }
+            }
+        }
+    });
+}
+
+/**
+ * Update comparison bar chart
+ */
+export function updateComparisonBarChart(chart, data) {
+    if (!chart || !data) return;
+    
+    // Extract success rates for each node
+    const labels = ['Download', 'Upload', 'Audit'];
+    const datasets = [];
+    
+    const colors = [
+        '#0ea5e9', '#22c55e', '#f59e0b',
+        '#a855f7', '#ef4444', '#14b8a6'
+    ];
+    
+    data.nodes.forEach((node, index) => {
+        datasets.push({
+            label: node.node_name,
+            data: [
+                node.metrics.success_rate_download || 0,
+                node.metrics.success_rate_upload || 0,
+                node.metrics.success_rate_audit || 0
+            ],
+            backgroundColor: colors[index % colors.length],
+            borderColor: colors[index % colors.length],
+            borderWidth: 1
+        });
+    });
+    
+    chart.data.labels = labels;
+    chart.data.datasets = datasets;
+    chart.update();
+}
+
+/**
+ * Create comparison radar chart
+ */
+export function createComparisonRadarChart(ctx) {
+    if (!ctx) return null;
+    
+    return new Chart(ctx, {
+        type: 'radar',
+        data: {
+            labels: [],
+            datasets: []
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: {
+                    display: true,
+                    text: 'Overall Performance',
+                    color: isDarkMode() ? '#e0e0e0' : '#333'
+                },
+                legend: {
+                    display: true,
+                    position: 'bottom',
+                    labels: {
+                        color: isDarkMode() ? '#e0e0e0' : '#333'
+                    }
+                }
+            },
+            scales: {
+                r: {
+                    beginAtZero: true,
+                    max: 100,
+                    ticks: {
+                        stepSize: 20,
+                        color: isDarkMode() ? '#e0e0e0' : '#333',
+                        backdropColor: 'transparent'
+                    },
+                    grid: {
+                        color: isDarkMode() ? '#444' : '#e0e0e0'
+                    },
+                    pointLabels: {
+                        color: isDarkMode() ? '#e0e0e0' : '#333',
+                        font: {
+                            size: 11
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/**
+ * Update comparison radar chart
+ */
+export function updateComparisonRadarChart(chart, data) {
+    if (!chart || !data) return;
+    
+    // Normalized metrics for radar (0-100 scale)
+    const labels = [
+        'Download Success',
+        'Upload Success',
+        'Audit Success',
+        'Reputation',
+        'Storage Efficiency'
+    ];
+    
+    const datasets = [];
+    const colors = [
+        '#0ea5e9', '#22c55e', '#f59e0b',
+        '#a855f7', '#ef4444', '#14b8a6'
+    ];
+    
+    data.nodes.forEach((node, index) => {
+        const metrics = node.metrics;
+        
+        datasets.push({
+            label: node.node_name,
+            data: [
+                metrics.success_rate_download || 0,
+                metrics.success_rate_upload || 0,
+                metrics.success_rate_audit || 0,
+                metrics.avg_audit_score || 0,
+                metrics.storage_efficiency || 0
+            ],
+            backgroundColor: colors[index % colors.length] + '20',
+            borderColor: colors[index % colors.length],
+            borderWidth: 2,
+            pointBackgroundColor: colors[index % colors.length],
+            pointBorderColor: '#fff',
+            pointHoverBackgroundColor: '#fff',
+            pointHoverBorderColor: colors[index % colors.length]
+        });
+    });
+    
+    chart.data.labels = labels;
+    chart.data.datasets = datasets;
+    chart.update();
+}

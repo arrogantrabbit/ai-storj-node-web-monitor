@@ -11,9 +11,372 @@ from aiohttp import web
 from .state import app_state
 from .tasks import start_background_tasks, cleanup_background_tasks
 from . import database
-from .config import SERVER_HOST, SERVER_PORT, PERFORMANCE_INTERVAL_SECONDS
+from .config import SERVER_HOST, SERVER_PORT, PERFORMANCE_INTERVAL_SECONDS, DATABASE_FILE
 
 log = logging.getLogger("StorjMonitor.Server")
+
+
+# ===== Phase 9: Multi-Node Comparison Functions =====
+
+def parse_time_range(time_range: str) -> int:
+    """Parse time range string to hours."""
+    if time_range == "24h":
+        return 24
+    elif time_range == "7d":
+        return 24 * 7
+    elif time_range == "30d":
+        return 24 * 30
+    else:
+        return 24  # default
+
+
+def calculate_percentile(values: List[float], percentile: int) -> float:
+    """Calculate percentile from list of values using nearest-rank method."""
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    n = len(sorted_values)
+    
+    # Use nearest-rank method with rounding
+    # Calculate position and round to nearest index
+    position = (percentile / 100.0) * (n - 1)
+    index = round(position)
+    return float(sorted_values[index])
+
+
+def calculate_success_rate(events: List[Dict]) -> float:
+    """Calculate success rate for a list of events."""
+    if not events:
+        return 0.0
+    successful = sum(1 for e in events if e.get("status") == "success")
+    return (successful / len(events)) * 100
+
+
+def calculate_earnings_per_tb(earnings_data: Dict) -> float:
+    """Calculate earnings per TB stored."""
+    total_earnings = earnings_data.get("total_earnings_net", 0)
+    # Get used space in TB from storage data if available
+    used_space_tb = earnings_data.get("used_space_tb", 0)
+    
+    if used_space_tb > 0:
+        return total_earnings / used_space_tb
+    return 0.0
+
+
+def calculate_storage_efficiency(storage_data: Dict) -> float:
+    """Calculate storage efficiency score (0-100)."""
+    used_percent = storage_data.get("used_percent", 0)
+    trash_percent = storage_data.get("trash_percent", 0)
+    
+    # Efficiency = used space - excessive trash
+    # Penalize if trash > 10%
+    efficiency = used_percent
+    if trash_percent > 10:
+        efficiency -= (trash_percent - 10)
+    
+    return max(0.0, min(100.0, efficiency))
+
+
+def calculate_avg_score(reputation_data: List[Dict], score_field: str) -> float:
+    """Calculate average score from reputation data."""
+    if not reputation_data:
+        return 0.0
+    
+    scores = []
+    for rep in reputation_data:
+        if score_field in rep and rep[score_field] is not None:
+            scores.append(rep[score_field])
+    
+    if not scores:
+        return 0.0
+    
+    return sum(scores) / len(scores)
+
+
+async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: str) -> Dict:
+    """Gather all metrics for a single node."""
+    from .database import (
+        blocking_get_events,
+        blocking_get_latest_reputation,
+        blocking_get_latest_storage_with_forecast,
+        blocking_get_latest_earnings,
+    )
+    
+    metrics = {}
+    loop = asyncio.get_running_loop()
+    
+    try:
+        if comparison_type in ["performance", "overall"]:
+            # Get performance metrics from events
+            events = await loop.run_in_executor(
+                app["db_executor"],
+                blocking_get_events,
+                DATABASE_FILE,
+                [node_name],
+                hours,
+            )
+            
+            # Calculate success rates by action type
+            downloads = [e for e in events if e.get("action") == "GET"]
+            uploads = [e for e in events if e.get("action") == "PUT"]
+            audits = [e for e in events if e.get("action") == "GET_AUDIT"]
+            
+            metrics["success_rate_download"] = calculate_success_rate(downloads)
+            metrics["success_rate_upload"] = calculate_success_rate(uploads)
+            metrics["success_rate_audit"] = calculate_success_rate(audits)
+            
+            # Calculate latency metrics
+            durations = [e.get("duration_ms", 0) for e in events if e.get("duration_ms")]
+            if durations:
+                metrics["avg_latency_p50"] = calculate_percentile(durations, 50)
+                metrics["avg_latency_p95"] = calculate_percentile(durations, 95)
+                metrics["avg_latency_p99"] = calculate_percentile(durations, 99)
+            else:
+                metrics["avg_latency_p50"] = 0
+                metrics["avg_latency_p95"] = 0
+                metrics["avg_latency_p99"] = 0
+            
+            metrics["total_operations"] = len(events)
+        
+        if comparison_type in ["earnings", "overall"]:
+            # Get earnings data - use financial tracker for current period
+            import datetime
+            now = datetime.datetime.now(datetime.timezone.utc)
+            period = now.strftime("%Y-%m")
+            
+            log.info(f"[Comparison] Fetching earnings for {node_name}, period: {period}")
+            
+            # First try to get from financial tracker (handles current period calculation)
+            tracker = app.get("financial_trackers", {}).get(node_name)
+            if tracker:
+                try:
+                    # Calculate earnings on-demand using financial tracker
+                    earnings_list = await tracker.calculate_monthly_earnings(
+                        DATABASE_FILE, period, loop, app.get("db_executor")
+                    )
+                    
+                    if earnings_list:
+                        total_earnings = sum(e.get("total_earnings_net", 0) for e in earnings_list)
+                        log.info(f"[Comparison] Total earnings for {node_name}: ${total_earnings:.2f}")
+                        metrics["total_earnings"] = total_earnings
+                        
+                        # Get storage data for per-TB calculation
+                        storage_list = await loop.run_in_executor(
+                            app["db_executor"],
+                            blocking_get_latest_storage_with_forecast,
+                            DATABASE_FILE,
+                            [node_name],
+                            7,
+                        )
+                        
+                        if storage_list and storage_list[0].get("used_bytes"):
+                            used_space_tb = storage_list[0]["used_bytes"] / (1024 ** 4)
+                            if used_space_tb > 0:
+                                metrics["earnings_per_tb"] = total_earnings / used_space_tb
+                            else:
+                                metrics["earnings_per_tb"] = 0
+                        else:
+                            metrics["earnings_per_tb"] = 0
+                    else:
+                        log.warning(f"[Comparison] No earnings calculated for {node_name}, period: {period}")
+                        metrics["total_earnings"] = 0
+                        metrics["earnings_per_tb"] = 0
+                except Exception as e:
+                    log.error(f"[Comparison] Failed to calculate earnings for {node_name}: {e}")
+                    metrics["total_earnings"] = 0
+                    metrics["earnings_per_tb"] = 0
+            else:
+                # Fallback to database query if tracker not available
+                earnings_list = await loop.run_in_executor(
+                    app["db_executor"],
+                    blocking_get_latest_earnings,
+                    DATABASE_FILE,
+                    [node_name],
+                    period,
+                )
+                
+                if earnings_list:
+                    total_earnings = sum(e.get("total_earnings_net", 0) for e in earnings_list)
+                    log.info(f"[Comparison] Total earnings for {node_name} from DB: ${total_earnings:.2f}")
+                    metrics["total_earnings"] = total_earnings
+                    
+                    # Get storage data for per-TB calculation
+                    storage_list = await loop.run_in_executor(
+                        app["db_executor"],
+                        blocking_get_latest_storage_with_forecast,
+                        DATABASE_FILE,
+                        [node_name],
+                        7,
+                    )
+                    
+                    if storage_list and storage_list[0].get("used_bytes"):
+                        used_space_tb = storage_list[0]["used_bytes"] / (1024 ** 4)
+                        if used_space_tb > 0:
+                            metrics["earnings_per_tb"] = total_earnings / used_space_tb
+                        else:
+                            metrics["earnings_per_tb"] = 0
+                    else:
+                        metrics["earnings_per_tb"] = 0
+                else:
+                    log.warning(f"[Comparison] No earnings found for {node_name}, tracker unavailable")
+                    metrics["total_earnings"] = 0
+                    metrics["earnings_per_tb"] = 0
+        
+        if comparison_type in ["efficiency", "overall"]:
+            # Get storage efficiency
+            storage_list = await loop.run_in_executor(
+                app["db_executor"],
+                blocking_get_latest_storage_with_forecast,
+                DATABASE_FILE,
+                [node_name],
+                7,
+            )
+            
+            if storage_list:
+                storage = storage_list[0]
+                metrics["storage_utilization"] = storage.get("used_percent", 0)
+                metrics["storage_efficiency"] = calculate_storage_efficiency(storage)
+            else:
+                metrics["storage_utilization"] = 0
+                metrics["storage_efficiency"] = 0
+        
+        # Get reputation scores from database (reputation tracker writes to DB)
+        reputation_list = await loop.run_in_executor(
+            app["db_executor"],
+            blocking_get_latest_reputation,
+            DATABASE_FILE,
+            [node_name],
+        )
+        
+        if reputation_list:
+            audit_score = calculate_avg_score(reputation_list, "audit_score")
+            online_score = calculate_avg_score(reputation_list, "online_score")
+            log.info(f"[Comparison] Scores for {node_name}: audit={audit_score:.4f}, online={online_score:.4f}")
+            metrics["avg_audit_score"] = audit_score
+            metrics["avg_online_score"] = online_score
+        else:
+            # No reputation data in database - reputation tracking may not be enabled
+            log.debug(f"[Comparison] No reputation history in database for {node_name} - reputation tracking may not be enabled")
+            metrics["avg_audit_score"] = 0
+            metrics["avg_online_score"] = 0
+    
+    except Exception as e:
+        log.error(f"Error gathering metrics for node {node_name}: {e}", exc_info=True)
+        # Return empty metrics on error
+        metrics = {
+            "success_rate_download": 0,
+            "success_rate_upload": 0,
+            "success_rate_audit": 0,
+            "avg_latency_p50": 0,
+            "avg_latency_p95": 0,
+            "avg_latency_p99": 0,
+            "total_operations": 0,
+            "total_earnings": 0,
+            "earnings_per_tb": 0,
+            "storage_utilization": 0,
+            "storage_efficiency": 0,
+            "avg_audit_score": 0,
+            "avg_online_score": 0,
+        }
+    
+    return metrics
+
+
+def calculate_rankings(nodes_data: List[Dict], comparison_type: str) -> Dict[str, List[str]]:
+    """Calculate rankings for each metric (higher is better, except latency)."""
+    rankings = {}
+    
+    # Get all metric keys
+    if nodes_data:
+        metric_keys = nodes_data[0]["metrics"].keys()
+        
+        for metric_key in metric_keys:
+            # Extract values for this metric from all nodes
+            metric_values = []
+            for node in nodes_data:
+                value = node["metrics"].get(metric_key, 0)
+                metric_values.append((node["node_name"], value))
+            
+            # Sort by value (descending for most metrics, ascending for latency)
+            if "latency" in metric_key:
+                # Lower latency is better - filter out zeros first for proper ranking
+                non_zero = [(name, val) for name, val in metric_values if val > 0]
+                zero_vals = [(name, val) for name, val in metric_values if val == 0]
+                non_zero.sort(key=lambda x: x[1])
+                metric_values = non_zero + zero_vals
+            else:
+                # Higher is better
+                metric_values.sort(key=lambda x: x[1], reverse=True)
+            
+            # Store ranking as list of node names
+            rankings[metric_key] = [name for name, _ in metric_values]
+    
+    return rankings
+
+
+async def calculate_comparison_metrics(
+    app, node_names: List[str], comparison_type: str, time_range: str
+) -> Dict:
+    """Calculate normalized metrics for comparison."""
+    # Parse time range
+    hours = parse_time_range(time_range)
+    
+    # Gather data for each node
+    nodes_data = []
+    for node_name in node_names:
+        node_metrics = await gather_node_metrics(app, node_name, hours, comparison_type)
+        nodes_data.append({"node_name": node_name, "metrics": node_metrics})
+    
+    # Calculate rankings
+    rankings = calculate_rankings(nodes_data, comparison_type)
+    
+    return {"nodes": nodes_data, "rankings": rankings}
+
+
+async def handle_comparison_request(app, data: Dict) -> Dict:
+    """
+    Handle multi-node comparison data request.
+    
+    Request format:
+    {
+        "type": "get_comparison_data",
+        "node_names": ["Node1", "Node2", "Node3"],
+        "comparison_type": "performance",  # or "earnings", "efficiency", "overall"
+        "time_range": "24h"  # or "7d", "30d"
+    }
+    """
+    node_names = data.get("node_names", [])
+    comparison_type = data.get("comparison_type", "overall")
+    time_range = data.get("time_range", "24h")
+    
+    log.info(
+        f"Comparison request: nodes={node_names}, type={comparison_type}, range={time_range}"
+    )
+    
+    # Validate node names
+    valid_nodes = set(app["nodes"].keys())
+    valid_node_names = [n for n in node_names if n in valid_nodes]
+    
+    if not valid_node_names:
+        return {
+            "type": "comparison_data",
+            "error": "No valid nodes specified",
+            "nodes": [],
+            "rankings": {},
+        }
+    
+    # Calculate comparison metrics
+    comparison_data = await calculate_comparison_metrics(
+        app, valid_node_names, comparison_type, time_range
+    )
+    
+    return {
+        "type": "comparison_data",
+        "comparison_type": comparison_type,
+        "time_range": time_range,
+        "nodes": comparison_data["nodes"],
+        "rankings": comparison_data["rankings"],
+    }
 
 # Version string for cache busting (update when static files change)
 STATIC_VERSION = str(int(time.time()))
@@ -716,6 +1079,11 @@ async def websocket_handler(request):
 
                         payload = {"type": "earnings_history", "data": history_data}
                         await safe_send_json(ws, payload)
+
+                    elif msg_type == "get_comparison_data":
+                        # Phase 9: Multi-node comparison
+                        response = await handle_comparison_request(app, data)
+                        await safe_send_json(ws, response)
 
                 except Exception:
                     log.error("Could not parse websocket message:", exc_info=True)

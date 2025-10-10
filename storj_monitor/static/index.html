@@ -19,6 +19,9 @@
                 <div id="node-selector" title="Select a node to view or show an aggregate of all nodes">
                     <span>Loading...</span>
                 </div>
+                <button id="comparison-toggle-btn" class="header-btn" style="display: none; margin-right: 10px;">
+                    Compare Nodes
+                </button>
                 <div id="display-menu-container">
                     <button id="display-menu-btn">Options</button>
                     <div id="display-menu-dropdown"></div>
@@ -172,6 +175,95 @@
                 </div>
             </div>
         </div>
+        
+        <!-- Phase 9: Multi-Node Comparison Panel -->
+        <div id="comparison-card" class="card" style="display: none;">
+            <div class="card-header-flex">
+                <h3>Multi-Node Comparison</h3>
+                <button id="comparison-close-btn" class="close-btn">×</button>
+            </div>
+            
+            <!-- Node Selection -->
+            <div class="comparison-selector">
+                <div class="selector-group">
+                    <label>Select Nodes to Compare (2-6):</label>
+                    <div id="comparison-node-checkboxes" class="checkbox-group">
+                        <!-- Dynamically populated with checkboxes -->
+                    </div>
+                </div>
+                
+                <div class="selector-group">
+                    <label>Comparison Type:</label>
+                    <select id="comparison-type" class="comparison-select">
+                        <option value="overall">Overall Performance</option>
+                        <option value="performance">Performance Metrics</option>
+                        <option value="earnings">Earnings & Financial</option>
+                        <option value="efficiency">Storage Efficiency</option>
+                    </select>
+                </div>
+                
+                <div class="selector-group">
+                    <label>Time Range:</label>
+                    <select id="comparison-timerange" class="comparison-select">
+                        <option value="24h">Last 24 Hours</option>
+                        <option value="7d">Last 7 Days</option>
+                        <option value="30d">Last 30 Days</option>
+                    </select>
+                </div>
+                
+                <button id="comparison-refresh-btn" class="primary-btn" disabled>
+                    Select at least 2 nodes
+                </button>
+            </div>
+            
+            <!-- Comparison Results -->
+            <div id="comparison-results" style="display: none;">
+                <!-- Summary Cards -->
+                <div class="comparison-summary">
+                    <h4>Comparison Summary</h4>
+                    <div id="comparison-summary-cards" class="comparison-cards-grid">
+                        <!-- Populated with summary cards -->
+                    </div>
+                </div>
+                
+                <!-- Detailed Metrics Table -->
+                <div class="comparison-table-container">
+                    <h4>Detailed Metrics</h4>
+                    <table id="comparison-metrics-table" class="comparison-table">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <!-- Node columns added dynamically -->
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Rows added dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+                
+                <!-- Comparison Charts -->
+                <div class="comparison-charts">
+                    <h4>Visual Comparison</h4>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                        <div style="position: relative; height: 300px;">
+                            <canvas id="comparison-bar-chart"></canvas>
+                        </div>
+                        <div style="position: relative; height: 300px;">
+                            <canvas id="comparison-radar-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Export Button -->
+                <div style="margin-top: 20px; text-align: right;">
+                    <button id="export-comparison-btn" class="export-btn">
+                        Export Comparison to CSV
+                    </button>
+                </div>
+            </div>
+        </div>
+        
         <div id="earnings-card" class="card">
             <div class="chart-header">
                 <h3 class="card-title">Financial Earnings</h3>
@@ -473,6 +565,8 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 
     <script src="/static/js/AlertsPanel.js"></script>
+    <script src="/static/js/charts.js" type="module"></script>
+    <script src="/static/js/comparison.js" type="module"></script>
     <script src="/static/js/app.js" type="module"></script>
 </body>
 </html>

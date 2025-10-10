@@ -2169,3 +2169,47 @@ def blocking_get_payout_history(
     except Exception:
         log.error("Failed to get payout history:", exc_info=True)
         return []
+
+
+# --- Phase 9: Comparison Functions ---
+
+
+@retry_on_db_lock(
+    max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY
+)
+def blocking_get_events(
+    db_path: str, node_names: list[str], hours: int = 24
+) -> list[dict[str, Any]]:
+    """
+    Get events for specified nodes within a time window.
+    
+    Args:
+        db_path: Path to database file
+        node_names: List of node names
+        hours: Number of hours of history to retrieve
+        
+    Returns:
+        List of event records
+    """
+    if not node_names:
+        return []
+    
+    try:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+        cutoff_iso = cutoff.isoformat()
+        
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            placeholders = ",".join("?" for _ in node_names)
+            query = f"""
+                SELECT * FROM events
+                WHERE node_name IN ({placeholders}) AND timestamp >= ?
+                ORDER BY timestamp ASC
+            """
+            
+            results = conn.execute(query, (*node_names, cutoff_iso)).fetchall()
+            return [dict(row) for row in results]
+    except Exception:
+        log.error("Failed to get events:", exc_info=True)
+        return []

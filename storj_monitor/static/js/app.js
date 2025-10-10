@@ -1,5 +1,6 @@
 import { map, heatmap } from './map.js';
 import * as charts from './charts.js';
+import { initComparisonComponent } from './comparison.js';
 
 // --- Constants & State ---
 const PERFORMANCE_INTERVAL_MS = 2000;
@@ -50,6 +51,7 @@ let maxHistoricalTimestampByView = {};
 let isHistoricalDataLoaded = false;
 let currentNodeView = ['Aggregate'];
 let availableNodes = [];
+window.availableNodes = availableNodes; // Make globally accessible for comparison.js
 let chartUpdateTimer = null;
 let hashstoreMasterData = [];
 let hashstoreFilters = { satellite: 'all', store: 'all' };
@@ -57,7 +59,7 @@ let hashstoreSort = { column: 'last_run_iso', direction: 'desc' };
 let latencyTimeWindow = { firstIso: null, lastIso: null };
 let cachedStatsData = null; // Cache the last stats_update data
 let ws;
-window.ws = null;  // Global reference for AlertsPanel
+window.ws = null;  // Global reference for AlertsPanel and comparison.js
 window.currentView = ['Aggregate'];  // Global reference for AlertsPanel
 
 // --- Helper Functions ---
@@ -956,11 +958,14 @@ function processBatchedLogEntries(events) { if (!isCardVisible('map-card') || !e
 function processLivePerformanceUpdate(data) { const { node_name, bins } = data; const updateNodeBins = (targetNodeName) => { const maxTs = maxHistoricalTimestampByView[targetNodeName] || 0; if (!livePerformanceBins[targetNodeName]) { livePerformanceBins[targetNodeName] = {}; } const targetBins = livePerformanceBins[targetNodeName]; for (const ts in bins) { if (parseInt(ts, 10) <= maxTs) continue; if (!targetBins[ts]) { targetBins[ts] = { ingress_bytes: 0, egress_bytes: 0, ingress_pieces: 0, egress_pieces: 0, total_ops: 0 }; } const binData = bins[ts]; targetBins[ts].ingress_bytes += binData.ingress_bytes || 0; targetBins[ts].egress_bytes += binData.egress_bytes || 0; targetBins[ts].ingress_pieces += binData.ingress_pieces || 0; targetBins[ts].egress_pieces += binData.egress_pieces || 0; targetBins[ts].total_ops += binData.total_ops || 0; } const cutoff = Date.now() - (5 * 60 * 1000 + 5000); for (const ts in targetBins) { if (parseInt(ts, 10) < cutoff) delete targetBins[ts]; } }; updateNodeBins(node_name); updateNodeBins('Aggregate'); if (isCardVisible('performance-card') && performanceState.range === '5m') { const viewKey = currentNodeView.join(','); if (currentNodeView.length > 1 && currentNodeView.includes(node_name)) updateNodeBins(viewKey); clearTimeout(chartUpdateTimer); chartUpdateTimer = setTimeout(() => charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes), 250); } }
 
 // --- WebSocket Connection & Data Handling ---
-const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_reputation_data', view: currentNodeView })); const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range]; ws.send(JSON.stringify({ type: 'get_latency_stats', view: currentNodeView, hours: latencyHours })); ws.send(JSON.stringify({ type: 'get_storage_data', view: currentNodeView })); requestEarningsData(); } }, 1000); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update' && data.type !== 'log_entry_batch') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
+const connectionManager = { overlay: document.getElementById('connection-overlay'), reconnectDelay: 1000, maxReconnectDelay: 30000, connect: function() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); window.ws = ws;  // Update global reference for comparison.js and other components
+ ws.onopen = () => { this.overlay.style.display = 'none'; this.reconnectDelay = 1000; console.log("[WebSocket] Connection opened."); requestHashstoreData(); setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_reputation_data', view: currentNodeView })); const latencyHours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[latencyState.range]; ws.send(JSON.stringify({ type: 'get_latency_stats', view: currentNodeView, hours: latencyHours })); ws.send(JSON.stringify({ type: 'get_storage_data', view: currentNodeView })); requestEarningsData(); } }, 1000); }; ws.onmessage = (event) => { const data = JSON.parse(event.data); if (data.type !== 'log_entry' && data.type !== 'performance_batch_update' && data.type !== 'log_entry_batch') { console.log(`[WebSocket] Received message type: ${data.type}`); } handleWebSocketMessage(data); }; ws.onclose = () => { window.ws = null;  // Clear global reference on disconnect
+ this.overlay.style.display = 'flex'; setTimeout(() => this.connect(), this.reconnectDelay); this.reconnectDelay = Math.min(this.maxReconnectDelay, this.reconnectDelay * 2); console.warn(`[WebSocket] Connection closed. Reconnecting in ${this.reconnectDelay}ms.`); }; ws.onerror = err => { console.error("[WebSocket] Error:", err); ws.close(); }; } };
 function handleWebSocketMessage(data) {
     switch(data.type) {
         case 'init':
             availableNodes = data.nodes;
+            window.availableNodes = availableNodes; // Update global reference
             renderNodeSelector();
             initializePerformanceData(data.nodes);
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1070,6 +1075,11 @@ function handleWebSocketMessage(data) {
         case 'earnings_history':
             if (data.data && data.data.length > 0 && isCardVisible('earnings-card')) {
                 charts.updateEarningsHistoryChart(data.data);
+            }
+            break;
+        case 'comparison_data':
+            if (window.updateComparisonDisplay) {
+                window.updateComparisonDisplay(data);
             }
             break;
     }
@@ -1393,6 +1403,11 @@ function renderNodeSelector() {
         if (currentNodeView.includes(name)) link.classList.add('active');
         selector.appendChild(link);
     });
+    
+    // Initialize comparison feature after nodes are rendered (Phase 9)
+    if (availableNodes.length > 1) {
+        initComparisonComponent();
+    }
 }
 
 // --- Dark Mode Chart Handler ---
@@ -1433,6 +1448,7 @@ document.addEventListener('DOMContentLoaded', () => {
     connectionManager.connect();
     initializeDisplayMenu();
     setupEventListeners();
+    
     
     // Request Phase 3 data periodically
     setInterval(() => {
