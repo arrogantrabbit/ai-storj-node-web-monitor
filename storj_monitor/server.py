@@ -19,6 +19,31 @@ log = logging.getLogger("StorjMonitor.Server")
 STATIC_VERSION = str(int(time.time()))
 
 
+async def safe_send_json(ws: web.WebSocketResponse, payload: dict) -> bool:
+    """
+    Safely send JSON data over WebSocket, handling connection errors gracefully.
+    
+    Returns:
+        bool: True if sent successfully, False if connection was closed/closing
+    """
+    try:
+        if ws.closed:
+            return False
+        await ws.send_json(payload)
+        return True
+    except (ConnectionResetError,
+            aiohttp.client_exceptions.ClientConnectionResetError,
+            RuntimeError,
+            asyncio.CancelledError) as e:
+        # Client disconnected or connection is closing - this is normal, don't log as error
+        log.debug(f"Could not send message to client (connection closing): {type(e).__name__}")
+        return False
+    except Exception as e:
+        # Unexpected error - log it
+        log.warning(f"Unexpected error sending WebSocket message: {e}", exc_info=True)
+        return False
+
+
 def get_active_compactions_payload() -> Dict[str, Any]:
     """Gathers currently active compactions from all nodes and creates a payload."""
     active_list = []
@@ -49,7 +74,7 @@ async def send_initial_stats(app, ws, view: List[str]):
     # Try to send from cache first
     if view_tuple in app_state['stats_cache']:
         try:
-            await ws.send_json(app_state['stats_cache'][view_tuple])
+            await safe_send_json(ws,app_state['stats_cache'][view_tuple])
             return
         except (ConnectionResetError, asyncio.CancelledError):
             return  # Client disconnected
@@ -81,7 +106,7 @@ async def send_initial_stats(app, ws, view: List[str]):
     try:
         payload = stats.to_payload(historical_stats)
         app_state['stats_cache'][view_tuple] = payload
-        await ws.send_json(payload)
+        await safe_send_json(ws,payload)
     except (ConnectionResetError, asyncio.CancelledError):
         pass  # Client disconnected during computation
     except Exception:
@@ -128,9 +153,9 @@ async def websocket_handler(request):
 
     try:
         node_names = list(app['nodes'].keys())
-        await ws.send_json({"type": "init", "nodes": node_names})
+        await safe_send_json(ws,{"type": "init", "nodes": node_names})
         await send_initial_stats(app, ws, ["Aggregate"])
-        await ws.send_json(get_active_compactions_payload())
+        await safe_send_json(ws,get_active_compactions_payload())
         
         # Send initial earnings data from cache if available
         import datetime
@@ -140,7 +165,7 @@ async def websocket_handler(request):
         
         if cache_key in app_state.get('earnings_cache', {}):
             log.info(f"Sending cached earnings data for Aggregate view on connect")
-            await ws.send_json(app_state['earnings_cache'][cache_key])
+            await safe_send_json(ws,app_state['earnings_cache'][cache_key])
         else:
             log.info(f"No cached earnings data available on connect, client will receive broadcast when ready")
     except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
@@ -186,7 +211,7 @@ async def websocket_handler(request):
                                 
                                 if cache_key in app_state.get('earnings_cache', {}):
                                     log.info(f"Sending cached earnings data for view {new_view} on view switch")
-                                    await ws.send_json(app_state['earnings_cache'][cache_key])
+                                    await safe_send_json(ws,app_state['earnings_cache'][cache_key])
 
                     elif msg_type == 'get_historical_performance':
                         view = data.get('view')  # This is now a list
@@ -206,7 +231,7 @@ async def websocket_handler(request):
                         )
                         payload = {"type": "historical_performance_data", "view": view,
                                    "performance_data": historical_data}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
 
                     elif msg_type == 'get_aggregated_performance':
                         view = data.get('view')  # This is a list
@@ -222,7 +247,7 @@ async def websocket_handler(request):
 
                         payload = {"type": "aggregated_performance_data", "view": view,
                                    "performance_data": aggregated_data}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
 
                     elif msg_type == 'get_hashstore_stats':
                         filters = data.get('filters', {})
@@ -231,7 +256,7 @@ async def websocket_handler(request):
                             app['db_executor'], database.blocking_get_hashstore_stats, filters
                         )
                         payload = {"type": "hashstore_stats_data", "data": hashstore_data}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
                     
                     elif msg_type == 'get_reputation_data':
                         # Phase 1.3: Get current reputation data
@@ -247,7 +272,7 @@ async def websocket_handler(request):
                             nodes_to_query
                         )
                         payload = {"type": "reputation_data", "data": reputation_data}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
                     
                     elif msg_type == 'get_latency_stats':
                         # Phase 2.1: Get latency statistics
@@ -267,7 +292,7 @@ async def websocket_handler(request):
                             hours
                         )
                         payload = {"type": "latency_stats", "data": latency_data}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
                     
                     elif msg_type == 'get_latency_histogram':
                         # Phase 2.1: Get latency histogram
@@ -289,7 +314,7 @@ async def websocket_handler(request):
                             bucket_size
                         )
                         payload = {"type": "latency_histogram", "data": histogram_data}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
                     
                     elif msg_type == 'get_storage_data':
                         # Phase 2.2: Get current storage data with configurable growth rate window
@@ -317,7 +342,7 @@ async def websocket_handler(request):
                                 log.info(f"  Sending to client: Node={item.get('node_name')}, Available={item.get('available_bytes', 0) / (1024**4):.2f} TB")
                         
                         payload = {"type": "storage_data", "data": storage_data}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
                         log.info("Storage data payload sent to client")
                     
                     elif msg_type == 'get_storage_history':
@@ -326,7 +351,7 @@ async def websocket_handler(request):
                         days = data.get('days', 7)
                         
                         if not node_name:
-                            await ws.send_json({"type": "error", "message": "node_name required"})
+                            await safe_send_json(ws,{"type": "error", "message": "node_name required"})
                             continue
                         
                         loop = asyncio.get_running_loop()
@@ -341,7 +366,7 @@ async def websocket_handler(request):
                             days
                         )
                         payload = {"type": "storage_history", "data": history_data}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
                     
                     elif msg_type == 'get_active_alerts':
                         # Phase 4: Get active alerts
@@ -351,24 +376,24 @@ async def websocket_handler(request):
                         if 'alert_manager' in app:
                             alerts = await app['alert_manager'].get_active_alerts(nodes_to_query)
                             payload = {"type": "active_alerts", "data": alerts}
-                            await ws.send_json(payload)
+                            await safe_send_json(ws,payload)
                         else:
-                            await ws.send_json({"type": "error", "message": "Alert manager not initialized"})
+                            await safe_send_json(ws,{"type": "error", "message": "Alert manager not initialized"})
                     
                     elif msg_type == 'acknowledge_alert':
                         # Phase 4: Acknowledge an alert
                         alert_id = data.get('alert_id')
                         
                         if not alert_id:
-                            await ws.send_json({"type": "error", "message": "alert_id required"})
+                            await safe_send_json(ws,{"type": "error", "message": "alert_id required"})
                             continue
                         
                         if 'alert_manager' in app:
                             success = await app['alert_manager'].acknowledge_alert(alert_id)
                             payload = {"type": "alert_acknowledge_result", "success": success, "alert_id": alert_id}
-                            await ws.send_json(payload)
+                            await safe_send_json(ws,payload)
                         else:
-                            await ws.send_json({"type": "error", "message": "Alert manager not initialized"})
+                            await safe_send_json(ws,{"type": "error", "message": "Alert manager not initialized"})
                     
                     elif msg_type == 'get_insights':
                         # Phase 4: Get recent insights
@@ -388,16 +413,16 @@ async def websocket_handler(request):
                             hours
                         )
                         payload = {"type": "insights_data", "data": insights}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
                     
                     elif msg_type == 'get_alert_summary':
                         # Phase 4: Get alert summary
                         if 'alert_manager' in app:
                             summary = app['alert_manager'].get_alert_summary()
                             payload = {"type": "alert_summary", "data": summary}
-                            await ws.send_json(payload)
+                            await safe_send_json(ws,payload)
                         else:
-                            await ws.send_json({"type": "alert_summary", "data": {"critical": 0, "warning": 0, "info": 0, "total": 0}})
+                            await safe_send_json(ws,{"type": "alert_summary", "data": {"critical": 0, "warning": 0, "info": 0, "total": 0}})
                     
                     elif msg_type == 'get_earnings_data':
                         # Phase 5.3: Get earnings data for specified period
@@ -480,7 +505,7 @@ async def websocket_handler(request):
                                 })
                             
                             payload = {"type": "earnings_data", "data": formatted_data}
-                            await ws.send_json(payload)
+                            await safe_send_json(ws,payload)
                             continue
                         else:
                             # 'current' or any other value defaults to current month
@@ -495,7 +520,7 @@ async def websocket_handler(request):
 
                         # Try to serve from cache first
                         if cache_key in app_state.get('earnings_cache', {}):
-                            await ws.send_json(app_state['earnings_cache'][cache_key])
+                            await safe_send_json(ws,app_state['earnings_cache'][cache_key])
                             continue
                         
                         earnings_data = await loop.run_in_executor(
@@ -554,7 +579,7 @@ async def websocket_handler(request):
                             app_state['earnings_cache'] = {}
                         app_state['earnings_cache'][cache_key] = payload
                         
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
                     
                     elif msg_type == 'get_earnings_history':
                         # Phase 5.3: Get earnings history
@@ -565,7 +590,7 @@ async def websocket_handler(request):
                         log.info(f"Earnings history requested: node={node_name}, satellite={satellite}, days={days}")
                         
                         if not node_name:
-                            await ws.send_json({"type": "error", "message": "node_name required"})
+                            await safe_send_json(ws,{"type": "error", "message": "node_name required"})
                             continue
                         
                         loop = asyncio.get_running_loop()
@@ -587,7 +612,7 @@ async def websocket_handler(request):
                             log.info(f"Sample record: period={history_data[0].get('period')}, total_net={history_data[0].get('total_earnings_net')}")
                         
                         payload = {"type": "earnings_history", "data": history_data}
-                        await ws.send_json(payload)
+                        await safe_send_json(ws,payload)
 
                 except Exception:
                     log.error("Could not parse websocket message:", exc_info=True)
