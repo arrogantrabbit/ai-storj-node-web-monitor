@@ -1068,6 +1068,11 @@ function handleWebSocketMessage(data) {
             console.log('Alert acknowledged:', data.alert_id, data.success);
             break;
         case 'earnings_data':
+            // Ignore updates for a different period than currently selected
+            if (data.period_name && data.period_name !== earningsState.period) {
+                console.log('[Earnings] Ignoring payload for period', data.period_name, 'while selected is', earningsState.period);
+                break;
+            }
             earningsState.cachedData = data.data;
             updateEarningsCard(data.data);
             hideLoadingIndicator('earnings-card');

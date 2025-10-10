@@ -1342,12 +1342,18 @@ async def financial_polling_task(app: dict[str, Any]):
     loop = asyncio.get_running_loop()
     now = datetime.datetime.now(datetime.timezone.utc)
     current_period = now.strftime("%Y-%m")
-    
-    # Only broadcast CURRENT month earnings on startup
-    # Historical data will be loaded from database without recalculation
+
+    # PRIME: Compute current-month estimates before first broadcast to avoid empty UI
+    for node_name, tracker in app["financial_trackers"].items():
+        try:
+            await tracker.track_earnings(DATABASE_FILE, loop, app.get("db_executor"))
+        except Exception as e:
+            log.error(f"[{node_name}] Failed to prime earnings on startup: {e}", exc_info=True)
+
+    # Now broadcast CURRENT month earnings
     await broadcast_earnings_update(app, loop, current_period_only=True)
     last_historical_import_day = now.day
-    
+
     # Mark that background historical import should run
     app["historical_import_pending"] = True
 
@@ -1388,8 +1394,8 @@ async def financial_polling_task(app: dict[str, Any]):
                 except Exception as e:
                     log.error(f"[{node_name}] Failed to track earnings: {e}", exc_info=True)
 
-            # Broadcast earnings update to all connected clients
-            await broadcast_earnings_update(app, loop)
+            # Broadcast only CURRENT month earnings to connected clients
+            await broadcast_earnings_update(app, loop, current_period_only=True)
 
             # Wait for next poll interval
             await asyncio.sleep(NODE_API_POLL_INTERVAL)
@@ -1424,6 +1430,7 @@ async def broadcast_earnings_update(app: dict[str, Any], loop=None, current_peri
         # If current_period_only=True, only fetch current month data (for startup)
         # This prevents expensive historical recalculation on every restart
         period = current_period if current_period_only else None
+        period_name = "current" if current_period_only else "all"
 
         # Get latest earnings for all nodes
         node_names = list(app["nodes"].keys())
@@ -1504,23 +1511,32 @@ async def broadcast_earnings_update(app: dict[str, Any], loop=None, current_peri
 
             formatted_data.append(formatted_item)
 
-        # Broadcast to all clients
-        payload = {"type": "earnings_data", "data": formatted_data}
+        # Broadcast to all clients (include period metadata)
+        payload = {
+            "type": "earnings_data",
+            "period": period or current_period,
+            "period_name": period_name if current_period_only else "all",
+            "data": formatted_data
+        }
 
         # Store in cache before broadcasting (include period in cache key)
         if "earnings_cache" not in app_state:
             app_state["earnings_cache"] = {}
+
+        period_key = period or current_period
 
         # Cache per-node and aggregate views with period
         nodes_in_payload = {item["node_name"] for item in formatted_data}
         for node_name in nodes_in_payload:
             node_payload = {
                 "type": "earnings_data",
+                "period": period_key,
+                "period_name": period_name if current_period_only else "all",
                 "data": [item for item in formatted_data if item["node_name"] == node_name],
             }
-            app_state["earnings_cache"][(node_name, period)] = node_payload
+            app_state["earnings_cache"][(node_name, period_key)] = node_payload
 
-        app_state["earnings_cache"][("Aggregate", period)] = payload
+        app_state["earnings_cache"][("Aggregate", period_key)] = payload
 
         log.info(
             f"[BROADCAST] Cached aggregate data with {len(formatted_data)} estimates for {len(nodes_in_payload)} nodes"
