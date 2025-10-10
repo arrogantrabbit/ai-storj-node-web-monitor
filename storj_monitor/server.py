@@ -94,7 +94,11 @@ def calculate_avg_score(reputation_data: List[Dict], score_field: str) -> float:
 
 
 async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: str) -> Dict:
-    """Gather all metrics for a single node."""
+    """
+    Gather all metrics for a single node.
+    
+    OPTIMIZED: Uses sampling and caching to prevent loading millions of events.
+    """
     from .database import (
         blocking_get_events,
         blocking_get_latest_reputation,
@@ -107,14 +111,23 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
     
     try:
         if comparison_type in ["performance", "overall"]:
-            # Get performance metrics from events
+            # CRITICAL OPTIMIZATION: Limit events to prevent loading millions of rows
+            # For comparison, we only need a statistically significant sample
+            # 10,000 recent events provides excellent accuracy for metrics
+            MAX_EVENTS_FOR_COMPARISON = 10000
+            
+            log.debug(f"[Comparison] Fetching up to {MAX_EVENTS_FOR_COMPARISON} events for {node_name}")
+            
             events = await loop.run_in_executor(
                 app["db_executor"],
                 blocking_get_events,
                 DATABASE_FILE,
                 [node_name],
                 hours,
+                MAX_EVENTS_FOR_COMPARISON,  # CRITICAL: Add limit parameter
             )
+            
+            log.debug(f"[Comparison] Retrieved {len(events)} events for {node_name}")
             
             # Calculate success rates by action type
             downloads = [e for e in events if e.get("action") == "GET"]
@@ -317,20 +330,72 @@ def calculate_rankings(nodes_data: List[Dict], comparison_type: str) -> Dict[str
 async def calculate_comparison_metrics(
     app, node_names: List[str], comparison_type: str, time_range: str
 ) -> Dict:
-    """Calculate normalized metrics for comparison."""
+    """
+    Calculate normalized metrics for comparison.
+    
+    OPTIMIZED: Uses caching and concurrent execution for better performance.
+    """
     # Parse time range
     hours = parse_time_range(time_range)
     
-    # Gather data for each node
+    # Check cache first
+    cache_key = (tuple(sorted(node_names)), comparison_type, time_range)
+    cache_ttl = 60  # Cache results for 1 minute
+    
+    if "comparison_cache" not in app:
+        app["comparison_cache"] = {}
+    
+    if cache_key in app["comparison_cache"]:
+        cached_data, cache_time = app["comparison_cache"][cache_key]
+        if (time.time() - cache_time) < cache_ttl:
+            log.info(f"[Comparison] Using cached results for {len(node_names)} nodes")
+            return cached_data
+    
+    log.info(f"[Comparison] Computing metrics for {len(node_names)} nodes (type={comparison_type}, range={time_range})")
+    
+    # Gather data for each node concurrently for better performance
+    tasks = [gather_node_metrics(app, node_name, hours, comparison_type) for node_name in node_names]
+    metrics_results = await asyncio.gather(*tasks, return_exceptions=True)
+    
     nodes_data = []
-    for node_name in node_names:
-        node_metrics = await gather_node_metrics(app, node_name, hours, comparison_type)
-        nodes_data.append({"node_name": node_name, "metrics": node_metrics})
+    for node_name, result in zip(node_names, metrics_results):
+        if isinstance(result, Exception):
+            log.error(f"[Comparison] Error gathering metrics for {node_name}: {result}")
+            # Provide empty metrics on error
+            result = {
+                "success_rate_download": 0,
+                "success_rate_upload": 0,
+                "success_rate_audit": 0,
+                "avg_latency_p50": 0,
+                "avg_latency_p95": 0,
+                "avg_latency_p99": 0,
+                "total_operations": 0,
+                "total_earnings": 0,
+                "earnings_per_tb": 0,
+                "storage_utilization": 0,
+                "storage_efficiency": 0,
+                "avg_audit_score": 0,
+                "avg_online_score": 0,
+            }
+        nodes_data.append({"node_name": node_name, "metrics": result})
     
     # Calculate rankings
     rankings = calculate_rankings(nodes_data, comparison_type)
     
-    return {"nodes": nodes_data, "rankings": rankings}
+    result = {"nodes": nodes_data, "rankings": rankings}
+    
+    # Cache the result
+    app["comparison_cache"][cache_key] = (result, time.time())
+    
+    # Limit cache size to prevent memory bloat
+    if len(app["comparison_cache"]) > 100:
+        # Remove oldest entries
+        oldest_keys = sorted(app["comparison_cache"].keys(), key=lambda k: app["comparison_cache"][k][1])[:50]
+        for key in oldest_keys:
+            del app["comparison_cache"][key]
+    
+    log.info(f"[Comparison] Computed and cached metrics for {len(node_names)} nodes")
+    return result
 
 
 async def handle_comparison_request(app, data: Dict) -> Dict:

@@ -689,6 +689,7 @@ class FinancialTracker:
         OPTIMIZED: Blocking wrapper with period-aware caching.
 
         Historical periods cached for 30 minutes, current period for 1 minute.
+        CRITICAL FIX: Ensures database connections are properly closed to prevent pool exhaustion.
         """
 
         # Determine cache duration based on period
@@ -706,6 +707,7 @@ class FinancialTracker:
         else:
             self._traffic_cache = {}
 
+        conn = None
         try:
             # Parse period once
             year, month = map(int, period.split("-"))
@@ -721,62 +723,62 @@ class FinancialTracker:
             # Use read-only connection for better concurrency
             from .db_utils import get_optimized_connection
 
-            with get_optimized_connection(db_path, timeout=10, read_only=True) as conn:
-                cursor = conn.cursor()
+            conn = get_optimized_connection(db_path, timeout=10, read_only=True)
+            cursor = conn.cursor()
 
-                # OPTIMIZED: Simplified query using indexes
-                query = """
-                    SELECT
-                        SUM(CASE WHEN action LIKE '%GET%' AND action != 'GET_AUDIT' AND action != 'GET_REPAIR'
-                                 AND status = 'success' THEN size ELSE 0 END) as egress_bytes,
-                        SUM(CASE WHEN action = 'GET_REPAIR' AND status = 'success'
-                                 THEN size ELSE 0 END) as repair_bytes,
-                        SUM(CASE WHEN action = 'GET_AUDIT' AND status = 'success'
-                                 THEN size ELSE 0 END) as audit_bytes
-                    FROM events
-                    WHERE node_name = ?
-                        AND satellite_id = ?
-                        AND timestamp >= ?
-                        AND timestamp < ?
-                """
+            # OPTIMIZED: Simplified query using indexes
+            query = """
+                SELECT
+                    SUM(CASE WHEN action LIKE '%GET%' AND action != 'GET_AUDIT' AND action != 'GET_REPAIR'
+                             AND status = 'success' THEN size ELSE 0 END) as egress_bytes,
+                    SUM(CASE WHEN action = 'GET_REPAIR' AND status = 'success'
+                             THEN size ELSE 0 END) as repair_bytes,
+                    SUM(CASE WHEN action = 'GET_AUDIT' AND status = 'success'
+                             THEN size ELSE 0 END) as audit_bytes
+                FROM events
+                WHERE node_name = ?
+                    AND satellite_id = ?
+                    AND timestamp >= ?
+                    AND timestamp < ?
+            """
 
-                result = cursor.execute(
-                    query, (self.node_name, satellite, period_start_iso, period_end_iso)
-                ).fetchone()
+            result = cursor.execute(
+                query, (self.node_name, satellite, period_start_iso, period_end_iso)
+            ).fetchone()
 
-                egress_bytes = result[0] or 0
-                repair_bytes = result[1] or 0
-                audit_bytes = result[2] or 0
+            egress_bytes = result[0] or 0
+            repair_bytes = result[1] or 0
+            audit_bytes = result[2] or 0
 
-                # Pre-calculate conversions
-                egress_tb = egress_bytes / 1099511627776  # 1024^4 pre-computed
-                repair_tb = repair_bytes / 1099511627776
-                audit_tb = audit_bytes / 1099511627776
+            # Pre-calculate conversions
+            egress_tb = egress_bytes / 1099511627776  # 1024^4 pre-computed
+            repair_tb = repair_bytes / 1099511627776
+            audit_tb = audit_bytes / 1099511627776
 
-                egress_gross = egress_tb * PRICING_EGRESS_PER_TB
-                egress_net = egress_gross * OPERATOR_SHARE_EGRESS
+            egress_gross = egress_tb * PRICING_EGRESS_PER_TB
+            egress_net = egress_gross * OPERATOR_SHARE_EGRESS
 
-                repair_gross = repair_tb * PRICING_REPAIR_PER_TB
-                repair_net = repair_gross * OPERATOR_SHARE_REPAIR
+            repair_gross = repair_tb * PRICING_REPAIR_PER_TB
+            repair_net = repair_gross * OPERATOR_SHARE_REPAIR
 
-                audit_gross = audit_tb * PRICING_AUDIT_PER_TB
-                audit_net = audit_gross * OPERATOR_SHARE_AUDIT
+            audit_gross = audit_tb * PRICING_AUDIT_PER_TB
+            audit_net = audit_gross * OPERATOR_SHARE_AUDIT
 
-                result_data = {
-                    "egress_bytes": egress_bytes,
-                    "egress_earnings_gross": egress_gross,
-                    "egress_earnings_net": egress_net,
-                    "repair_bytes": repair_bytes,
-                    "repair_earnings_gross": repair_gross,
-                    "repair_earnings_net": repair_net,
-                    "audit_bytes": audit_bytes,
-                    "audit_earnings_gross": audit_gross,
-                    "audit_earnings_net": audit_net,
-                }
+            result_data = {
+                "egress_bytes": egress_bytes,
+                "egress_earnings_gross": egress_gross,
+                "egress_earnings_net": egress_net,
+                "repair_bytes": repair_bytes,
+                "repair_earnings_gross": repair_gross,
+                "repair_earnings_net": repair_net,
+                "audit_bytes": audit_bytes,
+                "audit_earnings_gross": audit_gross,
+                "audit_earnings_net": audit_net,
+            }
 
-                # Cache result
-                self._traffic_cache[cache_key] = {"data": result_data, "ts": time.time()}
-                return result_data
+            # Cache result
+            self._traffic_cache[cache_key] = {"data": result_data, "ts": time.time()}
+            return result_data
 
         except Exception as e:
             log.error(f"[{self.node_name}] Failed to calculate traffic earnings: {e}")
@@ -791,6 +793,13 @@ class FinancialTracker:
                 "audit_earnings_gross": 0,
                 "audit_earnings_net": 0,
             }
+        finally:
+            # CRITICAL: Always close connection to prevent pool exhaustion
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def _blocking_calculate_storage_earnings(
         self, db_path: str, satellite: str, period: str
@@ -852,9 +861,12 @@ class FinancialTracker:
             from .db_utils import get_optimized_connection
 
             # CRITICAL: Only calculate total storage if not already cached
-            if total_byte_hours is None:
-                with get_optimized_connection(db_path, timeout=10, read_only=True) as conn:
-                    cursor = conn.cursor()
+            conn1 = None
+            conn2 = None
+            try:
+                if total_byte_hours is None:
+                    conn1 = get_optimized_connection(db_path, timeout=10, read_only=True)
+                    cursor = conn1.cursor()
 
                     # OPTIMIZED: Get snapshots without row_factory overhead
                     query_snapshots = """
@@ -913,9 +925,9 @@ class FinancialTracker:
                         "ts": time.time(),
                     }
 
-            # Now calculate satellite-specific allocation (fast - reuses total)
-            with get_optimized_connection(db_path, timeout=10, read_only=True) as conn:
-                cursor = conn.cursor()
+                # Now calculate satellite-specific allocation (fast - reuses total)
+                conn2 = get_optimized_connection(db_path, timeout=10, read_only=True)
+                cursor = conn2.cursor()
 
                 # OPTIMIZED: Batch both traffic queries in one call
                 query_traffic = """
@@ -952,6 +964,19 @@ class FinancialTracker:
                 result = (allocated_byte_hours, allocated_gross, allocated_net)
                 self._storage_cache[cache_key] = {"data": result, "ts": time.time()}
                 return result
+            
+            finally:
+                # CRITICAL: Always close connections to prevent pool exhaustion
+                if conn1:
+                    try:
+                        conn1.close()
+                    except Exception:
+                        pass
+                if conn2:
+                    try:
+                        conn2.close()
+                    except Exception:
+                        pass
 
         except Exception as e:
             log.error(f"[{self.node_name}] Failed to calculate storage earnings: {e}")

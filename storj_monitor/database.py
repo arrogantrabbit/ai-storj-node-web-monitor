@@ -2178,15 +2178,19 @@ def blocking_get_payout_history(
     max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY
 )
 def blocking_get_events(
-    db_path: str, node_names: list[str], hours: int = 24
+    db_path: str, node_names: list[str], hours: int = 24, limit: int = None
 ) -> list[dict[str, Any]]:
     """
     Get events for specified nodes within a time window.
+    
+    OPTIMIZED: Added optional limit parameter to prevent loading millions of events.
+    For comparison operations, we only need a sample of recent events.
     
     Args:
         db_path: Path to database file
         node_names: List of node names
         hours: Number of hours of history to retrieve
+        limit: Optional maximum number of events to return (most recent)
         
     Returns:
         List of event records
@@ -2198,17 +2202,31 @@ def blocking_get_events(
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
         cutoff_iso = cutoff.isoformat()
         
-        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT, read_only=True) as conn:
             conn.row_factory = sqlite3.Row
             
             placeholders = ",".join("?" for _ in node_names)
-            query = f"""
-                SELECT * FROM events
-                WHERE node_name IN ({placeholders}) AND timestamp >= ?
-                ORDER BY timestamp ASC
-            """
             
-            results = conn.execute(query, (*node_names, cutoff_iso)).fetchall()
+            # CRITICAL OPTIMIZATION: Add LIMIT to prevent loading millions of rows
+            # For comparison metrics, we only need a sample of recent events
+            if limit:
+                query = f"""
+                    SELECT * FROM events
+                    WHERE node_name IN ({placeholders}) AND timestamp >= ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                """
+                params = (*node_names, cutoff_iso, limit)
+            else:
+                query = f"""
+                    SELECT * FROM events
+                    WHERE node_name IN ({placeholders}) AND timestamp >= ?
+                    ORDER BY timestamp ASC
+                """
+                params = (*node_names, cutoff_iso)
+            
+            results = conn.execute(query, params).fetchall()
+            log.debug(f"blocking_get_events: Retrieved {len(results)} events for {len(node_names)} node(s)")
             return [dict(row) for row in results]
     except Exception:
         log.error("Failed to get events:", exc_info=True)
