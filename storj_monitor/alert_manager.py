@@ -244,7 +244,17 @@ class AlertManager:
         try:
             from .config import STORAGE_CRITICAL_PERCENT, STORAGE_WARNING_PERCENT
 
-            used_percent = storage_data.get("used_percent", 0)
+            # used_percent may be None for log-derived snapshots; compute or skip gracefully
+            used_percent = storage_data.get("used_percent")
+            if used_percent is None:
+                used_bytes = storage_data.get("used_bytes")
+                total_bytes = storage_data.get("total_bytes") or storage_data.get("allocated_bytes")
+                if isinstance(used_bytes, (int, float)) and isinstance(total_bytes, (int, float)) and total_bytes > 0:
+                    used_percent = (used_bytes / total_bytes) * 100
+                else:
+                    # No reliable way to determine usage percent; nothing to alert on
+                    log.debug(f"[{node_name}] Skipping storage alert evaluation due to missing used_percent")
+                    return
 
             if used_percent >= STORAGE_CRITICAL_PERCENT:
                 await self.generate_alert(

@@ -21,7 +21,7 @@ from .database import (
     blocking_db_prune,
     get_historical_stats,
 )
-from .websocket_utils import robust_broadcast
+from .websocket_utils import robust_broadcast, safe_send_json
 
 log = logging.getLogger("StorjMonitor.Tasks")
 
@@ -159,33 +159,31 @@ async def incremental_stats_updater_task(app):
                 )
                 new_events_processed = False
 
-                # Process new events for each node
+                # Process new events for each node (timestamp-based to survive deque pruning)
                 for node_name in nodes_to_process:
                     node_state = app_state["nodes"].get(node_name)
                     if not node_state:
                         continue
-                    node_state = app_state["nodes"][node_name]
-                    if node_state.get("has_new_events", False):
-                        all_events = list(node_state["live_events"])
-                        # Get or initialize the last processed index for this node
-                        last_index = stats.last_processed_indices.get(node_name, 0)
-                        if last_index < len(all_events):
-                            new_events = all_events[last_index:]
-                            for event in new_events:
-                                stats.add_event(event, app_state["TOKEN_REGEX"])
-                            stats.last_processed_indices[node_name] = len(all_events)
-                            new_events_processed = True
 
                     all_events = list(node_state["live_events"])
-                    last_index = stats.last_processed_indices.get(node_name, 0)
+                    if not all_events:
+                        continue
 
-                    if last_index < len(all_events):
-                        new_events = all_events[last_index:]
+                    # Cursor by timestamp so pruning of left-side events doesn't break progression
+                    last_ts = stats.last_processed_ts.get(node_name, 0.0)
+                    new_events = [e for e in all_events if e.get("ts_unix", 0) > last_ts]
+
+                    if new_events:
                         for event in new_events:
                             stats.add_event(event, app_state["TOKEN_REGEX"])
-                        stats.last_processed_indices[node_name] = len(all_events)
+                        # Advance cursor to newest processed timestamp
+                        stats.last_processed_ts[node_name] = max(
+                            e.get("ts_unix", last_ts) for e in new_events
+                        )
                         new_events_processed = True
-                        node_state["has_new_events"] = False  # Only reset when processed
+
+                    # Reset flag after attempting to process
+                    node_state["has_new_events"] = False
 
                 # --- Always update live stats to keep aggregates current ---
                 all_events_for_view = [
@@ -200,18 +198,16 @@ async def incremental_stats_updater_task(app):
                 payload = stats.to_payload(historical_stats)
                 app_state["stats_cache"][view_tuple] = payload
 
-                # --- Broadcast only if new data OR aggregate view ---
-                if new_events_processed or view_list == ["Aggregate"]:
-                    recipients = [
-                        ws
-                        for ws, state in websockets_snapshot.items()
-                        if tuple(state.get("view", ["Aggregate"])) == view_tuple
-                    ]
-                    for ws in recipients:
-                        try:
-                            await ws.send_json(payload)
-                        except (ConnectionResetError, asyncio.CancelledError):
-                            pass
+                # --- Broadcast every cycle to keep UI time window and highlights fresh ---
+                recipients = [
+                    ws
+                    for ws, state in websockets_snapshot.items()
+                    if tuple(state.get("view", ["Aggregate"])) == view_tuple
+                ]
+                # Send concurrently and never block on a single slow/broken client
+                send_tasks = [safe_send_json(ws, payload) for ws in recipients]
+                if send_tasks:
+                    await asyncio.gather(*send_tasks, return_exceptions=True)
 
         except Exception:
             log.error("Error in incremental_stats_updater_task:", exc_info=True)

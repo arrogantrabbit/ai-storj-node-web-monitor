@@ -54,6 +54,9 @@ class IncrementalStats:
     # Last processed event index per node for incremental updates
     last_processed_indices: Dict[str, int] = field(default_factory=dict)
 
+    # Last processed timestamp per node (robust against prunes)
+    last_processed_ts: Dict[str, float] = field(default_factory=dict)
+
     def get_or_create_satellite(self, sat_id: str) -> Dict[str, int]:
         """Get or create satellite stats."""
         if sat_id not in self.satellites:

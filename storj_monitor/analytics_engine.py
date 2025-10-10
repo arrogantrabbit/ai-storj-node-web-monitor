@@ -409,7 +409,15 @@ class AnalyticsEngine:
             )
 
             latest = storage_history[-1]
-            used_percent = latest.get("used_percent", 0)
+            # Robustly compute used_percent (log-based snapshots may store None)
+            used_percent = latest.get("used_percent")
+            if used_percent is None:
+                used_bytes = latest.get("used_bytes")
+                total_bytes = latest.get("total_bytes") or latest.get("allocated_bytes")
+                if isinstance(used_bytes, (int, float)) and isinstance(total_bytes, (int, float)) and total_bytes > 0:
+                    used_percent = (used_bytes / total_bytes) * 100
+                else:
+                    used_percent = 0
 
             # Check current usage
             if used_percent >= STORAGE_CRITICAL_PERCENT:
