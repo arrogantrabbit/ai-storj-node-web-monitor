@@ -1166,6 +1166,15 @@ function setupEventListeners() {
         renderNodeSelector();
         heatmap.clearData();
         
+        // Show loading indicators for cards that will be updated
+        showLoadingIndicator('performance-card');
+        showLoadingIndicator('reputation-card');
+        showLoadingIndicator('latency-card');
+        showLoadingIndicator('storage-health-card');
+        showLoadingIndicator('earnings-card');
+        showLoadingIndicator('hashstore-card');
+        showLoadingIndicator('hashstore-chart-card');
+        
         // Clear storage and earnings history caches when switching views to force fresh data
         if (typeof charts !== 'undefined') {
             if (charts.clearStorageHistoryCache) {
