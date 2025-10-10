@@ -1145,6 +1145,8 @@ class FinancialTracker:
                 try:
                     # CRITICAL OPTIMIZATION: Check if we already have data for this period
                     # Historical data never changes, so if it exists, skip it entirely
+                    # CRITICAL FIX: Use None for days to check ALL historical periods, not just last 30 days
+                    # Otherwise old periods like "2022-01" won't be found (>30 days ago)
                     existing_data = await loop.run_in_executor(
                         executor,
                         blocking_get_earnings_estimates,
@@ -1152,7 +1154,7 @@ class FinancialTracker:
                         [self.node_name],
                         None,  # satellite (None = all)
                         period,
-                        30,  # days
+                        None,  # days - CRITICAL: None = no time limit, check any period
                     )
 
                     if existing_data and len(existing_data) > 0:

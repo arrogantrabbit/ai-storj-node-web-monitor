@@ -1944,21 +1944,25 @@ def blocking_get_earnings_estimates(
         node_names: Optional list of node names to filter
         satellite: Optional satellite to filter
         period: Optional period to filter (e.g., '2025-01')
-        days: Number of days of history to retrieve
+        days: Number of days of history to retrieve (None = no time limit)
 
     Returns:
         List of earnings estimates (latest per node/satellite/period)
     """
     try:
-        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
-        cutoff_iso = cutoff.isoformat()
-
         with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT) as conn:
             conn.row_factory = sqlite3.Row
 
             # Build WHERE clause for the subquery
-            where_clauses = ["timestamp >= ?"]
-            params = [cutoff_iso]
+            where_clauses = []
+            params = []
+            
+            # Only add time filter if days is specified
+            if days is not None:
+                cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+                cutoff_iso = cutoff.isoformat()
+                where_clauses.append("timestamp >= ?")
+                params.append(cutoff_iso)
 
             if node_names:
                 placeholders = ",".join("?" for _ in node_names)
