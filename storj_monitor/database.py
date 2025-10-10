@@ -313,7 +313,8 @@ def init_db():
             total_earnings_net REAL,
             held_amount REAL,
             node_age_months INTEGER,
-            held_percentage REAL
+            held_percentage REAL,
+            is_finalized INTEGER DEFAULT 0
         )
     """)
     cursor.execute(
@@ -325,6 +326,23 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_earnings_period ON earnings_estimates (period, timestamp);"
     )
+    
+    # Check if is_finalized column exists in earnings_estimates table
+    cursor.execute("PRAGMA table_info(earnings_estimates);")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "is_finalized" not in columns:
+        log.info("Upgrading 'earnings_estimates' table: Adding 'is_finalized' column...")
+        cursor.execute("ALTER TABLE earnings_estimates ADD COLUMN is_finalized INTEGER DEFAULT 0;")
+        
+        # Mark past months as finalized (performance optimization)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        current_period = now.strftime("%Y-%m")
+        cursor.execute(
+            "UPDATE earnings_estimates SET is_finalized = 1 WHERE period != ?",
+            (current_period,)
+        )
+        
+        log.info("Marked historical earnings data as finalized for performance optimization")
 
     # --- Payout History Table (Phase 5) ---
     cursor.execute("""
@@ -1890,8 +1908,8 @@ def blocking_write_earnings_estimate(db_path: str, estimate: dict[str, Any]) -> 
                  egress_earnings_net, storage_bytes_hour, storage_earnings_gross, storage_earnings_net,
                  repair_bytes, repair_earnings_gross, repair_earnings_net, audit_bytes,
                  audit_earnings_gross, audit_earnings_net, total_earnings_gross, total_earnings_net,
-                 held_amount, node_age_months, held_percentage)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 held_amount, node_age_months, held_percentage, is_finalized)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     estimate["timestamp"].isoformat(),
@@ -1915,6 +1933,7 @@ def blocking_write_earnings_estimate(db_path: str, estimate: dict[str, Any]) -> 
                     estimate.get("held_amount"),
                     estimate.get("node_age_months"),
                     estimate.get("held_percentage"),
+                    1 if estimate.get("is_finalized") else 0,
                 ),
             )
             conn.commit()

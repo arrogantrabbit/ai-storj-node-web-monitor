@@ -423,6 +423,7 @@ class FinancialTracker:
                                     "held_amount": scaled_held,
                                     "node_age_months": node_age_months,
                                     "held_percentage": held_percentage,
+                                    "is_finalized": period != current_period,  # Finalize past months
                                 }
                             )
 
@@ -500,6 +501,7 @@ class FinancialTracker:
                     "held_amount": held_amount,
                     "node_age_months": node_age_months,
                     "held_percentage": held_percentage,
+                    "is_finalized": period != current_period,  # Finalize past months
                 }
 
                 estimates.append(estimate)
@@ -1338,8 +1340,13 @@ async def financial_polling_task(app: dict[str, Any]):
 
     # Initial poll for CURRENT MONTH ONLY (fast)
     loop = asyncio.get_running_loop()
-    await broadcast_earnings_update(app, loop)
-    last_historical_import_day = datetime.datetime.now(datetime.timezone.utc).day
+    now = datetime.datetime.now(datetime.timezone.utc)
+    current_period = now.strftime("%Y-%m")
+    
+    # Only broadcast CURRENT month earnings on startup
+    # Historical data will be loaded from database without recalculation
+    await broadcast_earnings_update(app, loop, current_period_only=True)
+    last_historical_import_day = now.day
     
     # Mark that background historical import should run
     app["historical_import_pending"] = True
@@ -1395,7 +1402,7 @@ async def financial_polling_task(app: dict[str, Any]):
             await asyncio.sleep(60)  # Wait before retry on error
 
 
-async def broadcast_earnings_update(app: dict[str, Any], loop=None):
+async def broadcast_earnings_update(app: dict[str, Any], loop=None, current_period_only=False):
     """
     Broadcast earnings updates to all connected WebSocket clients.
 
@@ -1412,12 +1419,16 @@ async def broadcast_earnings_update(app: dict[str, Any], loop=None):
 
         # Get current period
         now = datetime.datetime.now(datetime.timezone.utc)
-        period = now.strftime("%Y-%m")
+        current_period = now.strftime("%Y-%m")
+        
+        # If current_period_only=True, only fetch current month data (for startup)
+        # This prevents expensive historical recalculation on every restart
+        period = current_period if current_period_only else None
 
         # Get latest earnings for all nodes
         node_names = list(app["nodes"].keys())
 
-        log.info(f"[BROADCAST] Fetching earnings for nodes: {node_names}, period: {period}")
+        log.info(f"[BROADCAST] Fetching earnings for nodes: {node_names}, period: {period or 'all'}")
 
         earnings_data = await loop.run_in_executor(
             app.get("db_executor"), blocking_get_latest_earnings, DATABASE_FILE, node_names, period
