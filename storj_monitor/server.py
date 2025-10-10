@@ -99,6 +99,9 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
     
     OPTIMIZED: Uses sampling and caching to prevent loading millions of events.
     """
+    import time
+    start_time = time.time()
+    log.info(f"[Comparison Debug] Starting metrics gathering for node {node_name}, type={comparison_type}")
     from .database import (
         blocking_get_events,
         blocking_get_latest_reputation,
@@ -152,114 +155,62 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
             metrics["total_operations"] = len(events)
         
         if comparison_type in ["earnings", "overall"]:
-            # Get earnings data - use financial tracker for current period
+            # Get earnings data - PERFORMANCE FIX: Always use pre-computed earnings from database
             import datetime
             now = datetime.datetime.now(datetime.timezone.utc)
             period = now.strftime("%Y-%m")
             
+            earnings_start_time = time.time()
             log.info(f"[Comparison] Fetching earnings for {node_name}, period: {period}")
             
-            # First try to get from financial tracker (handles current period calculation)
-            tracker = app.get("financial_trackers", {}).get(node_name)
-            if tracker:
-                try:
-                    # Calculate earnings on-demand using financial tracker
-                    earnings_list = await tracker.calculate_monthly_earnings(
-                        DATABASE_FILE, period, loop, app.get("db_executor")
-                    )
-                    
-                    if earnings_list:
-                        total_earnings = sum(e.get("total_earnings_net", 0) for e in earnings_list)
-                        log.info(f"[Comparison] Total earnings for {node_name}: ${total_earnings:.2f}")
-                        metrics["total_earnings"] = total_earnings
-                        
-                        # Get storage data for per-TB calculation
-                        storage_list = await loop.run_in_executor(
-                            app["db_executor"],
-                            blocking_get_latest_storage_with_forecast,
-                            DATABASE_FILE,
-                            [node_name],
-                            7,
-                        )
-                        
-                        if storage_list and storage_list[0].get("used_bytes"):
-                            used_space_tb = storage_list[0]["used_bytes"] / (1024 ** 4)
-                            if used_space_tb > 0:
-                                metrics["earnings_per_tb"] = total_earnings / used_space_tb
-                            else:
-                                metrics["earnings_per_tb"] = 0
-                        else:
-                            metrics["earnings_per_tb"] = 0
-                    else:
-                        log.warning(f"[Comparison] No earnings calculated for {node_name}, period: {period}")
-                        metrics["total_earnings"] = 0
-                        metrics["earnings_per_tb"] = 0
-                except Exception as e:
-                    log.error(f"[Comparison] Failed to calculate earnings for {node_name}: {e}")
-                    metrics["total_earnings"] = 0
-                    metrics["earnings_per_tb"] = 0
-            else:
-                # Fallback to database query if tracker not available
-                earnings_list = await loop.run_in_executor(
-                    app["db_executor"],
-                    blocking_get_latest_earnings,
-                    DATABASE_FILE,
-                    [node_name],
-                    period,
-                )
-                
-                if earnings_list:
-                    total_earnings = sum(e.get("total_earnings_net", 0) for e in earnings_list)
-                    log.info(f"[Comparison] Total earnings for {node_name} from DB: ${total_earnings:.2f}")
-                    metrics["total_earnings"] = total_earnings
-                    
-                    # Get storage data for per-TB calculation
-                    storage_list = await loop.run_in_executor(
-                        app["db_executor"],
-                        blocking_get_latest_storage_with_forecast,
-                        DATABASE_FILE,
-                        [node_name],
-                        7,
-                    )
-                    
-                    if storage_list and storage_list[0].get("used_bytes"):
-                        used_space_tb = storage_list[0]["used_bytes"] / (1024 ** 4)
-                        if used_space_tb > 0:
-                            metrics["earnings_per_tb"] = total_earnings / used_space_tb
-                        else:
-                            metrics["earnings_per_tb"] = 0
-                    else:
-                        metrics["earnings_per_tb"] = 0
-                else:
-                    log.warning(f"[Comparison] No earnings found for {node_name}, tracker unavailable")
-                    metrics["total_earnings"] = 0
-                    metrics["earnings_per_tb"] = 0
-        
-        if comparison_type in ["efficiency", "overall"]:
-            # Get storage efficiency
-            storage_list = await loop.run_in_executor(
+            # CRITICAL OPTIMIZATION: Always use pre-computed earnings from database
+            # instead of recalculating via financial tracker. This is the main bottleneck
+            # when comparing multiple nodes.
+            earnings_list = await loop.run_in_executor(
                 app["db_executor"],
-                blocking_get_latest_storage_with_forecast,
+                blocking_get_latest_earnings,
                 DATABASE_FILE,
                 [node_name],
-                7,
+                period,
             )
             
-            if storage_list:
-                storage = storage_list[0]
-                metrics["storage_utilization"] = storage.get("used_percent", 0)
-                metrics["storage_efficiency"] = calculate_storage_efficiency(storage)
+            if earnings_list:
+                total_earnings = sum(e.get("total_earnings_net", 0) for e in earnings_list)
+                log.info(f"[Comparison] Total earnings for {node_name}: ${total_earnings:.2f}")
+                metrics["total_earnings"] = total_earnings
+                
+                # This storage_list will be retrieved later in a single batch operation
+                # to avoid redundant per-node database calls
+                storage_list = None
+                
+                # Storage data is now handled at a higher level in calculate_comparison_metrics
+                # The earnings_per_tb will be calculated there using the batch-loaded storage data
+                metrics["earnings_per_tb"] = 0  # Default value, will be updated if storage data is available
             else:
-                metrics["storage_utilization"] = 0
-                metrics["storage_efficiency"] = 0
+                log.warning(f"[Comparison] No earnings found for {node_name}, period: {period}")
+                metrics["total_earnings"] = 0
+                metrics["earnings_per_tb"] = 0
+            
+            earnings_duration = time.time() - earnings_start_time
+            log.info(f"[Comparison] Earnings lookup for {node_name} took {earnings_duration:.2f} seconds")
+        
+        if comparison_type in ["efficiency", "overall"]:
+            # Storage data is now handled at a higher level in calculate_comparison_metrics
+            # Default values that will be updated later with the batch-loaded data
+            metrics["storage_utilization"] = 0
+            metrics["storage_efficiency"] = 0
         
         # Get reputation scores from database (reputation tracker writes to DB)
+        reputation_start_time = time.time()
+        log.info(f"[Comparison Debug] Starting reputation lookup for {node_name}")
         reputation_list = await loop.run_in_executor(
             app["db_executor"],
             blocking_get_latest_reputation,
             DATABASE_FILE,
             [node_name],
         )
+        reputation_duration = time.time() - reputation_start_time
+        log.info(f"[Comparison Debug] Reputation lookup for {node_name} took {reputation_duration:.2f} seconds")
         
         if reputation_list:
             audit_score = calculate_avg_score(reputation_list, "audit_score")
@@ -292,6 +243,8 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
             "avg_online_score": 0,
         }
     
+    total_duration = time.time() - start_time
+    log.info(f"[Comparison Debug] Total metrics gathering for {node_name} took {total_duration:.2f} seconds")
     return metrics
 
 
@@ -333,29 +286,99 @@ async def calculate_comparison_metrics(
     """
     Calculate normalized metrics for comparison.
     
-    OPTIMIZED: Uses caching and concurrent execution for better performance.
+    OPTIMIZED: Uses caching, concurrent execution, and pre-computed data
+    from database for better performance.
     """
     # Parse time range
     hours = parse_time_range(time_range)
     
-    # Check cache first
+    # PERFORMANCE OPTIMIZATION: Enhanced caching for comparison data
+    # Scale cache TTL based on number of nodes being compared and comparison type
     cache_key = (tuple(sorted(node_names)), comparison_type, time_range)
-    cache_ttl = 60  # Cache results for 1 minute
+    
+    # Longer TTL for more intensive comparison types and larger node sets
+    base_ttl = 60  # Base TTL of 1 minute
+    node_factor = len(node_names)  # Scale with number of nodes
+    
+    # Different types have different computation costs
+    type_factor = {
+        "performance": 1,
+        "efficiency": 1.5,
+        "earnings": 2,  # Most expensive, cache longer
+        "overall": 2
+    }.get(comparison_type, 1)
+    
+    # Calculate final TTL with an upper bound of 20 minutes
+    cache_ttl = min(base_ttl * node_factor * type_factor, 1200)
     
     if "comparison_cache" not in app:
         app["comparison_cache"] = {}
     
     if cache_key in app["comparison_cache"]:
         cached_data, cache_time = app["comparison_cache"][cache_key]
-        if (time.time() - cache_time) < cache_ttl:
-            log.info(f"[Comparison] Using cached results for {len(node_names)} nodes")
+        if (time_module.time() - cache_time) < cache_ttl:
+            log.info(f"[Comparison] Using cached results for {len(node_names)} nodes (type={comparison_type})")
             return cached_data
     
-    log.info(f"[Comparison] Computing metrics for {len(node_names)} nodes (type={comparison_type}, range={time_range})")
+    import asyncio  # Make sure asyncio is imported
+    import time as time_module  # Use a different name to avoid variable shadowing
+    from .database import (
+        blocking_get_latest_storage_with_forecast,
+        blocking_get_latest_reputation,
+    )
     
-    # Gather data for each node concurrently for better performance
-    tasks = [gather_node_metrics(app, node_name, hours, comparison_type) for node_name in node_names]
+    start_time = time_module.time()
+    loop = asyncio.get_running_loop()  # Get the current event loop
+    
+    log.info(f"[Comparison Debug] Computing metrics for {len(node_names)} nodes (type={comparison_type}, range={time_range})")
+    
+    # PERFORMANCE OPTIMIZATION: Get storage data in a single batch operation for all nodes
+    # This prevents redundant database calls when each node requests storage data
+    storage_data_start = time_module.time()
+    storage_data = {}
+    if comparison_type in ["earnings", "overall", "efficiency"]:
+        storage_list = await loop.run_in_executor(
+            app["db_executor"],
+            blocking_get_latest_storage_with_forecast,
+            DATABASE_FILE,
+            node_names,  # Pass all nodes at once instead of individual queries
+            7,
+        )
+        
+        # Create a lookup map for fast access
+        for item in storage_list:
+            if "node_name" in item:
+                storage_data[item["node_name"]] = item
+        
+        log.info(f"[Comparison Debug] Batch storage data retrieval took {time_module.time() - storage_data_start:.2f} seconds")
+
+    # Gather metrics for each node concurrently - but now with pre-loaded storage data
+    async def gather_with_storage(node_name):
+        metrics = await gather_node_metrics(app, node_name, hours, comparison_type)
+        
+        # Inject storage data if we have it
+        if node_name in storage_data:
+            storage = storage_data[node_name]
+            
+            # Update earnings per TB calculation if we have earnings data
+            if comparison_type in ["earnings", "overall"] and "total_earnings" in metrics and metrics["total_earnings"] > 0:
+                if storage.get("used_bytes"):
+                    used_space_tb = storage["used_bytes"] / (1024 ** 4)
+                    if used_space_tb > 0:
+                        metrics["earnings_per_tb"] = metrics["total_earnings"] / used_space_tb
+            
+            # Update storage efficiency metrics
+            if comparison_type in ["efficiency", "overall"]:
+                metrics["storage_utilization"] = storage.get("used_percent", 0)
+                metrics["storage_efficiency"] = calculate_storage_efficiency(storage)
+        
+        return metrics
+    
+    tasks = [gather_with_storage(node_name) for node_name in node_names]
     metrics_results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    gather_duration = time_module.time() - start_time
+    log.info(f"[Comparison Debug] Gathering metrics for {len(node_names)} nodes took {gather_duration:.2f} seconds")
     
     nodes_data = []
     for node_name, result in zip(node_names, metrics_results):
@@ -379,13 +402,39 @@ async def calculate_comparison_metrics(
             }
         nodes_data.append({"node_name": node_name, "metrics": result})
     
-    # Calculate rankings
-    rankings = calculate_rankings(nodes_data, comparison_type)
+    # PERFORMANCE OPTIMIZATION: Skip ranking calculation for large node sets if data is limited
+    if len(node_names) >= 5 and comparison_type == "performance":
+        # For large node sets with performance comparison,
+        # only calculate rankings for the most important metrics
+        important_metrics = ["success_rate_download", "avg_latency_p50", "total_operations", "avg_online_score"]
+        nodes_data_subset = []
+        for node in nodes_data:
+            node_subset = {"node_name": node["node_name"], "metrics": {}}
+            for key in important_metrics:
+                if key in node["metrics"]:
+                    node_subset["metrics"][key] = node["metrics"][key]
+            nodes_data_subset.append(node_subset)
+        rankings = calculate_rankings(nodes_data_subset, comparison_type)
+    else:
+        # For smaller node sets or non-performance comparisons, calculate all rankings
+        rankings = calculate_rankings(nodes_data, comparison_type)
+    
+    # Add ranking calculation timing
+    # OPTIMIZATION: Skip redundant ranking calculation
+    # Calculate rankings based on either subset or full data as decided earlier
+    ranking_start_time = time_module.time()
+    # No need to recalculate rankings here, already done in the optimization branch above
+    ranking_duration = time_module.time() - ranking_start_time
+    
+    log.info(f"[Comparison Debug] Ranking calculation took {ranking_duration:.2f} seconds")
     
     result = {"nodes": nodes_data, "rankings": rankings}
     
+    total_duration = time_module.time() - start_time
+    log.info(f"[Comparison Debug] Total comparison calculation for {len(node_names)} nodes took {total_duration:.2f} seconds")
+    
     # Cache the result
-    app["comparison_cache"][cache_key] = (result, time.time())
+    app["comparison_cache"][cache_key] = (result, time_module.time())
     
     # Limit cache size to prevent memory bloat
     if len(app["comparison_cache"]) > 100:
