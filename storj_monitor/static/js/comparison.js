@@ -59,10 +59,15 @@ function hideComparisonLoading() {
  * Initialize comparison component
  */
 export function initComparisonComponent() {
+    // Prevent double-initialization (renderNodeSelector can be called multiple times)
+    if (window.comparisonInitialized) {
+        return;
+    }
+    window.comparisonInitialized = true;
+
     console.log('[Comparison] Initializing comparison component');
     
     // Show comparison button only if multiple nodes exist
-    // Access the global availableNodes array from app.js
     if (window.availableNodes && window.availableNodes.length > 1) {
         const btn = document.getElementById('comparison-toggle-btn');
         if (btn) {
@@ -75,7 +80,7 @@ export function initComparisonComponent() {
         console.log('[Comparison] Not enough nodes:', window.availableNodes);
     }
     
-    // Event listeners
+    // Event listeners (attach once)
     const toggleBtn = document.getElementById('comparison-toggle-btn');
     const closeBtn = document.getElementById('comparison-close-btn');
     const refreshBtn = document.getElementById('comparison-refresh-btn');
@@ -362,13 +367,23 @@ function updateComparisonTable(data) {
  * Initialize comparison charts
  */
 function initializeComparisonCharts() {
-    const barCtx = document.getElementById('comparison-bar-chart');
-    const radarCtx = document.getElementById('comparison-radar-chart');
+    const barCanvas = document.getElementById('comparison-bar-chart');
+    const radarCanvas = document.getElementById('comparison-radar-chart');
     
-    if (!barCtx || !radarCtx) return;
+    if (!barCanvas || !radarCanvas) return;
+
+    // If charts already exist (e.g., due to re-render), destroy them first
+    if (comparisonChart && typeof comparisonChart.destroy === 'function') {
+        try { comparisonChart.destroy(); } catch (e) { console.warn('Destroy bar chart warning:', e); }
+        comparisonChart = null;
+    }
+    if (radarChart && typeof radarChart.destroy === 'function') {
+        try { radarChart.destroy(); } catch (e) { console.warn('Destroy radar chart warning:', e); }
+        radarChart = null;
+    }
     
-    comparisonChart = createComparisonBarChart(barCtx);
-    radarChart = createComparisonRadarChart(radarCtx);
+    comparisonChart = createComparisonBarChart(barCanvas);
+    radarChart = createComparisonRadarChart(radarCanvas);
 }
 
 /**

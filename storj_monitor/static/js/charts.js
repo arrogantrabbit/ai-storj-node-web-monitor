@@ -1002,8 +1002,23 @@ function isDarkMode() {
  */
 export function createComparisonBarChart(ctx) {
     if (!ctx) return null;
-    
-    return new Chart(ctx, {
+
+    // Normalize input (accept canvas element or 2D context)
+    const canvas = ctx.canvas ? ctx.canvas : ctx;
+
+    // Safety: destroy any existing chart bound to this canvas before reusing it
+    try {
+        if (typeof Chart !== 'undefined') {
+            const existing = Chart.getChart(canvas);
+            if (existing) existing.destroy();
+        }
+    } catch (e) {
+        console.warn('Chart cleanup warning:', e);
+    }
+
+    const context2d = canvas.getContext ? canvas.getContext('2d') : ctx;
+
+    return new Chart(context2d, {
         type: 'bar',
         data: {
             labels: [],
@@ -1092,8 +1107,23 @@ export function updateComparisonBarChart(chart, data) {
  */
 export function createComparisonRadarChart(ctx) {
     if (!ctx) return null;
-    
-    return new Chart(ctx, {
+
+    // Normalize input (accept canvas element or 2D context)
+    const canvas = ctx.canvas ? ctx.canvas : ctx;
+
+    // Safety: destroy any existing chart bound to this canvas before reusing it
+    try {
+        if (typeof Chart !== 'undefined') {
+            const existing = Chart.getChart(canvas);
+            if (existing) existing.destroy();
+        }
+    } catch (e) {
+        console.warn('Chart cleanup warning:', e);
+    }
+
+    const context2d = canvas.getContext ? canvas.getContext('2d') : ctx;
+
+    return new Chart(context2d, {
         type: 'radar',
         data: {
             labels: [],

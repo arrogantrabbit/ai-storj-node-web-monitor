@@ -58,6 +58,7 @@ let hashstoreFilters = { satellite: 'all', store: 'all' };
 let hashstoreSort = { column: 'last_run_iso', direction: 'desc' };
 let latencyTimeWindow = { firstIso: null, lastIso: null };
 let cachedStatsData = null; // Cache the last stats_update data
+let cachedStatsViewKey = null; // Track which view the cached stats belong to
 let ws;
 window.ws = null;  // Global reference for AlertsPanel and comparison.js
 window.currentView = ['Aggregate'];  // Global reference for AlertsPanel
@@ -162,39 +163,55 @@ function refreshCardData(cardId) {
                 }));
             }
             break;
-        case 'stats-card':
-            // Apply cached data immediately if available
-            if (cachedStatsData) {
+        case 'stats-card': {
+            // Apply cached data only if it matches the current view
+            const viewKeyNow = Array.isArray(currentNodeView) ? currentNodeView.join(',') : String(currentNodeView);
+            if (cachedStatsData && cachedStatsViewKey === viewKeyNow) {
                 updateOverallStats(cachedStatsData.overall);
                 updateTitles(cachedStatsData.first_event_iso, cachedStatsData.last_event_iso);
+            } else {
+                showLoadingIndicator('stats-card');
             }
             break;
-        case 'satellite-card':
-            // Apply cached data immediately if available
-            if (cachedStatsData && cachedStatsData.satellites) {
+        }
+        case 'satellite-card': {
+            const viewKeyNow = Array.isArray(currentNodeView) ? currentNodeView.join(',') : String(currentNodeView);
+            if (cachedStatsData && cachedStatsData.satellites && cachedStatsViewKey === viewKeyNow) {
                 charts.updateSatelliteChart(cachedStatsData.satellites);
                 updateTitles(cachedStatsData.first_event_iso, cachedStatsData.last_event_iso);
+            } else {
+                showLoadingIndicator('satellite-card');
             }
             break;
-        case 'size-charts-card':
-            // Apply cached data immediately if available
-            if (cachedStatsData && cachedStatsData.transfer_sizes) {
+        }
+        case 'size-charts-card': {
+            const viewKeyNow = Array.isArray(currentNodeView) ? currentNodeView.join(',') : String(currentNodeView);
+            if (cachedStatsData && cachedStatsData.transfer_sizes && cachedStatsViewKey === viewKeyNow) {
                 charts.updateSizeBarChart(cachedStatsData.transfer_sizes);
                 updateTitles(cachedStatsData.first_event_iso, cachedStatsData.last_event_iso);
+            } else {
+                showLoadingIndicator('size-charts-card');
             }
             break;
-        case 'health-card':
-            // Apply cached data immediately if available
-            if (cachedStatsData && cachedStatsData.historical_stats) {
+        }
+        case 'health-card': {
+            const viewKeyNow = Array.isArray(currentNodeView) ? currentNodeView.join(',') : String(currentNodeView);
+            if (cachedStatsData && cachedStatsData.historical_stats && cachedStatsViewKey === viewKeyNow) {
                 updateHistoricalTable(cachedStatsData.historical_stats);
+            } else {
+                showLoadingIndicator('health-card');
             }
             break;
-        case 'analysis-card':
-            // Apply cached data immediately if available
-            if (cachedStatsData) {
+        }
+        case 'analysis-card': {
+            const viewKeyNow = Array.isArray(currentNodeView) ? currentNodeView.join(',') : String(currentNodeView);
+            if (cachedStatsData && cachedStatsViewKey === viewKeyNow) {
                 updateAnalysisTables(cachedStatsData);
+            } else {
+                showLoadingIndicator('analysis-card');
             }
             break;
+        }
         case 'alerts-panel-card':
             // Alerts are automatically pushed via WebSocket
             break;
@@ -303,9 +320,10 @@ function reflowGrid() {
 
 // --- UI Update Functions ---
 function updateAllVisuals(data) {
-    // Always cache the data, regardless of card visibility
+    // Cache the data and the view it belongs to
     cachedStatsData = data;
-    
+    cachedStatsViewKey = Array.isArray(currentNodeView) ? currentNodeView.join(',') : String(currentNodeView);
+
     // Only update visible cards
     if (isCardVisible('stats-card')) updateOverallStats(data.overall);
     if (isCardVisible('satellite-card')) charts.updateSatelliteChart(data.satellites);
@@ -1007,6 +1025,11 @@ function handleWebSocketMessage(data) {
             break;
         case 'stats_update':
             updateAllVisuals(data);
+            // Track cache ownership by view and clear loaders for dependent panels
+            cachedStatsViewKey = Array.isArray(currentNodeView) ? currentNodeView.join(',') : String(currentNodeView);
+            hideLoadingIndicator('stats-card');
+            hideLoadingIndicator('health-card');
+            hideLoadingIndicator('satellite-card');
             hideLoadingIndicator('size-charts-card'); // Hide loading indicator after data update
             break;
         case 'hashstore_updated': console.log("[WebSocket] Hashstore data updated. Requesting new data."); requestHashstoreData(); break;
@@ -1186,7 +1209,17 @@ function setupEventListeners() {
         renderNodeSelector();
         heatmap.clearData();
         
+        // Ensure stats-related panels don't momentarily show stale (unfiltered) cached data
+        cachedStatsData = null;
+        cachedStatsViewKey = null;
+
         // Show loading indicators for cards that will be updated
+        showLoadingIndicator('stats-card');
+        showLoadingIndicator('health-card');
+        showLoadingIndicator('satellite-card');
+        showLoadingIndicator('size-charts-card');
+        showLoadingIndicator('analysis-card');
+
         showLoadingIndicator('performance-card');
         showLoadingIndicator('reputation-card');
         showLoadingIndicator('latency-card');

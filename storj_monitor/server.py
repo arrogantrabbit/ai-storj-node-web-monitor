@@ -618,8 +618,11 @@ async def handle_index(request):
     with open(index_path, "r") as f:
         content = f.read()
 
-    # Add version parameter to JS file imports
+    # Add version parameter to JS file imports (cache-busting)
     content = content.replace("/static/js/app.js", f"/static/js/app.js?v={STATIC_VERSION}")
+    content = content.replace("/static/js/charts.js", f"/static/js/charts.js?v={STATIC_VERSION}")
+    content = content.replace("/static/js/comparison.js", f"/static/js/comparison.js?v={STATIC_VERSION}")
+    content = content.replace("/static/js/AlertsPanel.js", f"/static/js/AlertsPanel.js?v={STATIC_VERSION}")
 
     response = web.Response(text=content, content_type="text/html")
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
