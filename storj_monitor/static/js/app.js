@@ -1075,7 +1075,7 @@ function setupEventListeners() {
     document.getElementById('toggle-satellite-view').addEventListener('click', function(e) { e.preventDefault(); charts.toggleSatelliteView(); if(isCardVisible('satellite-card')) charts.updateSatelliteChart(); });
     document.getElementById('size-view-toggles').addEventListener('click', function(e) { e.preventDefault(); const target = e.target; if (target.tagName === 'A' && !target.classList.contains('active')) { showLoadingIndicator('size-charts-card'); charts.setSizeChartViewMode(target.getAttribute('data-view')); document.querySelectorAll('#size-view-toggles .toggle-link').forEach(el => el.classList.remove('active')); target.classList.add('active'); if(isCardVisible('size-charts-card')) charts.updateSizeBarChart(); } });
     document.getElementById('performance-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.view = e.target.getAttribute('data-view'); document.querySelectorAll('#performance-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); const isLiveView = performanceState.range === '5m'; const dataToUse = isLiveView ? livePerformanceBins : performanceState.cachedAggregatedData; charts.updatePerformanceChart(performanceState, dataToUse, currentNodeView, availableNodes); } });
-    document.getElementById('time-range-toggles').addEventListener('click', function(e) { e.preventDefault(); const newRange = e.target.getAttribute('data-range'); if (newRange === performanceState.range) return; performanceState.range = newRange; performanceState.cachedAggregatedData = null; document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.createPerformanceChart(performanceState); if (newRange === '5m') { charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } else { const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange]; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours })); } } });
+    document.getElementById('time-range-toggles').addEventListener('click', function(e) { e.preventDefault(); const newRange = e.target.getAttribute('data-range'); if (newRange === performanceState.range) return; performanceState.range = newRange; performanceState.cachedAggregatedData = null; document.querySelectorAll('#time-range-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); charts.createPerformanceChart(performanceState); if (newRange === '5m') { charts.updatePerformanceChart(performanceState, livePerformanceBins, currentNodeView, availableNodes); } else { showLoadingIndicator('performance-card'); const hours = { '30m': 0.5, '1h': 1, '6h': 6, '24h': 24 }[newRange]; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'get_aggregated_performance', view: currentNodeView, hours: hours })); } } });
     document.getElementById('aggregation-toggles').addEventListener('click', function(e) { e.preventDefault(); if (e.target.tagName === 'A') { performanceState.agg = e.target.getAttribute('data-agg'); document.querySelectorAll('#aggregation-toggles .toggle-link').forEach(el => el.classList.remove('active')); e.target.classList.add('active'); const isLiveView = performanceState.range === '5m'; const dataToUse = isLiveView ? livePerformanceBins : performanceState.cachedAggregatedData; charts.updatePerformanceChart(performanceState, dataToUse, currentNodeView, availableNodes); } });
     document.getElementById('latency-range-toggles').addEventListener('click', function(e) {
         e.preventDefault();
@@ -1084,6 +1084,7 @@ function setupEventListeners() {
         latencyState.range = newRange;
         document.querySelectorAll('#latency-range-toggles .toggle-link').forEach(el => el.classList.remove('active'));
         e.target.classList.add('active');
+        showLoadingIndicator('latency-card');
         // Request latency data with new range
         if (ws && ws.readyState === WebSocket.OPEN) {
             const hours = { '30m': 0.5, '1h': 1, '6h': 6, '12h': 12, '24h': 24 }[newRange];
@@ -1101,6 +1102,7 @@ function setupEventListeners() {
         storageState.range = newRange;
         document.querySelectorAll('#storage-range-toggles .toggle-link').forEach(el => el.classList.remove('active'));
         e.target.classList.add('active');
+        showLoadingIndicator('storage-health-card');
         
         // Immediately update display with cached data if available
         if (storageState.cachedData) {
