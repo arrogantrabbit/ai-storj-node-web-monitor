@@ -225,8 +225,9 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
                 metrics["earnings_per_tb"] = 0  # Default value, will be updated if storage data is available
             else:
                 log.warning(f"[Comparison] No earnings found for {node_name}, period: {period}")
-                metrics["total_earnings"] = 0
-                metrics["earnings_per_tb"] = 0
+                # Mark as not-yet-ready with None so UI shows N/A and cache logic can detect incompleteness
+                metrics["total_earnings"] = None
+                metrics["earnings_per_tb"] = None
             
             earnings_duration = time.time() - earnings_start_time
             log.info(f"[Comparison] Earnings lookup for {node_name} took {earnings_duration:.2f} seconds")
@@ -384,9 +385,31 @@ async def calculate_comparison_metrics(
     
     if cache_key in app["comparison_cache"]:
         cached_data, cache_time = app["comparison_cache"][cache_key]
-        if (time_module.time() - cache_time) < cache_ttl:
+        cache_age_ok = (time_module.time() - cache_time) < cache_ttl
+
+        # Warm-up guard: during first few minutes after server start, avoid using
+        # cached earnings/overall results if they contain missing or zero earnings.
+        warmup_guard = False
+        if comparison_type in ["earnings", "overall"]:
+            app_start = app.get("start_time", 0)
+            warmup_window = 300  # 5 minutes
+            if app_start and (time_module.time() - app_start) < warmup_window:
+                try:
+                    nodes = cached_data.get("nodes", [])
+                    warmup_guard = any(
+                        (n.get("metrics", {}).get("total_earnings") is None) or
+                        (n.get("metrics", {}).get("total_earnings") == 0)
+                        for n in nodes
+                    )
+                except Exception:
+                    warmup_guard = False
+
+        if cache_age_ok and not warmup_guard:
             log.info(f"[Comparison] Using cached results for {len(node_names)} nodes (type={comparison_type})")
             return cached_data
+        else:
+            if warmup_guard:
+                log.info("[Comparison] Ignoring cached comparison during warm-up due to incomplete earnings")
     
     start_time = time_module.time()
     loop = asyncio.get_running_loop()  # Get the current event loop
@@ -494,17 +517,30 @@ async def calculate_comparison_metrics(
     total_duration = time_module.time() - start_time
     log.info(f"[Comparison Debug] Total comparison calculation for {len(node_names)} nodes took {total_duration:.2f} seconds")
     
-    # Cache the result
-    app["comparison_cache"][cache_key] = (result, time_module.time())
+    # Determine if results are complete enough to cache.
+    # If earnings are missing (None) for any node in an earnings-related comparison,
+    # skip caching to avoid pinning zeros/unknown values after startup.
+    earnings_incomplete = False
+    if comparison_type in ["earnings", "overall"]:
+        try:
+            earnings_incomplete = any(n.get("metrics", {}).get("total_earnings") is None for n in nodes_data)
+        except Exception:
+            earnings_incomplete = False
     
-    # Limit cache size to prevent memory bloat
-    if len(app["comparison_cache"]) > 100:
-        # Remove oldest entries
-        oldest_keys = sorted(app["comparison_cache"].keys(), key=lambda k: app["comparison_cache"][k][1])[:50]
-        for key in oldest_keys:
-            del app["comparison_cache"][key]
+    if earnings_incomplete:
+        log.info("[Comparison] Skipping cache for this result because earnings are not ready for all nodes")
+    else:
+        # Cache the result
+        app["comparison_cache"][cache_key] = (result, time_module.time())
+        
+        # Limit cache size to prevent memory bloat
+        if len(app["comparison_cache"]) > 100:
+            # Remove oldest entries
+            oldest_keys = sorted(app["comparison_cache"].keys(), key=lambda k: app["comparison_cache"][k][1])[:50]
+            for key in oldest_keys:
+                del app["comparison_cache"][key]
+        log.info(f"[Comparison] Computed and cached metrics for {len(node_names)} nodes")
     
-    log.info(f"[Comparison] Computed and cached metrics for {len(node_names)} nodes")
     return result
 
 
@@ -1365,6 +1401,8 @@ async def websocket_handler(request):
 def run_server(nodes_config: Dict[str, Any]):
     app = web.Application(middlewares=[cache_control_middleware])
     app["nodes"] = nodes_config
+    # Record server start time for cache warm-up logic
+    app["start_time"] = time.time()
 
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)
