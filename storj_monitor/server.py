@@ -361,6 +361,7 @@ async def calculate_comparison_metrics(
     from .database import (
         blocking_get_latest_storage_with_forecast,
         blocking_get_latest_reputation,
+        blocking_get_latest_earnings,
     )
     
     # Parse time range
@@ -441,6 +442,55 @@ async def calculate_comparison_metrics(
         
         log.info(f"[Comparison Debug] Batch storage data retrieval took {time_module.time() - storage_data_start:.2f} seconds")
 
+    # Batch-load earnings for the current month to avoid per-node gaps and ensure consistency
+    earnings_lookup = {}
+    if comparison_type in ["earnings", "overall"]:
+        import datetime
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        current_period = now_dt.strftime("%Y-%m")
+        earnings_list = await loop.run_in_executor(
+            app["db_executor"],
+            blocking_get_latest_earnings,
+            DATABASE_FILE,
+            node_names,
+            current_period,
+        )
+        from collections import defaultdict
+        agg = defaultdict(float)
+        for row in (earnings_list or []):
+            try:
+                agg[row.get("node_name")] += float(row.get("total_earnings_net") or 0.0)
+            except Exception:
+                pass
+        earnings_lookup = dict(agg)
+        log.info(f"[Comparison Debug] Batch earnings aggregation prepared for {len(earnings_lookup)} node(s)")
+
+    # Batch-load latest reputation for all nodes; use as fallback if per-node call returns empty
+    avg_audit_by_node = {}
+    avg_online_by_node = {}
+    try:
+        rep_list_all = await loop.run_in_executor(
+            app["db_executor"],
+            blocking_get_latest_reputation,
+            DATABASE_FILE,
+            node_names,
+        )
+        from collections import defaultdict
+        rep_by_node = defaultdict(list)
+        for r in (rep_list_all or []):
+            key = r.get("node_name")
+            if key:
+                rep_by_node[key].append(r)
+        for n, rows in rep_by_node.items():
+            try:
+                avg_audit_by_node[n] = calculate_avg_score(rows, "audit_score")
+                avg_online_by_node[n] = calculate_avg_score(rows, "online_score")
+            except Exception:
+                pass
+        log.info(f"[Comparison Debug] Batch reputation prepared for {len(rep_by_node)} node(s)")
+    except Exception:
+        log.debug("[Comparison Debug] Batch reputation retrieval failed (non-fatal)", exc_info=True)
+
     # Gather metrics for each node concurrently - but now with pre-loaded storage data
     async def gather_with_storage(node_name):
         metrics = await gather_node_metrics(app, node_name, hours, comparison_type)
@@ -492,6 +542,42 @@ async def calculate_comparison_metrics(
                 "avg_online_score": 0,
             }
         nodes_data.append({"node_name": node_name, "metrics": result})
+
+    # Overlay any missing metrics using batch lookups to avoid N/A when data exists
+    for node in nodes_data:
+        name = node["node_name"]
+        metrics = node["metrics"]
+
+        # Earnings overlay
+        if comparison_type in ["earnings", "overall"]:
+            if metrics.get("total_earnings") is None:
+                te = earnings_lookup.get(name)
+                if isinstance(te, (int, float)):
+                    metrics["total_earnings"] = te
+
+            # Compute earnings_per_tb if not set and we have storage + earnings
+            te_val = metrics.get("total_earnings")
+            if (
+                (metrics.get("earnings_per_tb") is None)
+                and isinstance(te_val, (int, float))
+                and te_val > 0
+            ):
+                s = storage_data.get(name)
+                used_bytes = s.get("used_bytes") if s else None
+                if isinstance(used_bytes, (int, float)) and used_bytes > 0:
+                    used_tb = used_bytes / (1024 ** 4)
+                    if used_tb > 0:
+                        metrics["earnings_per_tb"] = te_val / used_tb
+
+        # Reputation overlay (ensure online/audit scores present for all comparison types)
+        if metrics.get("avg_online_score") is None and name in avg_online_by_node:
+            v = avg_online_by_node.get(name)
+            if isinstance(v, (int, float)):
+                metrics["avg_online_score"] = v
+        if metrics.get("avg_audit_score") is None and name in avg_audit_by_node:
+            v = avg_audit_by_node.get(name)
+            if isinstance(v, (int, float)):
+                metrics["avg_audit_score"] = v
     
     # PERFORMANCE OPTIMIZATION: Skip ranking calculation for large node sets if data is limited
     if len(node_names) >= 5 and comparison_type == "performance":

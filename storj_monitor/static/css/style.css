@@ -1182,16 +1182,17 @@ body.map-maximized { overflow: hidden; }
 }
 
 .node-checkbox-item {
-    display: flex;
+    display: grid;
+    grid-template-columns: 18px 1fr;
     align-items: center;
-    gap: 8px; /* keep checkbox and label aligned with consistent spacing */
+    column-gap: 8px;
     padding: 8px 12px;
     background: #fff;
     border: 1px solid #ddd;
     border-radius: 4px;
     cursor: pointer;
     transition: all 0.2s;
-    line-height: 1.2;
+    min-height: 28px;
 }
 
 .node-checkbox-item:hover {
@@ -1202,22 +1203,26 @@ body.map-maximized { overflow: hidden; }
 .node-checkbox-item input[type="checkbox"] {
     width: 18px;
     height: 18px;
-    margin: 0 8px 0 0;
+    margin: 0; /* grid handles spacing */
     cursor: pointer;
-    vertical-align: middle;
+    align-self: center;
+    justify-self: start;
     accent-color: #0ea5e9; /* better visual consistency */
 }
 .node-checkbox-item label {
     display: inline-flex;
     align-items: center;
-    line-height: 1;
+    line-height: 1.2;
     cursor: pointer;
     flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .comparison-select {
     width: 100%;
-    padding: 8px 12px;
+    padding: 8px 36px 8px 12px; /* space for custom arrow */
     border: 1px solid #ddd;
     border-radius: 4px;
     background: #fff;
@@ -1226,7 +1231,10 @@ body.map-maximized { overflow: hidden; }
     -webkit-appearance: none;
     -moz-appearance: none;
     appearance: none;           /* remove native gloss/reflection */
-    background-image: none;     /* ensure flat look */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23666' d='M6 8L0 0h12z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 12px 8px;
     box-shadow: none;
 }
 .comparison-select:focus {
@@ -1394,7 +1402,11 @@ body.map-maximized { overflow: hidden; }
         -webkit-appearance: none;
         -moz-appearance: none;
         appearance: none;
-        background-image: none;
+        padding-right: 36px;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23bbb' d='M6 8L0 0h12z'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 12px center;
+        background-size: 12px 8px;
         box-shadow: none;
     }
     
