@@ -2254,3 +2254,57 @@ def blocking_get_events(
     except Exception:
         log.error("Failed to get events:", exc_info=True)
         return []
+
+@retry_on_db_lock(
+    max_attempts=DB_MAX_RETRIES, base_delay=DB_RETRY_BASE_DELAY, max_delay=DB_RETRY_MAX_DELAY
+)
+def blocking_get_event_counts(
+    db_path: str, node_names: list[str], hours: int = 24
+) -> list[dict[str, Any]]:
+    """
+    Get operation counts (success/fail) for downloads, uploads, and audits over a time window.
+
+    Returns one row per node:
+      {
+        "node_name": str,
+        "dl_success": int,
+        "dl_fail": int,
+        "ul_success": int,
+        "ul_fail": int,
+        "audit_success": int,
+        "audit_fail": int,
+        "total_ops": int
+      }
+    """
+    if not node_names:
+        return []
+
+    try:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+        cutoff_iso = cutoff.isoformat()
+
+        with get_optimized_connection(db_path, timeout=DB_CONNECTION_TIMEOUT, read_only=True) as conn:
+            conn.row_factory = sqlite3.Row
+            placeholders = ",".join("?" for _ in node_names)
+
+            query = f"""
+                SELECT
+                    node_name,
+                    SUM(CASE WHEN action LIKE '%GET%' AND status = 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) AS dl_success,
+                    SUM(CASE WHEN action LIKE '%GET%' AND status != 'success' AND action != 'GET_AUDIT' THEN 1 ELSE 0 END) AS dl_fail,
+                    SUM(CASE WHEN action LIKE '%PUT%' AND status = 'success' THEN 1 ELSE 0 END) AS ul_success,
+                    SUM(CASE WHEN action LIKE '%PUT%' AND status != 'success' THEN 1 ELSE 0 END) AS ul_fail,
+                    SUM(CASE WHEN action = 'GET_AUDIT' AND status = 'success' THEN 1 ELSE 0 END) AS audit_success,
+                    SUM(CASE WHEN action = 'GET_AUDIT' AND status != 'success' THEN 1 ELSE 0 END) AS audit_fail,
+                    COUNT(*) AS total_ops
+                FROM events
+                WHERE node_name IN ({placeholders}) AND timestamp >= ?
+                GROUP BY node_name
+                ORDER BY node_name
+            """
+
+            rows = conn.execute(query, (*node_names, cutoff_iso)).fetchall()
+            return [dict(r) for r in rows]
+    except Exception:
+        log.error("Failed to get event counts:", exc_info=True)
+        return []

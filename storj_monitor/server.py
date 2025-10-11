@@ -104,12 +104,14 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
     log.info(f"[Comparison Debug] Starting metrics gathering for node {node_name}, type={comparison_type}")
     from .database import (
         blocking_get_events,
+        blocking_get_event_counts,
         blocking_get_latest_reputation,
         blocking_get_latest_storage_with_forecast,
         blocking_get_latest_earnings,
     )
     
     metrics = {}
+    counts = None
     loop = asyncio.get_running_loop()
     
     try:
@@ -132,16 +134,7 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
             
             log.debug(f"[Comparison] Retrieved {len(events)} events for {node_name}")
             
-            # Calculate success rates by action type
-            downloads = [e for e in events if e.get("action") == "GET"]
-            uploads = [e for e in events if e.get("action") == "PUT"]
-            audits = [e for e in events if e.get("action") == "GET_AUDIT"]
-            
-            metrics["success_rate_download"] = calculate_success_rate(downloads)
-            metrics["success_rate_upload"] = calculate_success_rate(uploads)
-            metrics["success_rate_audit"] = calculate_success_rate(audits)
-            
-            # Calculate latency metrics
+            # Calculate latency metrics from sampled events
             durations = [e.get("duration_ms", 0) for e in events if e.get("duration_ms")]
             if durations:
                 metrics["avg_latency_p50"] = calculate_percentile(durations, 50)
@@ -151,8 +144,52 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
                 metrics["avg_latency_p50"] = 0
                 metrics["avg_latency_p95"] = 0
                 metrics["avg_latency_p99"] = 0
-            
+
+            # Default total operations based on sampled events (will be overridden by aggregated counts if available)
             metrics["total_operations"] = len(events)
+
+            # Use aggregated counts for accurate success rates and total operations over the full window
+            try:
+                counts_list = await loop.run_in_executor(
+                    app["db_executor"],
+                    blocking_get_event_counts,
+                    DATABASE_FILE,
+                    [node_name],
+                    hours,
+                )
+                if counts_list:
+                    c = counts_list[0]
+                    dl_total = (c.get("dl_success") or 0) + (c.get("dl_fail") or 0)
+                    ul_total = (c.get("ul_success") or 0) + (c.get("ul_fail") or 0)
+                    audit_total = (c.get("audit_success") or 0) + (c.get("audit_fail") or 0)
+
+                    metrics["success_rate_download"] = ((c.get("dl_success") or 0) / dl_total * 100.0) if dl_total > 0 else 0.0
+                    metrics["success_rate_upload"] = ((c.get("ul_success") or 0) / ul_total * 100.0) if ul_total > 0 else 0.0
+                    metrics["success_rate_audit"] = ((c.get("audit_success") or 0) / audit_total * 100.0) if audit_total > 0 else 0.0
+
+                    metrics["total_operations"] = int(c.get("total_ops") or 0)
+
+                    # Save for later fallback usage (e.g., avg_audit_score if reputation data is missing)
+                    counts = c
+                else:
+                    # Fallback to sample-based rates if aggregation returns nothing
+                    downloads = [e for e in events if e.get("action") == "GET"]
+                    uploads = [e for e in events if e.get("action") == "PUT"]
+                    audits = [e for e in events if e.get("action") == "GET_AUDIT"]
+
+                    metrics["success_rate_download"] = calculate_success_rate(downloads)
+                    metrics["success_rate_upload"] = calculate_success_rate(uploads)
+                    metrics["success_rate_audit"] = calculate_success_rate(audits)
+            except Exception as agg_err:
+                log.debug(f"[Comparison] Aggregated counts query failed for {node_name}: {agg_err}")
+                # Fallback to sample-based calculation
+                downloads = [e for e in events if e.get("action") == "GET"]
+                uploads = [e for e in events if e.get("action") == "PUT"]
+                audits = [e for e in events if e.get("action") == "GET_AUDIT"]
+
+                metrics["success_rate_download"] = calculate_success_rate(downloads)
+                metrics["success_rate_upload"] = calculate_success_rate(uploads)
+                metrics["success_rate_audit"] = calculate_success_rate(audits)
         
         if comparison_type in ["earnings", "overall"]:
             # Get earnings data - PERFORMANCE FIX: Always use pre-computed earnings from database
@@ -221,8 +258,14 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
         else:
             # No reputation data in database - reputation tracking may not be enabled
             log.debug(f"[Comparison] No reputation history in database for {node_name} - reputation tracking may not be enabled")
-            metrics["avg_audit_score"] = 0
-            metrics["avg_online_score"] = 0
+            # Fallback: derive audit score from audit success rate if available
+            if "success_rate_audit" in metrics and metrics["success_rate_audit"] is not None:
+                metrics["avg_audit_score"] = metrics["success_rate_audit"]
+            else:
+                # As a last resort, set to None so UI displays N/A rather than 0
+                metrics["avg_audit_score"] = None
+            # Online score cannot be derived from logs; report as None for N/A in UI
+            metrics["avg_online_score"] = None
     
     except Exception as e:
         log.error(f"Error gathering metrics for node {node_name}: {e}", exc_info=True)
@@ -249,34 +292,51 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
 
 
 def calculate_rankings(nodes_data: List[Dict], comparison_type: str) -> Dict[str, List[str]]:
-    """Calculate rankings for each metric (higher is better, except latency)."""
-    rankings = {}
-    
-    # Get all metric keys
-    if nodes_data:
-        metric_keys = nodes_data[0]["metrics"].keys()
-        
-        for metric_key in metric_keys:
-            # Extract values for this metric from all nodes
-            metric_values = []
-            for node in nodes_data:
-                value = node["metrics"].get(metric_key, 0)
-                metric_values.append((node["node_name"], value))
-            
-            # Sort by value (descending for most metrics, ascending for latency)
-            if "latency" in metric_key:
-                # Lower latency is better - filter out zeros first for proper ranking
-                non_zero = [(name, val) for name, val in metric_values if val > 0]
-                zero_vals = [(name, val) for name, val in metric_values if val == 0]
-                non_zero.sort(key=lambda x: x[1])
-                metric_values = non_zero + zero_vals
+    """Calculate rankings for each metric (higher is better, except latency).
+
+    Robust against None values by placing them at the end of rankings.
+    """
+    rankings: Dict[str, List[str]] = {}
+
+    if not nodes_data:
+        return rankings
+
+    # Use union of keys across nodes to avoid missing metrics
+    metric_keys = set()
+    for node in nodes_data:
+        metric_keys.update(node.get("metrics", {}).keys())
+
+    for metric_key in metric_keys:
+        is_latency = "latency" in metric_key
+
+        # Build sortable tuples (node_name, sort_key) while handling None gracefully
+        sortable = []
+        for node in nodes_data:
+            value = node.get("metrics", {}).get(metric_key)
+
+            if is_latency:
+                # Lower is better; None, 0, or negative treated as worst
+                if isinstance(value, (int, float)) and value is not None and value > 0:
+                    sort_key = float(value)
+                else:
+                    sort_key = float("inf")
             else:
-                # Higher is better
-                metric_values.sort(key=lambda x: x[1], reverse=True)
-            
-            # Store ranking as list of node names
-            rankings[metric_key] = [name for name, _ in metric_values]
-    
+                # Higher is better; None treated as very low
+                if isinstance(value, (int, float)) and value is not None:
+                    sort_key = float(value)
+                else:
+                    sort_key = float("-inf")
+
+            sortable.append((node["node_name"], sort_key))
+
+        # Sort accordingly
+        if is_latency:
+            sortable.sort(key=lambda t: t[1])  # ascending (low is good)
+        else:
+            sortable.sort(key=lambda t: t[1], reverse=True)  # descending (high is good)
+
+        rankings[metric_key] = [name for name, _ in sortable]
+
     return rankings
 
 

@@ -447,7 +447,10 @@ function formatMetricValue(value, metric) {
     } else if (metric.key && metric.key.includes('earnings')) {
         return `$${value.toFixed(2)}`;
     } else if (metric.key && metric.key.includes('score')) {
-        return `${value.toFixed(1)}`;
+        // Reputation scores are percentage-based
+        return `${value.toFixed(1)}%`;
+    } else if (metric.key && (metric.key.includes('operations') || metric.key === 'total_operations' || metric.key.includes('count'))) {
+        return `${Math.round(value)}`;
     } else if (typeof value === 'number') {
         if (value > 1000) {
             return `${prefix}${value.toFixed(0)}${suffix}`;
