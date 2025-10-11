@@ -1083,13 +1083,15 @@ export function updateComparisonBarChart(chart, data) {
         '#a855f7', '#ef4444', '#14b8a6'
     ];
     
+    const safeVal = (v) => (v === null || v === undefined ? null : v);
+
     data.nodes.forEach((node, index) => {
         datasets.push({
             label: node.node_name,
             data: [
-                node.metrics.success_rate_download || 0,
-                node.metrics.success_rate_upload || 0,
-                node.metrics.success_rate_audit || 0
+                safeVal(node.metrics.success_rate_download),
+                safeVal(node.metrics.success_rate_upload),
+                safeVal(node.metrics.success_rate_audit)
             ],
             backgroundColor: colors[index % colors.length],
             borderColor: colors[index % colors.length],
@@ -1191,17 +1193,25 @@ export function updateComparisonRadarChart(chart, data) {
         '#a855f7', '#ef4444', '#14b8a6'
     ];
     
+    const pick = (...vals) => {
+        for (const v of vals) {
+            if (v !== null && v !== undefined) return v;
+        }
+        return null;
+    };
+
     data.nodes.forEach((node, index) => {
         const metrics = node.metrics;
-        
+
         datasets.push({
             label: node.node_name,
             data: [
-                metrics.success_rate_download || 0,
-                metrics.success_rate_upload || 0,
-                metrics.success_rate_audit || 0,
-                metrics.avg_audit_score || 0,
-                metrics.storage_efficiency || 0
+                pick(metrics.success_rate_download),
+                pick(metrics.success_rate_upload),
+                pick(metrics.success_rate_audit),
+                // Reputation: prefer avg_audit_score, fall back to audit success rate
+                pick(metrics.avg_audit_score, metrics.success_rate_audit),
+                pick(metrics.storage_efficiency)
             ],
             backgroundColor: colors[index % colors.length] + '20',
             borderColor: colors[index % colors.length],

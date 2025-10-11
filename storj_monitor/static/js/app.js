@@ -841,17 +841,33 @@ function updateSatelliteEarnings(satelliteEarnings) {
     }
 }
 
-function updateEarningsCard(data) {
+function updateEarningsCard(payload) {
     if (!isCardVisible('earnings-card')) return;
-    
-    // Backend sends earnings as array directly, not wrapped in {earnings: [...]}
-    const earningsArray = Array.isArray(data) ? data : (data?.earnings || []);
-    
+
+    const isObj = payload && typeof payload === 'object' && !Array.isArray(payload);
+    const pending = isObj && payload.pending === true;
+    // Backend normally sends payload { data: [...] }, but we also accept raw arrays
+    const earningsArray = isObj ? (Array.isArray(payload.data) ? payload.data : []) : (Array.isArray(payload) ? payload : []);
+
+    if (pending) {
+        document.getElementById('earnings-total').textContent = 'Loading…';
+        document.getElementById('earnings-forecast').textContent = 'Loading…';
+        document.getElementById('earnings-held').textContent = 'Loading…';
+        document.getElementById('earnings-per-tb').textContent = 'Loading…';
+        document.getElementById('earnings-payout-days').textContent = '-- days';
+        document.getElementById('satellite-earnings-list').innerHTML =
+            '<p class="no-alerts-message" style="text-align: center; padding: 20px; color: #888;">Preparing earnings data…</p>';
+        // Keep breakdown bars empty during pending
+        updateEarningsBreakdown({ egress: 0, storage: 0, repair: 0, audit: 0 });
+        return;
+    }
+
     if (!earningsArray || earningsArray.length === 0) {
         console.warn('[Earnings] No earnings data to display for current view', { currentView: [...currentNodeView], selectedPeriod: earningsState.period });
-        document.getElementById('earnings-total').textContent = '$0.00';
-        document.getElementById('earnings-forecast').textContent = '$0.00';
-        document.getElementById('earnings-held').textContent = '$0.00';
+        document.getElementById('earnings-total').textContent = 'N/A';
+        document.getElementById('earnings-forecast').textContent = 'N/A';
+        document.getElementById('earnings-held').textContent = 'N/A';
+        document.getElementById('earnings-per-tb').textContent = 'N/A';
         document.getElementById('earnings-payout-days').textContent = '-- days';
         document.getElementById('satellite-earnings-list').innerHTML = '<p class="no-alerts-message">No earnings data available</p>';
         // Clear breakdown bars when no data
@@ -1104,7 +1120,8 @@ function handleWebSocketMessage(data) {
                     incomingPeriod: data?.period_name,
                     currentView: [...currentNodeView],
                     selectedPeriod: earningsState.period,
-                    itemCount: count
+                    itemCount: count,
+                    pending: !!data?.pending
                 });
             } catch (e) {
                 console.warn('[Earnings] debug-log error', e);
@@ -1132,9 +1149,15 @@ function handleWebSocketMessage(data) {
                 console.debug('[Earnings] applying update', { itemCount: Array.isArray(data?.data) ? data.data.length : 0, preview });
             } catch (e) {}
 
+            const isPending = !!data?.pending;
             earningsState.cachedData = data.data;
-            updateEarningsCard(data.data);
-            hideLoadingIndicator('earnings-card');
+            updateEarningsCard(data);
+            if (!isPending) {
+                hideLoadingIndicator('earnings-card');
+            } else {
+                // Keep spinner visible while data is pending
+                showLoadingIndicator('earnings-card');
+            }
             break;
         }
         case 'earnings_history':

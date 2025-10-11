@@ -17,8 +17,8 @@ function showComparisonLoading() {
     const resultsSection = document.getElementById('comparison-results');
     const refreshBtn = document.getElementById('comparison-refresh-btn');
     
-    // Hide results section
-    resultsSection.style.display = 'none';
+    // Keep results section visible to avoid page jump during loading
+    // resultsSection.style.display = 'none';
     
     // Create or show loading overlay
     let loadingOverlay = document.getElementById('comparison-loading-overlay');
@@ -53,6 +53,12 @@ function hideComparisonLoading() {
     const checkboxes = document.querySelectorAll('#comparison-node-checkboxes input[type="checkbox"]:checked');
     refreshBtn.disabled = false;
     refreshBtn.textContent = `Compare ${checkboxes.length} Nodes`;
+
+    // UX: ensure the top of the comparison card is visible after results render
+    const card = document.getElementById('comparison-card');
+    if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
 }
 
 /**

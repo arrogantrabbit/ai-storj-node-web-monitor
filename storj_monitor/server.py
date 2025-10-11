@@ -115,7 +115,7 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
     loop = asyncio.get_running_loop()
     
     try:
-        if comparison_type in ["performance", "overall"]:
+        if comparison_type in ["performance", "overall", "earnings"]:
             # CRITICAL OPTIMIZATION: Limit events to prevent loading millions of rows
             # For comparison, we only need a statistically significant sample
             # 10,000 recent events provides excellent accuracy for metrics
@@ -1294,12 +1294,14 @@ async def websocket_handler(request):
                                     }
                                 )
 
+                        # Include pending flag so frontend can show a loading state during startup/warm-up
                         payload = {
                             "type": "earnings_data",
                             "period": period,
                             "period_name": period_param,
                             "data": formatted_data,
-                            "view": view  # include view so frontend can filter out stale updates
+                            "view": view,  # include view so frontend can filter out stale updates
+                            "pending": True if (not formatted_data and period_param == "current") else False
                         }
 
                         # Debug log to show what breakdown values are being sent
