@@ -848,6 +848,7 @@ function updateEarningsCard(data) {
     const earningsArray = Array.isArray(data) ? data : (data?.earnings || []);
     
     if (!earningsArray || earningsArray.length === 0) {
+        console.warn('[Earnings] No earnings data to display for current view', { currentView: [...currentNodeView], selectedPeriod: earningsState.period });
         document.getElementById('earnings-total').textContent = '$0.00';
         document.getElementById('earnings-forecast').textContent = '$0.00';
         document.getElementById('earnings-held').textContent = '$0.00';
@@ -940,6 +941,9 @@ function updateEarningsCard(data) {
 function requestEarningsData(period) {
     if (ws && ws.readyState === WebSocket.OPEN) {
         showLoadingIndicator('earnings-card');
+        try {
+            console.debug('[Earnings] request', { view: [...currentNodeView], period: period || earningsState.period });
+        } catch (e) {}
         ws.send(JSON.stringify({
             type: 'get_earnings_data',
             view: currentNodeView,
@@ -1091,6 +1095,20 @@ function handleWebSocketMessage(data) {
             console.log('Alert acknowledged:', data.alert_id, data.success);
             break;
         case 'earnings_data': {
+            // Debug: log payload summary
+            try {
+                const count = Array.isArray(data?.data) ? data.data.length : 0;
+                console.debug('[Earnings] payload received', {
+                    incomingView: data?.view,
+                    incomingPeriod: data?.period_name,
+                    currentView: [...currentNodeView],
+                    selectedPeriod: earningsState.period,
+                    itemCount: count
+                });
+            } catch (e) {
+                console.warn('[Earnings] debug-log error', e);
+            }
+
             // Optional: ignore payloads that don't match the current view (when server includes 'view')
             if (data.view) {
                 const normalizeView = (v) => Array.isArray(v) ? [...v].sort().join('|') : String(v);
@@ -1106,6 +1124,13 @@ function handleWebSocketMessage(data) {
                 console.log('[Earnings] Ignoring payload for period', data.period_name, 'while selected is', earningsState.period);
                 break;
             }
+
+            // Debug before applying
+            try {
+                const preview = Array.isArray(data?.data) ? data.data.slice(0, 3) : [];
+                console.debug('[Earnings] applying update', { itemCount: Array.isArray(data?.data) ? data.data.length : 0, preview });
+            } catch (e) {}
+
             earningsState.cachedData = data.data;
             updateEarningsCard(data.data);
             hideLoadingIndicator('earnings-card');

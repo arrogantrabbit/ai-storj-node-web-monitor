@@ -977,6 +977,11 @@ async def websocket_handler(request):
                         nodes_to_query = (
                             view if view != ["Aggregate"] else list(app["nodes"].keys())
                         )
+                        # DEBUG: trace inbound request
+                        try:
+                            log.info(f"[EARNINGS][REQ] period_param={period_param} view={view} nodes_to_query={nodes_to_query}")
+                        except Exception:
+                            pass
 
                         loop = asyncio.get_running_loop()
                         from .config import DATABASE_FILE
@@ -1081,7 +1086,8 @@ async def websocket_handler(request):
                         if view == ["Aggregate"]:
                             cache_key = ("Aggregate", period)
                         else:
-                            cache_key = tuple(nodes_to_query) + (period,)
+                            # CRITICAL: Sort node list to ensure consistent cache keys across requests
+                            cache_key = tuple(sorted(nodes_to_query)) + (period,)
 
                         # Try to serve from cache first
                         if cache_key in app_state.get("earnings_cache", {}):
@@ -1096,49 +1102,101 @@ async def websocket_handler(request):
                             period,
                         )
 
-                        # Format data with forecasts
-                        formatted_data = []
-                        for estimate in earnings_data:
-                            # Calculate forecast if tracker available
-                            tracker = app.get("financial_trackers", {}).get(estimate["node_name"])
-                            forecast_info = None
-                            if tracker:
+                        # SAFETY FALLBACK:
+                        # In rare cases an IN (...) query can yield no rows due to planner quirks or parameterization,
+                        # while per-node queries do return results. If we see zero rows for a multi-node selection,
+                        # query each node individually and merge the results.
+                        if (not earnings_data) and len(nodes_to_query) > 1:
+                            merged = []
+                            for node in nodes_to_query:
                                 try:
-                                    forecast_info = await tracker.forecast_payout(
-                                        DATABASE_FILE, period, loop, app.get("db_executor")
+                                    part = await loop.run_in_executor(
+                                        app["db_executor"],
+                                        blocking_get_latest_earnings,
+                                        DATABASE_FILE,
+                                        [node],
+                                        period,
                                     )
+                                    if part:
+                                        merged.extend(part)
                                 except Exception as e:
-                                    log.error(
-                                        f"Failed to get forecast for {estimate['node_name']}: {e}"
-                                    )
+                                    log.debug(f"[EARNINGS][FALLBACK] per-node query failed for {node}: {e}")
+                            if merged:
+                                earnings_data = merged
+                                log.info(f"[EARNINGS][FALLBACK] Combined per-node queries returned {len(merged)} records")
 
-                            sat_name = SATELLITE_NAMES.get(
-                                estimate["satellite"], estimate["satellite"][:8]
-                            )
+                        # DEBUG: trace DB result set
+                        try:
+                            total_records = len(earnings_data) if earnings_data else 0
+                            per_node_counts = {}
+                            for n in nodes_to_query:
+                                per_node_counts[n] = sum(1 for r in (earnings_data or []) if r.get("node_name") == n)
+                            log.info(f"[EARNINGS][DB] period={period} records={total_records} per_node={per_node_counts}")
+                            if total_records == 0:
+                                log.warning(f"[EARNINGS][DB] No earnings returned for nodes={nodes_to_query} period={period}")
+                        except Exception:
+                            pass
 
-                            formatted_data.append(
-                                {
-                                    "node_name": estimate["node_name"],
-                                    "satellite": sat_name,
-                                    "total_net": round(estimate["total_earnings_net"], 2),
-                                    "total_gross": round(estimate["total_earnings_gross"], 2),
-                                    "held_amount": round(estimate["held_amount"], 2),
-                                    "breakdown": {
-                                        "egress": round(estimate["egress_earnings_net"], 2),
-                                        "storage": round(estimate["storage_earnings_net"], 2),
-                                        "repair": round(estimate["repair_earnings_net"], 2),
-                                        "audit": round(estimate["audit_earnings_net"], 2),
-                                    },
-                                    "forecast_month_end": round(
-                                        forecast_info["forecasted_payout"], 2
-                                    )
-                                    if forecast_info
-                                    else None,
-                                    "confidence": round(forecast_info["confidence"], 2)
-                                    if forecast_info
-                                    else None,
-                                }
-                            )
+                        # Format data with forecasts
+                        # If DB returned nothing for a multi-node request, synthesize from cached per-node payloads
+                        use_cached_merge = False
+                        formatted_data = []
+
+                        if (not earnings_data) and len(nodes_to_query) > 1:
+                            cache = app_state.get("earnings_cache", {})
+                            cached_merge = []
+                            for n in nodes_to_query:
+                                ck = (n, period)
+                                cp = cache.get(ck)
+                                if cp and isinstance(cp.get("data"), list) and cp["data"]:
+                                    cached_merge.extend(cp["data"])
+                            if cached_merge:
+                                formatted_data = cached_merge
+                                use_cached_merge = True
+                                log.info(f"[EARNINGS][CACHE] Merged cached per-node data for view {view}: {len(formatted_data)} items")
+
+                        if not use_cached_merge:
+                            for estimate in earnings_data:
+                                # Calculate forecast if tracker available
+                                tracker = app.get("financial_trackers", {}).get(estimate["node_name"])
+                                forecast_info = None
+                                if tracker:
+                                    try:
+                                        forecast_info = await tracker.forecast_payout(
+                                            DATABASE_FILE, period, loop, app.get("db_executor")
+                                        )
+                                    except Exception as e:
+                                        log.error(
+                                            f"Failed to get forecast for {estimate['node_name']}: {e}"
+                                        )
+
+                                sat_name = SATELLITE_NAMES.get(
+                                    estimate["satellite"], estimate["satellite"][:8]
+                                )
+
+                                formatted_data.append(
+                                    {
+                                        "node_name": estimate["node_name"],
+                                        "satellite": sat_name,
+                                        "total_net": round(estimate["total_earnings_net"], 2),
+                                        "total_gross": round(estimate["total_earnings_gross"], 2),
+                                        "held_amount": round(estimate["held_amount"], 2),
+                                        "breakdown": {
+                                            "egress": round(estimate["egress_earnings_net"], 2),
+                                            "storage": round(estimate["storage_earnings_net"], 2),
+                                            "repair": round(estimate["repair_earnings_net"], 2),
+                                            "audit": round(estimate["audit_earnings_net"], 2),
+                                        },
+                                        "forecast_month_end": round(
+                                            forecast_info["forecasted_payout"], 2
+                                        )
+                                        if forecast_info
+                                        else None,
+                                        "confidence": round(forecast_info["confidence"], 2)
+                                        if forecast_info
+                                        else None,
+                                    }
+                                )
 
                         payload = {
                             "type": "earnings_data",
@@ -1165,6 +1223,12 @@ async def websocket_handler(request):
                         if "earnings_cache" not in app_state:
                             app_state["earnings_cache"] = {}
                         app_state["earnings_cache"][cache_key] = payload
+
+                        # DEBUG: trace payload summary
+                        try:
+                            log.info(f"[EARNINGS][SEND] view={view} period_name={period_param} items={len(formatted_data)} cache_key={cache_key}")
+                        except Exception:
+                            pass
 
                         await safe_send_json(ws, payload)
 
