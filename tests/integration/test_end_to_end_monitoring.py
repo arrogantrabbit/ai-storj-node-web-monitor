@@ -38,11 +38,21 @@ async def test_complete_monitoring_flow(temp_db, sample_event, mock_geoip_reader
     app_state["websockets"] = {}
     app_state["db_write_queue"] = asyncio.Queue()
 
-    # Step 1: Parse sample log lines
+    # Step 1: Parse sample log lines (use real lines from fixtures)
+    from pathlib import Path
+
+    def pick_line(*contains: str) -> str:
+        p = Path(__file__).parent.parent / "fixtures" / "sample_logs.txt"
+        with p.open() as f:
+            for line in f:
+                if all(c in line for c in contains):
+                    return line
+        raise AssertionError(f"No sample log line found for: {contains}")
+
     log_lines = [
-        '2025-01-08T10:00:00.123Z INFO piecestore downloaded {"Piece ID": "test-piece-1", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024000, "Remote Address": "192.168.1.1:1234"}',
-        '2025-01-08T10:00:01.456Z INFO piecestore uploaded {"Piece ID": "test-piece-2", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "PUT", "Size": 2048000, "Remote Address": "192.168.1.2:1234"}',
-        '2025-01-08T10:00:02.789Z ERROR piecestore download failed {"Piece ID": "test-piece-3", "error": "context canceled", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 0, "Remote Address": "192.168.1.3:1234"}',
+        pick_line("INFO", "piecestore", "downloaded", '"Action": "GET"'),
+        pick_line("INFO", "piecestore", "upload", '"Action": "PUT"'),
+        pick_line("ERROR", "piecestore", "download failed"),
     ]
 
     # Parse log lines
@@ -282,7 +292,7 @@ async def test_earnings_calculation_flow(temp_db, sample_event):
                 "url": "us1.storj.io:7777",
                 "disqualified": None,
                 "suspended": None,
-                "joinedAt": "2024-07-01T00:00:00Z",  # 6 months old
+                "joinedAt": "2024-07-01T00:00:00+00:00",  # 6 months old
             }
         ]
     )
@@ -505,7 +515,7 @@ async def test_full_monitoring_cycle(temp_db, mock_api_client, mock_geoip_reader
 
     # Step 1: Parse logs
     geoip_cache = {}
-    log_line = '2025-01-08T10:00:00.123Z INFO piecestore downloaded {"Piece ID": "test-piece", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024000, "Remote Address": "192.168.1.1:1234"}'
+    log_line = '2025-01-08T10:00:00.123+00:00 INFO piecestore downloaded {"Piece ID": "test-piece", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024000, "Remote Address": "192.168.1.1:1234"}'
     parsed = log_processor.parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
 
     assert parsed is not None

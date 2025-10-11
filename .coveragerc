@@ -1,0 +1,13 @@
+[run]
+branch = True
+# Limit coverage to entrypoints/infra-heavy modules that are difficult to unit-test.
+# Keep core runtime modules included for coverage (e.g., financial_tracker, tasks).
+omit =
+    storj_monitor/server.py
+    storj_monitor/__main__.py
+    storj_monitor/database.py
+
+[report]
+fail_under = 80
+show_missing = True
+skip_covered = False

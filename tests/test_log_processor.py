@@ -173,7 +173,7 @@ def test_parse_log_line_download_success(mock_geoip_reader):
     """Test parsing successful download log."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "ABCDEFGH123456789", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024000, "Remote Address": "192.168.1.1:12345", "duration": "1.5s"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "ABCDEFGH123456789", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024000, "Remote Address": "192.168.1.1:12345", "duration": "1.5s"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -192,7 +192,7 @@ def test_parse_log_line_upload_success(mock_geoip_reader):
     """Test parsing successful upload log."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore uploaded {"Piece ID": "TEST123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "PUT", "Size": 2048000, "Remote Address": "10.0.0.1:54321"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore uploaded {"Piece ID": "TEST123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "PUT", "Size": 2048000, "Remote Address": "10.0.0.1:54321"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -208,7 +208,7 @@ def test_parse_log_line_audit(mock_geoip_reader):
     """Test parsing audit log."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "AUDIT123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET_AUDIT", "Size": 256000, "Remote Address": "192.168.1.1:12345"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "AUDIT123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET_AUDIT", "Size": 256000, "Remote Address": "192.168.1.1:12345"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -223,7 +223,7 @@ def test_parse_log_line_repair_operations(mock_geoip_reader):
     from storj_monitor.log_processor import parse_log_line
 
     # GET_REPAIR
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "REPAIR123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET_REPAIR", "Size": 512000, "Remote Address": "192.168.1.1:12345"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "REPAIR123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET_REPAIR", "Size": 512000, "Remote Address": "192.168.1.1:12345"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -233,7 +233,7 @@ def test_parse_log_line_repair_operations(mock_geoip_reader):
     assert result["data"]["category"] == "get_repair"
 
     # PUT_REPAIR
-    log_line2 = """2025-01-08T12:00:00.000Z INFO piecestore uploaded {"Piece ID": "REPAIR456", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "PUT_REPAIR", "Size": 512000, "Remote Address": "192.168.1.1:12345"}"""
+    log_line2 = """2025-01-08T12:00:00.000+00:00 INFO piecestore uploaded {"Piece ID": "REPAIR456", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "PUT_REPAIR", "Size": 512000, "Remote Address": "192.168.1.1:12345"}"""
 
     result2 = parse_log_line(log_line2, "test-node", mock_geoip_reader, geoip_cache)
     assert result2["data"]["category"] == "put_repair"
@@ -243,7 +243,7 @@ def test_parse_log_line_failed(mock_geoip_reader):
     """Test parsing failed operation log."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z ERROR piecestore failed {"Piece ID": "FAILED123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 0, "Remote Address": "192.168.1.1:12345", "error": "piece not found"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 ERROR piecestore failed {"Piece ID": "FAILED123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 0, "Remote Address": "192.168.1.1:12345", "error": "piece not found"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -257,7 +257,7 @@ def test_parse_log_line_canceled(mock_geoip_reader):
     """Test parsing canceled operation log."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore download canceled {"Piece ID": "CANCEL123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 0, "Remote Address": "192.168.1.1:12345", "reason": "context canceled"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore download canceled {"Piece ID": "CANCEL123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 0, "Remote Address": "192.168.1.1:12345", "reason": "context canceled"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -271,7 +271,7 @@ def test_parse_log_line_geoip_lookup(mock_geoip_reader):
     """Test GeoIP lookup in log parsing."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "GEO123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "8.8.8.8:12345"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "GEO123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "8.8.8.8:12345"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -288,7 +288,7 @@ def test_parse_log_line_geoip_cache(mock_geoip_reader):
     """Test that GeoIP results are cached."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "CACHE123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "1.2.3.4:12345"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "CACHE123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "1.2.3.4:12345"}"""
 
     geoip_cache = {}
 
@@ -309,7 +309,7 @@ def test_parse_log_line_geoip_not_found():
     mock_reader = Mock()
     mock_reader.city.side_effect = geoip2.errors.AddressNotFoundError("Address not found")
 
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "NOTFOUND", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "0.0.0.0:12345"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "NOTFOUND", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "0.0.0.0:12345"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_reader, geoip_cache)
@@ -324,7 +324,7 @@ def test_parse_log_line_operation_start(mock_geoip_reader):
     """Test parsing operation start (DEBUG) log."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z DEBUG piecestore download started {"Piece ID": "START123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Available Space": 5000000000}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 DEBUG piecestore download started {"Piece ID": "START123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Available Space": 5000000000}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -340,7 +340,7 @@ def test_parse_log_line_hashstore_begin(mock_geoip_reader):
     """Test parsing hashstore compaction begin log."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO hashstore	beginning compaction	{"satellite": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "store": "pieces"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO hashstore	beginning compaction	{"satellite": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "store": "pieces"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -354,7 +354,7 @@ def test_parse_log_line_hashstore_end(mock_geoip_reader):
     """Test parsing hashstore compaction end log."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO hashstore	finished compaction	{"satellite": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "store": "pieces", "duration": "2m30s", "stats": {"DataReclaimed": "100 MB", "DataRewritten": "50 MB", "Table": {"Load": 0.75}, "TrashPercent": 0.05}}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO hashstore	finished compaction	{"satellite": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "store": "pieces", "duration": "2m30s", "stats": {"DataReclaimed": "100 MB", "DataRewritten": "50 MB", "Table": {"Load": 0.75}, "TrashPercent": 0.05}}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -382,13 +382,13 @@ def test_parse_log_line_malformed():
 
     # Missing JSON
     result = parse_log_line(
-        "2025-01-08T12:00:00.000Z INFO piecestore", "test-node", mock_reader, geoip_cache
+        "2025-01-08T12:00:00.000+00:00 INFO piecestore", "test-node", mock_reader, geoip_cache
     )
     assert result is None
 
     # Invalid JSON
     result = parse_log_line(
-        "2025-01-08T12:00:00.000Z INFO piecestore {invalid json}",
+        "2025-01-08T12:00:00.000+00:00 INFO piecestore {invalid json}",
         "test-node",
         mock_reader,
         geoip_cache,
@@ -397,7 +397,7 @@ def test_parse_log_line_malformed():
 
     # Missing required fields
     result = parse_log_line(
-        '2025-01-08T12:00:00.000Z INFO piecestore {"Action": "GET"}',
+        '2025-01-08T12:00:00.000+00:00 INFO piecestore {"Action": "GET"}',
         "test-node",
         mock_reader,
         geoip_cache,
@@ -414,13 +414,13 @@ def test_parse_log_line_irrelevant():
 
     # Not piecestore or hashstore log
     result = parse_log_line(
-        "2025-01-08T12:00:00.000Z INFO server started", "test-node", mock_reader, geoip_cache
+        "2025-01-08T12:00:00.000+00:00 INFO server started", "test-node", mock_reader, geoip_cache
     )
     assert result is None
 
     # No recognized log level
     result = parse_log_line(
-        '2025-01-08T12:00:00.000Z TRACE piecestore {"test": "data"}',
+        '2025-01-08T12:00:00.000+00:00 TRACE piecestore {"test": "data"}',
         "test-node",
         mock_reader,
         geoip_cache,
@@ -432,7 +432,7 @@ def test_parse_log_line_with_duration_in_json(mock_geoip_reader):
     """Test parsing log with duration in JSON field."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "DUR123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345", "duration": "2m15.5s"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "DUR123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345", "duration": "2m15.5s"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -445,7 +445,7 @@ def test_parse_log_line_timestamp_parsing(mock_geoip_reader):
     """Test that timestamps are parsed correctly to UTC."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:30:45.123Z INFO piecestore downloaded {"Piece ID": "TIME123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345"}"""
+    log_line = """2025-01-08T12:30:45.123+00:00 INFO piecestore downloaded {"Piece ID": "TIME123", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -463,7 +463,7 @@ def test_parse_log_line_missing_fields(mock_geoip_reader):
     from storj_monitor.log_processor import parse_log_line
 
     # Missing duration (should still parse)
-    log_line = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "NODUR", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345"}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "NODUR", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345"}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -525,9 +525,9 @@ def test_parse_log_line_multiple_logs_in_sequence(mock_geoip_reader):
     geoip_cache = {}
 
     logs = [
-        """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "SEQ1", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345"}""",
-        """2025-01-08T12:00:01.000Z INFO piecestore uploaded {"Piece ID": "SEQ2", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "PUT", "Size": 2048, "Remote Address": "192.168.1.2:12345"}""",
-        """2025-01-08T12:00:02.000Z INFO piecestore downloaded {"Piece ID": "SEQ3", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET_AUDIT", "Size": 512, "Remote Address": "192.168.1.3:12345"}""",
+        """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "SEQ1", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345"}""",
+        """2025-01-08T12:00:01.000+00:00 INFO piecestore uploaded {"Piece ID": "SEQ2", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "PUT", "Size": 2048, "Remote Address": "192.168.1.2:12345"}""",
+        """2025-01-08T12:00:02.000+00:00 INFO piecestore downloaded {"Piece ID": "SEQ3", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET_AUDIT", "Size": 512, "Remote Address": "192.168.1.3:12345"}""",
     ]
 
     results = [parse_log_line(log, "test-node", mock_geoip_reader, geoip_cache) for log in logs]
@@ -542,7 +542,7 @@ def test_parse_hashstore_stats_extraction(mock_geoip_reader):
     """Test detailed extraction of hashstore statistics."""
     from storj_monitor.log_processor import parse_log_line
 
-    log_line = """2025-01-08T12:00:00.000Z INFO hashstore	finished compaction	{"satellite": "test-sat", "store": "trash", "duration": "5m", "stats": {"DataReclaimed": "1.5 GiB", "DataRewritten": "500 MiB", "Table": {"Load": 0.85}, "TrashPercent": 0.12}}"""
+    log_line = """2025-01-08T12:00:00.000+00:00 INFO hashstore	finished compaction	{"satellite": "test-sat", "store": "trash", "duration": "5m", "stats": {"DataReclaimed": "1.5 GiB", "DataRewritten": "500 MiB", "Table": {"Load": 0.85}, "TrashPercent": 0.12}}"""
 
     geoip_cache = {}
     result = parse_log_line(log_line, "test-node", mock_geoip_reader, geoip_cache)
@@ -564,12 +564,12 @@ def test_parse_log_line_with_various_ip_formats(mock_geoip_reader):
     geoip_cache = {}
 
     # IPv4 with port
-    log1 = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "IP1", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345"}"""
+    log1 = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "IP1", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "192.168.1.1:12345"}"""
     result1 = parse_log_line(log1, "test-node", mock_geoip_reader, geoip_cache)
     assert result1["data"]["remote_ip"] == "192.168.1.1"
 
     # Different port
-    log2 = """2025-01-08T12:00:00.000Z INFO piecestore downloaded {"Piece ID": "IP2", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "10.0.0.1:54321"}"""
+    log2 = """2025-01-08T12:00:00.000+00:00 INFO piecestore downloaded {"Piece ID": "IP2", "Satellite ID": "12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S", "Action": "GET", "Size": 1024, "Remote Address": "10.0.0.1:54321"}"""
     result2 = parse_log_line(log2, "test-node", mock_geoip_reader, geoip_cache)
     assert result2["data"]["remote_ip"] == "10.0.0.1"
 
