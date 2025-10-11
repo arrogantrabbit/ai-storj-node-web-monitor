@@ -1064,7 +1064,12 @@ async def websocket_handler(request):
                                     }
                                 )
 
-                            payload = {"type": "earnings_data", "period_name": "12months", "data": formatted_data}
+                            payload = {
+                                "type": "earnings_data",
+                                "period_name": "12months",
+                                "data": formatted_data,
+                                "view": view  # include view so clients can ignore mismatched payloads
+                            }
                             await safe_send_json(ws, payload)
                             continue
                         else:
@@ -1139,7 +1144,8 @@ async def websocket_handler(request):
                             "type": "earnings_data",
                             "period": period,
                             "period_name": period_param,
-                            "data": formatted_data
+                            "data": formatted_data,
+                            "view": view  # include view so frontend can filter out stale updates
                         }
 
                         # Debug log to show what breakdown values are being sent

@@ -1090,7 +1090,17 @@ function handleWebSocketMessage(data) {
         case 'alert_acknowledge_result':
             console.log('Alert acknowledged:', data.alert_id, data.success);
             break;
-        case 'earnings_data':
+        case 'earnings_data': {
+            // Optional: ignore payloads that don't match the current view (when server includes 'view')
+            if (data.view) {
+                const normalizeView = (v) => Array.isArray(v) ? [...v].sort().join('|') : String(v);
+                const payloadViewKey = normalizeView(data.view);
+                const currentViewKey = normalizeView(currentNodeView);
+                if (payloadViewKey !== currentViewKey) {
+                    console.log('[Earnings] Ignoring payload for mismatched view', data.view, 'current is', currentNodeView);
+                    break;
+                }
+            }
             // Ignore updates for a different period than currently selected
             if (data.period_name && data.period_name !== earningsState.period) {
                 console.log('[Earnings] Ignoring payload for period', data.period_name, 'while selected is', earningsState.period);
@@ -1100,6 +1110,7 @@ function handleWebSocketMessage(data) {
             updateEarningsCard(data.data);
             hideLoadingIndicator('earnings-card');
             break;
+        }
         case 'earnings_history':
             if (data.data && data.data.length > 0 && isCardVisible('earnings-card')) {
                 charts.updateEarningsHistoryChart(data.data);

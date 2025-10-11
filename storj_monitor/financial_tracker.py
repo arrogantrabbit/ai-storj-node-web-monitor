@@ -1512,11 +1512,13 @@ async def broadcast_earnings_update(app: dict[str, Any], loop=None, current_peri
             formatted_data.append(formatted_item)
 
         # Broadcast to all clients (include period metadata)
+        # Include view to prevent cross-view UI contamination on the client
         payload = {
             "type": "earnings_data",
             "period": period or current_period,
             "period_name": period_name if current_period_only else "all",
-            "data": formatted_data
+            "data": formatted_data,
+            "view": ["Aggregate"]
         }
 
         # Store in cache before broadcasting (include period in cache key)
@@ -1533,6 +1535,7 @@ async def broadcast_earnings_update(app: dict[str, Any], loop=None, current_peri
                 "period": period_key,
                 "period_name": period_name if current_period_only else "all",
                 "data": [item for item in formatted_data if item["node_name"] == node_name],
+                "view": [node_name]
             }
             app_state["earnings_cache"][(node_name, period_key)] = node_payload
 
