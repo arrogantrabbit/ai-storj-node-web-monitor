@@ -115,7 +115,7 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
     loop = asyncio.get_running_loop()
     
     try:
-        if comparison_type in ["performance", "overall", "earnings"]:
+        if comparison_type in ["performance", "overall", "earnings", "efficiency"]:
             # CRITICAL OPTIMIZATION: Limit events to prevent loading millions of rows
             # For comparison, we only need a statistically significant sample
             # 10,000 recent events provides excellent accuracy for metrics
@@ -141,9 +141,10 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
                 metrics["avg_latency_p95"] = calculate_percentile(durations, 95)
                 metrics["avg_latency_p99"] = calculate_percentile(durations, 99)
             else:
-                metrics["avg_latency_p50"] = 0
-                metrics["avg_latency_p95"] = 0
-                metrics["avg_latency_p99"] = 0
+                # No latency data available in the window -> display as N/A
+                metrics["avg_latency_p50"] = None
+                metrics["avg_latency_p95"] = None
+                metrics["avg_latency_p99"] = None
 
             # Default total operations based on sampled events (will be overridden by aggregated counts if available)
             metrics["total_operations"] = len(events)
@@ -163,9 +164,9 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
                     ul_total = (c.get("ul_success") or 0) + (c.get("ul_fail") or 0)
                     audit_total = (c.get("audit_success") or 0) + (c.get("audit_fail") or 0)
 
-                    metrics["success_rate_download"] = ((c.get("dl_success") or 0) / dl_total * 100.0) if dl_total > 0 else 0.0
-                    metrics["success_rate_upload"] = ((c.get("ul_success") or 0) / ul_total * 100.0) if ul_total > 0 else 0.0
-                    metrics["success_rate_audit"] = ((c.get("audit_success") or 0) / audit_total * 100.0) if audit_total > 0 else 0.0
+                    metrics["success_rate_download"] = ((c.get("dl_success") or 0) / dl_total * 100.0) if dl_total > 0 else None
+                    metrics["success_rate_upload"] = ((c.get("ul_success") or 0) / ul_total * 100.0) if ul_total > 0 else None
+                    metrics["success_rate_audit"] = ((c.get("audit_success") or 0) / audit_total * 100.0) if audit_total > 0 else None
 
                     metrics["total_operations"] = int(c.get("total_ops") or 0)
 
@@ -177,9 +178,9 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
                     uploads = [e for e in events if e.get("action") == "PUT"]
                     audits = [e for e in events if e.get("action") == "GET_AUDIT"]
 
-                    metrics["success_rate_download"] = calculate_success_rate(downloads)
-                    metrics["success_rate_upload"] = calculate_success_rate(uploads)
-                    metrics["success_rate_audit"] = calculate_success_rate(audits)
+                    metrics["success_rate_download"] = calculate_success_rate(downloads) if len(downloads) > 0 else None
+                    metrics["success_rate_upload"] = calculate_success_rate(uploads) if len(uploads) > 0 else None
+                    metrics["success_rate_audit"] = calculate_success_rate(audits) if len(audits) > 0 else None
             except Exception as agg_err:
                 log.debug(f"[Comparison] Aggregated counts query failed for {node_name}: {agg_err}")
                 # Fallback to sample-based calculation
@@ -270,21 +271,21 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
     
     except Exception as e:
         log.error(f"Error gathering metrics for node {node_name}: {e}", exc_info=True)
-        # Return empty metrics on error
+        # Return N/A semantics on error so UI doesn't render misleading zeros
         metrics = {
-            "success_rate_download": 0,
-            "success_rate_upload": 0,
-            "success_rate_audit": 0,
-            "avg_latency_p50": 0,
-            "avg_latency_p95": 0,
-            "avg_latency_p99": 0,
-            "total_operations": 0,
-            "total_earnings": 0,
-            "earnings_per_tb": 0,
-            "storage_utilization": 0,
-            "storage_efficiency": 0,
-            "avg_audit_score": 0,
-            "avg_online_score": 0,
+            "success_rate_download": None,
+            "success_rate_upload": None,
+            "success_rate_audit": None,
+            "avg_latency_p50": None,
+            "avg_latency_p95": None,
+            "avg_latency_p99": None,
+            "total_operations": None,
+            "total_earnings": None,
+            "earnings_per_tb": None,
+            "storage_utilization": None,
+            "storage_efficiency": None,
+            "avg_audit_score": None,
+            "avg_online_score": None,
         }
     
     total_duration = time.time() - start_time
@@ -453,8 +454,9 @@ async def calculate_comparison_metrics(
             
             # Update storage efficiency metrics
             if comparison_type in ["efficiency", "overall"]:
-                metrics["storage_utilization"] = storage.get("used_percent", 0)
-                metrics["storage_efficiency"] = calculate_storage_efficiency(storage)
+                up = storage.get("used_percent")
+                metrics["storage_utilization"] = up if (up is not None) else None
+                metrics["storage_efficiency"] = calculate_storage_efficiency(storage) if (up is not None) else None
         
         return metrics
     
