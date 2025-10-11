@@ -1035,6 +1035,7 @@ function handleWebSocketMessage(data) {
             hideLoadingIndicator('health-card');
             hideLoadingIndicator('satellite-card');
             hideLoadingIndicator('size-charts-card'); // Hide loading indicator after data update
+            hideLoadingIndicator('analysis-card');
             break;
         case 'hashstore_updated': console.log("[WebSocket] Hashstore data updated. Requesting new data."); requestHashstoreData(); break;
         case 'hashstore_stats_data':
