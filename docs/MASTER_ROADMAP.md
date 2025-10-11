@@ -1,23 +1,23 @@
 # Storj Node Monitor - Master Implementation Roadmap
 
-**Last Updated:** 2025-10-10
-**Current Status:** Phases 1-8 Complete, Phase 9-12 Remaining
-**Priority:** Multi-Node Features & Advanced Functionality
+**Last Updated:** 2025-10-11  
+**Current Status:** Phases 1-9 Complete, Phases 10-13 Remaining
+**Priority:** Advanced Reporting, Alert Configuration, Mobile/PWA
 
 ---
 
 ## 📊 Overall Progress
 
 ```
-✅ COMPLETE: Phases 1-8 (Foundation, Monitoring, Financial, Intelligence, Notifications, Testing)
-📋 PLANNED: Phases 9-12 (Multi-Node Comparison, Reporting, Configuration, Mobile)
+✅ COMPLETE: Phases 1-9 (Foundation, Monitoring, Financial, Intelligence, Notifications, Testing, Multi-Node)
+📋 PLANNED: Phases 10-13 (Reporting, Configuration, Mobile/PWA, CPU Optimization)
 ```
 
 **Completion Status:** ~85% Core Features | ~15% Remaining (Advanced Features)
 
 ---
 
-## ✅ Completed Phases (Phases 1-7)
+## ✅ Completed Phases (Phases 1-9)
 
 ### Phase 1: Foundation & Critical Operations ✅
 **Status:** Complete (2025-01-04)  
@@ -127,7 +127,7 @@
 ---
 
 ### Phase 8: Testing & Code Quality ✅
-**Status:** Complete (2025-10-10)
+**Status:** Complete (2025-10-10)  
 **Documentation:** [`docs/completed/PHASE_8_COMPLETE.md`](completed/PHASE_8_COMPLETE.md)
 
 **Delivered:**
@@ -135,7 +135,7 @@
 - Unit tests for all major modules
 - Integration tests for E2E workflows
 - Ruff code quality configuration
-- Testing documentation ([`TESTING.md`](TESTING.md))
+- Testing documentation ([`docs/TESTING.md`](TESTING.md))
 - Code formatting and linting standards
 
 **Coverage Achieved:**
@@ -148,87 +148,19 @@
 
 ---
 
-## 📋 Phase 9: Multi-Node Comparison (Priority #1)
+### Phase 9: Multi-Node Comparison ✅
+**Status:** Complete (2025-01-10)  
+**Documentation:** [`docs/completed/PHASE_9_COMPLETE.md`](completed/PHASE_9_COMPLETE.md)
 
-**Duration:** 1-1.5 weeks  
-**Priority:** 🟠 HIGH - Most requested advanced feature  
-**Status:** Not Started
+**Delivered:**
+- Backend comparison engine in WebSocket path (`storj_monitor/server.py`)
+- Frontend comparison UI (`storj_monitor/static/js/comparison.js`)
+- Comparison visualizations in charts (`storj_monitor/static/js/charts.js`)
+- CSV export for comparison data
+- Rankings and normalized metrics
+- 16 passing unit tests for comparison logic
 
-### Overview
-
-Enable operators with multiple nodes to compare performance, earnings, and efficiency across their fleet. Provides normalized metrics, rankings, and visual comparisons.
-
-### Features
-
-#### 9.1 Comparison Dashboard
-- Node selector with multi-select (2-6 nodes)
-- Synchronized time ranges
-- Compare mode toggle
-- Normalized metrics for fair comparison
-
-#### 9.2 Comparison Metrics
-Side-by-side visualization of:
-- Earnings per TB stored
-- Storage efficiency (utilization %)
-- Success rates (download/upload/audit)
-- Latency percentiles (p50/p95/p99)
-- Reputation scores across satellites
-- Uptime percentage
-- Bandwidth utilization
-
-#### 9.3 Rankings & Leaderboards
-- Best/worst performer identification
-- Efficiency leaderboard
-- Problem nodes highlighting
-- Trend indicators (↑↓→)
-
-#### 9.4 Visualizations
-- **Multi-node charts:**
-  - Overlaid line charts (performance over time)
-  - Grouped bar charts (earnings comparison)
-  - Scatter plots (efficiency vs earnings)
-  - Heat map of node health
-
-- **Comparative tables:**
-  - Sortable columns
-  - Percentage differences
-  - Color-coded performance
-  - CSV export support
-
-#### 9.5 Normalized Metrics
-- Per-TB earnings calculation
-- Per-TB bandwidth usage
-- Efficiency ratios
-- ROI comparisons (if costs configured)
-
-### Implementation Files
-
-**New:**
-- `storj_monitor/static/js/comparison.js` (~350 lines)
-
-**Modified:**
-- `storj_monitor/static/js/charts.js` (comparison chart types)
-- `storj_monitor/static/index.html` (comparison view toggle)
-- `storj_monitor/static/css/style.css` (comparison layout)
-- `storj_monitor/server.py` (comparison data aggregation endpoint)
-
-### Testing Requirements
-
-- [ ] Unit tests for comparison calculations
-- [ ] Integration tests for multi-node queries
-- [ ] Frontend tests for comparison UI
-- [ ] Performance tests with 6 nodes
-- [ ] Edge case tests (missing data, single node)
-
-### Success Criteria
-
-- [ ] Compare mode displays 2-6 nodes simultaneously
-- [ ] All metrics normalize correctly
-- [ ] Charts update in real-time
-- [ ] Rankings calculate accurately
-- [ ] Export works for comparison data
-- [ ] Performance remains good with multiple nodes
-- [ ] All tests passing with >80% coverage
+**Key Achievement:** Powerful fleet-wide comparison with rankings and export
 
 ---
 
@@ -236,7 +168,8 @@ Side-by-side visualization of:
 
 **Duration:** 1.5-2 weeks  
 **Priority:** 🟡 MEDIUM  
-**Status:** Not Started
+**Status:** Not Started (Current)  
+**Guide:** [`docs/PHASE_10_PROMPTS.md`](PHASE_10_PROMPTS.md)
 
 ### Features
 
@@ -247,74 +180,32 @@ Side-by-side visualization of:
 - JSON API for programmatic access
 
 #### 10.2 Report Types
-
-1. **Daily Summary Report**
-   - Traffic statistics
-   - Success rates breakdown
-   - Earnings for day (pro-rated)
-   - Alerts generated
-   - Format: PDF or email
-
-2. **Weekly Performance Report**
-   - Performance trends over 7 days
-   - Storage growth analysis
-   - Reputation score changes
-   - Top issues and recommendations
-
-3. **Monthly Financial Report**
-   - Complete earnings breakdown
-   - Payout forecast vs actual
-   - YoY comparison
-   - Profitability metrics
-
-4. **Custom Date Range Report**
-   - User-defined start/end dates
-   - Selectable metrics
-   - Multiple export formats
+1. Daily Summary Report (traffic, success rates, earnings, alerts)
+2. Weekly Performance Report (trends, storage, reputation, top issues)
+3. Monthly Financial Report (breakdown, forecast vs actual, YoY, profitability)
+4. Custom Date Range Report (user-specified; selectable metrics; multiple formats)
 
 #### 10.3 Export Capabilities
-
-- Events export (CSV with filtering)
-- Earnings export (historical CSV)
-- Reputation export (score history CSV)
-- Storage export (capacity snapshots CSV)
-- Alert history export
+- Events, earnings, reputation, storage, alert history exports (CSV)
 
 #### 10.4 Scheduled Reports
-
-- Daily/weekly/monthly schedules
-- Email delivery
-- Report templates
-- Automatic generation
+- Daily/weekly/monthly schedules, email delivery, templates
 
 #### 10.5 API Endpoints
-
-```
-GET  /api/export/events?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&format=csv
-GET  /api/export/earnings?period=YYYY-MM&format=csv
-GET  /api/export/reputation?node=X&days=30&format=csv
-GET  /api/export/storage?node=X&days=30&format=csv
-POST /api/reports/generate
-POST /api/reports/schedule
-GET  /api/reports/list
-```
+- Export endpoints; generate and schedule report endpoints
 
 ### Testing Requirements
-
-- [ ] Unit tests for report generation
-- [ ] PDF rendering tests
-- [ ] CSV format validation tests
-- [ ] Scheduled task tests
-- [ ] API endpoint integration tests
+- Unit tests for report generation, PDF rendering, CSV validation
+- Scheduled task tests
+- API endpoint integration tests
 
 ### Success Criteria
-
-- [ ] PDF reports generate with embedded charts
-- [ ] CSV exports work for all data types
-- [ ] Scheduled reports send via email
-- [ ] Custom date ranges work correctly
-- [ ] API endpoints return proper formats
-- [ ] All tests passing
+- PDF reports with embedded charts
+- CSV exports for all data types
+- Scheduled reports send via email
+- Custom date ranges work
+- API endpoints return proper formats
+- All tests passing
 
 ---
 
@@ -322,62 +213,28 @@ GET  /api/reports/list
 
 **Duration:** 1-1.5 weeks  
 **Priority:** 🟡 MEDIUM  
-**Status:** Not Started
+**Status:** Not Started  
+**Guide:** [`docs/PHASE_11_PROMPTS.md`](PHASE_11_PROMPTS.md)
 
 ### Features
-
-#### 11.1 Settings Modal
-- Settings overlay/modal UI
-- Tabbed interface (Thresholds, Notifications, Advanced)
-- Save/cancel functionality
-- Real-time validation
-
-#### 11.2 Threshold Configuration
-
-**Configurable per category:**
-- Reputation thresholds (audit, suspension, online scores)
-- Storage thresholds (usage %, forecast days)
-- Performance thresholds (latency warning/critical)
-
-#### 11.3 Notification Preferences
-
-Per-channel configuration:
-- Email enabled/disabled
-- Webhook enabled/disabled
-- Quiet hours (start/end time)
-- Alert frequency limits
-- Per-severity routing
-
-#### 11.4 Advanced Settings
-
-- Alert cooldown period
-- Anomaly detection sensitivity
-- Per-node configuration overrides
-- Alert deduplication window
-
-#### 11.5 Additional Features
-
+- Settings modal (Thresholds, Notifications, Advanced)
+- Per-node overrides, validation
 - Test notification button
-- Import/export settings (JSON)
-- Reset to defaults
-- Preview of alert conditions
 - Settings persistence in database
+- Runtime application to alert evaluation
 
 ### Testing Requirements
-
-- [ ] Unit tests for settings validation
-- [ ] Integration tests for settings persistence
-- [ ] Frontend tests for modal UI
-- [ ] Test notification delivery tests
+- Validation unit tests
+- Settings persistence integration tests
+- Frontend modal UI tests
+- Test notification delivery tests
 
 ### Success Criteria
-
-- [ ] Settings modal opens and displays config
-- [ ] Changes save and apply immediately
-- [ ] Test notifications work
-- [ ] Settings export/import works
-- [ ] Per-node overrides function correctly
-- [ ] All tests passing
+- Modal opens; changes save and apply immediately
+- Test notifications work
+- Import/export settings work
+- Per-node overrides function correctly
+- All tests passing
 
 ---
 
@@ -385,94 +242,73 @@ Per-channel configuration:
 
 **Duration:** 1.5-2 weeks  
 **Priority:** 🟢 LOW-MEDIUM  
-**Status:** Not Started
+**Status:** Not Started  
+**Guide:** [`docs/PHASE_12_PROMPTS.md`](PHASE_12_PROMPTS.md)
 
 ### Features
-
-#### 12.1 Responsive Design
-- Mobile-first CSS approach
-- Touch-friendly buttons (min 44px)
-- Collapsible card sections
-- Horizontal scrolling tables
-- Stacked chart views
-
-#### 12.2 Progressive Web App
-- Service worker for offline support
-- Web app manifest
-- Install prompt
-- Splash screens
-- Standalone mode
-
-#### 12.3 Push Notifications
-- Browser push API integration
-- Notification permission request
-- Alert delivery when app closed
-- Action buttons in notifications
-
-#### 12.4 Offline Capabilities
-- Cache critical data in IndexedDB
-- Queue requests when offline
-- Sync when connection restored
-- Offline indicator
-
-#### 12.5 Touch Optimizations
-- Swipe gestures for node switching
-- Pull-to-refresh
-- Long-press context menus
-- Touch-friendly charts
-- Pinch-to-zoom on maps
+- Responsive design, touch-friendly controls
+- Service worker, web app manifest (installable PWA)
+- Offline caching (app shell and snapshots)
+- Optional browser push notifications
+- Touch optimizations (swipe, pull-to-refresh)
 
 ### Testing Requirements
-
-- [ ] Responsive design tests (multiple viewports)
-- [ ] PWA installation tests
-- [ ] Offline functionality tests
-- [ ] Touch interaction tests
-- [ ] Lighthouse mobile score >90
+- Responsive design tests (multiple viewports)
+- PWA install tests
+- Offline functionality tests
+- Touch interaction tests
+- Lighthouse mobile score >90
 
 ### Success Criteria
+- PWA installable on all platforms
+- Offline mode works with cached data
+- Push notifications deliver
+- Touch targets meet 44px minimum
+- All tests passing
 
-- [ ] Lighthouse mobile score >90
-- [ ] PWA installable on all platforms
-- [ ] Touch targets meet 44px minimum
-- [ ] Offline mode works
-- [ ] Push notifications deliver
-- [ ] Service worker caches properly
-- [ ] All tests passing
+---
+## 📋 Phase 13: Server CPU Optimization
+
+**Duration:** 1-1.5 weeks
+**Priority:** 🟠 HIGH
+**Status:** Not Started
+**Guide:** [`docs/PHASE_13_PROMPTS.md`](PHASE_13_PROMPTS.md)
+
+### Focus Areas
+- Measurement and baseline (py-spy, cProfile, pytest-benchmark)
+- WebSocket efficiency (coalescing, diff payloads, batching)
+- Logging overhead reduction (rate-limited debug in hot paths)
+- Database CPU tuning (indexes, LIMITs, clamped windows, EXPLAIN, pre-aggregation)
+- Background task staggering with jitter and input-change gating
+- Caching/memoization for repeated pure computations
+- Optional orjson-based serialization (feature flag)
+
+### Testing Requirements
+- Perf scripts for ingestion, WS latency, and key DB aggregations
+- Benchmarks for hot functions (percentiles, histogram bucketing)
+- A/B profiling reports and EXPLAIN comparisons
+
+### Success Criteria
+- 30-40% reduction in average steady-state CPU
+- ≤50% CPU at 200 events/sec with real-time WS updates
+- p95 WS broadcast latency ≤200 ms during 2x burst
+- Aggregations (24h) return ≤300 ms
+- No regressions; all tests passing
 
 ---
 
-## 📅 Recommended Timeline
+## 📅 Recommended Timeline (Remaining)
 
-### Fast Track (With Testing)
-- **Week 1-2:** Phase 8 - Testing & Code Quality
-- **Week 3:** Phase 9 - Multi-Node Comparison
-- **Week 4-5:** Phase 10 - Advanced Reporting
-- **Week 6:** Phase 11 - Alert Configuration UI
-- **Week 7-8:** Phase 12 - Mobile & PWA
+- Week 1-2: Phase 10 - Advanced Reporting
+- Week 3: Phase 11 - Alert Configuration UI
+- Week 4-5: Phase 12 - Mobile & PWA
+- Week 6: Phase 13 - Server CPU Optimization
 
-**Total: 8 weeks for complete implementation**
-
-### Minimum Viable (Testing + Multi-Node)
-- **Week 1-2:** Phase 8 only
-- **Week 3:** Phase 9 only
-
-**Total: 3 weeks for essential features**
+**Total Remaining: ~6 weeks for complete implementation**
 
 ---
 
 ## 📊 Success Metrics
-
-### Phase 8: Testing & Code Quality
-- [ ] >80% code coverage
-- [ ] All tests passing
-- [ ] `ruff check` clean
-- [ ] CI/CD pipeline operational
-
-### Phase 9: Multi-Node Comparison
-- [ ] Comparison view <2s load time
-- [ ] Accurate calculations 100%
-- [ ] User adoption among multi-node operators >60%
 
 ### Phase 10: Advanced Reporting
 - [ ] Report generation <30 seconds
@@ -498,8 +334,9 @@ Per-channel configuration:
 - ✅ Comprehensive monitoring (Phases 1-4)
 - ✅ Financial tracking (Phases 5-6)
 - ✅ Multi-channel notifications (Phase 7)
-- 🚧 Testing & quality standards (Phase 8)
-- 📋 Advanced features (Phases 9-12)
+- ✅ Testing & quality foundation (Phase 8)
+- ✅ Multi-node comparisons (Phase 9)
+- 📋 Advanced features (Phases 10-12)
 
 ### User Experience
 - ✅ Real-time dashboard
@@ -511,17 +348,17 @@ Per-channel configuration:
 ### Reliability
 - ✅ Backward compatibility maintained
 - ✅ Graceful degradation
-- 🚧 Test coverage >80%
-- 📋 CI/CD pipeline
+- 🚧 Test coverage uplift to >80% (post-Phase 8 follow-up)
+- 📋 CI/CD pipeline improvements
 - 📋 Performance optimization
 
 ---
 
 ## 📚 Related Documentation
 
-- **Testing:** `docs/TESTING.md` (to be created in Phase 8)
-- **Architecture:** [`docs/ARCHITECTURE_DIAGRAM.md`](ARCHITECTURE_DIAGRAM.md)
-- **API Design:** [`docs/API_INTEGRATION_DESIGN.md`](API_INTEGRATION_DESIGN.md)
+- **Testing:** [`docs/archive/TESTING.md`](archive/TESTING.md)
+- **Architecture:** [`docs/archive/ARCHITECTURE_DIAGRAM.md`](archive/ARCHITECTURE_DIAGRAM.md)
+- **API Design:** [`docs/archive/API_INTEGRATION_DESIGN.md`](archive/API_INTEGRATION_DESIGN.md)
 - **Prompts:** [`docs/ROOCODE_PROMPTS.md`](ROOCODE_PROMPTS.md)
 - **Completed Phases:** `docs/completed/PHASE_X_COMPLETE.md`
 
@@ -529,22 +366,27 @@ Per-channel configuration:
 
 ## 🚀 Getting Started
 
-### For Phase 8 (Testing):
-1. Review existing codebase for test coverage gaps
-2. Set up pytest and ruff configuration
-3. Start with core module tests (database, config, log_processor)
-4. Gradually increase coverage to >80%
-5. Implement CI/CD pipeline
+### For Phase 10 (Current)
+1. Follow [`docs/PHASE_10_PROMPTS.md`](PHASE_10_PROMPTS.md)
+2. Implement `report_generator.py` (CSV/PDF)
+3. Wire export and reporting endpoints
+4. Add minimal Reports UI hooks
+5. Write unit+integration tests; ensure performance targets
 
-### For Phase 9 (Multi-Node):
-1. Design comparison data model
-2. Implement backend aggregation logic
-3. Create comparison UI components
-4. Add visualization charts
-5. Write comprehensive tests
+### For Phase 11 (Next)
+1. Follow [`docs/PHASE_11_PROMPTS.md`](PHASE_11_PROMPTS.md)
+2. Implement settings store + API
+3. Build Settings modal UI
+4. Apply settings at runtime to alert evaluation
+5. Add tests for validation and overrides
+
+### For Phase 12 (Future)
+1. Follow [`docs/PHASE_12_PROMPTS.md`](PHASE_12_PROMPTS.md)
+2. Implement manifest, service worker, responsive CSS
+3. Add offline caching and optional push
+4. Add IndexedDB snapshot cache
+5. Validate Lighthouse mobile score >90
 
 ---
 
-**Ready to proceed with Phase 8: Testing & Code Quality! 🚀**
-
-*Last Updated: 2025-10-08*
+Ready to proceed with Phase 10: Advanced Reporting & Export. 🚀

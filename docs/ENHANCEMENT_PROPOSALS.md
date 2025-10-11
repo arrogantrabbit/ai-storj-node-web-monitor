@@ -20,7 +20,48 @@ The current dashboard excels at **real-time traffic monitoring** with:
 
 This document proposes enhancements across five strategic pillars to transform this into a **comprehensive operational intelligence platform**.
 
+## Status Update • 2025-10-11
+
+Implementation snapshot aligned with the live codebase:
+- 1. Financial Tracking & Earnings Analytics: Completed (backend + frontend)
+  - Implemented: earnings estimation, per-satellite breakdown, ROI calculator, historical import and month-end forecasting
+  - Data: earnings_estimates, payout_history tables
+  - Code: [storj_monitor/financial_tracker.py](storj_monitor/financial_tracker.py:1), [storj_monitor/database.py](storj_monitor/database.py:292)
+  - Gaps: PDF/CSV export and scheduled reports move to Phase 10
+- 2. Storage Health & Capacity: Completed
+  - Implemented: storage_snapshots, multi-window growth-rate forecasting, threshold alerts
+  - Code: [storj_monitor/storage_tracker.py](storj_monitor/storage_tracker.py:24), [storj_monitor/database.py](storj_monitor/database.py:195)
+  - Gaps: Optional psutil disk metrics not implemented (log/API-based only)
+- 3. Reputation & Node Health: Completed
+  - Implemented: per-satellite scores, reputation_history, alerting, composite health score
+  - Code: [storj_monitor/reputation_tracker.py](storj_monitor/reputation_tracker.py:23), [storj_monitor/database.py](storj_monitor/database.py:171)
+  - Gaps: Explicit downtime events timeline UI not exposed (online score available)
+- 4. Performance Diagnostics & Latency: Completed
+  - Implemented: duration_ms column, latency percentiles, slow-operation detection, histograms
+  - Code: [storj_monitor/performance_analyzer.py](storj_monitor/performance_analyzer.py:66), [storj_monitor/log_processor.py](storj_monitor/log_processor.py:322), [storj_monitor/database.py](storj_monitor/database.py:66)
+- 5. Operational Insights & Predictive Analytics: Completed
+  - Implemented: anomaly detection, insights storage, analytics baselines
+  - Code: [storj_monitor/analytics_engine.py](storj_monitor/analytics_engine.py:17), [storj_monitor/database.py](storj_monitor/database.py:250)
+- 6. Advanced Reporting & Export: Not Started (Phase 10)
+  - Plan: CSV/PDF exports and scheduled delivery; see [docs/PHASE_10_PROMPTS.md](docs/PHASE_10_PROMPTS.md)
+- 7. User Experience Enhancements: Partial
+  - Implemented: multi-channel notifications, AlertsPanel
+  - Planned: Settings UI (Phase 11), Mobile/PWA + browser push (Phase 12), dashboard customization (future)
+
+Identified misses and improvements:
+- Export/reporting APIs and PDFs not yet implemented (Phase 10).
+- User-configurable thresholds, quiet hours, routing UI missing (Phase 11).
+- Mobile responsiveness, offline/PWA, push notifications not yet built (Phase 12).
+- Optional authentication/roles not implemented; consider basic auth or token gating.
+- ROI cost inputs: add operator-configured cost model (electricity/hardware) for accurate profitability.
+- Downtime timeline: derive from API online score and event gaps; expose in UI table.
+
+Alignment with current roadmap:
+- Multi-node comparison is complete; see [docs/completed/PHASE_9_COMPLETE.md](docs/completed/PHASE_9_COMPLETE.md).
+- Active phases: 10, 11, 12. Prompts: [docs/PHASE_10_PROMPTS.md](docs/PHASE_10_PROMPTS.md), [docs/PHASE_11_PROMPTS.md](docs/PHASE_11_PROMPTS.md), [docs/PHASE_12_PROMPTS.md](docs/PHASE_12_PROMPTS.md).
+
 ---
+
 
 ## 1. Financial Tracking & Earnings Analytics 💰
 
@@ -454,43 +495,40 @@ Rank satellites by:
 
 ---
 
-## Implementation Priority Matrix
+## Implementation Priority Matrix (Updated 2025-10-11)
 
-### Phase 1: Critical Operations (Immediate)
+Completed (reference):
+- [storj_monitor/reputation_tracker.py](storj_monitor/reputation_tracker.py:1)
+- [storj_monitor/storage_tracker.py](storj_monitor/storage_tracker.py:1)
+- [storj_monitor/financial_tracker.py](storj_monitor/financial_tracker.py:1)
+- [storj_monitor/performance_analyzer.py](storj_monitor/performance_analyzer.py:66)
+- [storj_monitor/analytics_engine.py](storj_monitor/analytics_engine.py:17)
+- Notifications: [storj_monitor/email_sender.py](storj_monitor/email_sender.py:1), [storj_monitor/webhook_sender.py](storj_monitor/webhook_sender.py:1)
+
+### Phase A: Immediate (Next)
 ```
-1. [reputation_tracker.py] - Reputation & Node Health Scoring
-   - Prevents suspension/disqualification
-   - Effort: Medium, Impact: Critical
-   
-2. [storage_tracker.py] - Storage Health & Capacity Management
-   - Prevents downtime from full disks
+1. [storj_monitor/report_generator.py] - Advanced Reporting & Export (Phase 10)
+   - CSV/PDF exports, export API endpoints, optional scheduling
    - Effort: Medium, Impact: High
-```
 
-### Phase 2: High Value (Next Quarter)
-```
-3. [financial_tracker.py] - Earnings & Financial Analytics
-   - Most requested by operators
-   - Effort: Medium, Impact: High
-   
-4. [performance_analyzer.py] - Latency Tracking & Diagnostics
-   - Improves operational efficiency
-   - Effort: Low, Impact: High
-```
-
-### Phase 3: Intelligence Layer (Future)
-```
-5. [analytics_engine.py] - Predictive Analytics & Anomaly Detection
-   - Advanced insights
-   - Effort: High, Impact: Medium
-   
-6. [notification_system.py] - Alert & Notification Infrastructure
-   - Proactive problem detection
+2. [storj_monitor/settings_store.py] - Alert Configuration UI backend (Phase 11)
+   - Settings persistence, validation, API, runtime thresholds and routing
    - Effort: Medium, Impact: Medium
-   
-7. [reporting_engine.py] - Custom Reports & Export
-   - Nice-to-have features
-   - Effort: Medium, Impact: Low
+
+3. PWA & Mobile (Phase 12)
+   - manifest.webmanifest, sw.js, responsive CSS, offline cache, optional push
+   - Effort: Medium, Impact: Medium
+```
+
+### Phase B: Future QoL
+```
+4. Authentication & Roles
+   - Basic auth or token gating; optional roles (read-only/admin)
+   - Effort: Medium, Impact: Medium
+
+5. Dashboard customization
+   - Drag-and-drop layout, saved views
+   - Effort: Medium, Impact: Medium
 ```
 
 ---
