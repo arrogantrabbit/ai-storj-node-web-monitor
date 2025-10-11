@@ -431,6 +431,10 @@ function findWinner(nodes, metricKey, invert = false) {
  * Format metric name for display
  */
 function formatMetricName(key) {
+    const overrides = {
+        earnings_per_tb: 'Earnings per TB'
+    };
+    if (overrides[key]) return overrides[key];
     return key
         .replace(/_/g, ' ')
         .replace(/\b\w/g, l => l.toUpperCase());

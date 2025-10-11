@@ -54,19 +54,23 @@ def calculate_success_rate(events: List[Dict]) -> float:
 
 def calculate_earnings_per_tb(earnings_data: Dict) -> float:
     """Calculate earnings per TB stored."""
-    total_earnings = earnings_data.get("total_earnings_net", 0)
+    total_earnings = earnings_data.get("total_earnings_net") or 0
     # Get used space in TB from storage data if available
-    used_space_tb = earnings_data.get("used_space_tb", 0)
+    used_space_tb = earnings_data.get("used_space_tb") or 0
     
-    if used_space_tb > 0:
+    if isinstance(used_space_tb, (int, float)) and used_space_tb > 0 and isinstance(total_earnings, (int, float)):
         return total_earnings / used_space_tb
     return 0.0
 
 
 def calculate_storage_efficiency(storage_data: Dict) -> float:
     """Calculate storage efficiency score (0-100)."""
-    used_percent = storage_data.get("used_percent", 0)
-    trash_percent = storage_data.get("trash_percent", 0)
+    used_percent = storage_data.get("used_percent")
+    trash_percent = storage_data.get("trash_percent")
+    
+    # Coerce None to 0 for safe comparison/arithmetic
+    used_percent = 0 if used_percent is None else used_percent
+    trash_percent = 0 if trash_percent is None else trash_percent
     
     # Efficiency = used space - excessive trash
     # Penalize if trash > 10%
@@ -223,7 +227,7 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
                 
                 # Storage data is now handled at a higher level in calculate_comparison_metrics
                 # The earnings_per_tb will be calculated there using the batch-loaded storage data
-                metrics["earnings_per_tb"] = 0  # Default value, will be updated if storage data is available
+                metrics["earnings_per_tb"] = None  # Default to None; will be computed when storage data is injected
             else:
                 log.warning(f"[Comparison] No earnings found for {node_name}, period: {period}")
                 # Mark as not-yet-ready with None so UI shows N/A and cache logic can detect incompleteness
@@ -235,9 +239,9 @@ async def gather_node_metrics(app, node_name: str, hours: int, comparison_type: 
         
         if comparison_type in ["efficiency", "overall"]:
             # Storage data is now handled at a higher level in calculate_comparison_metrics
-            # Default values that will be updated later with the batch-loaded data
-            metrics["storage_utilization"] = 0
-            metrics["storage_efficiency"] = 0
+            # Default values set to None; they will be updated when storage data is injected
+            metrics["storage_utilization"] = None
+            metrics["storage_efficiency"] = None
         
         # Get reputation scores from database (reputation tracker writes to DB)
         reputation_start_time = time.time()
@@ -446,11 +450,12 @@ async def calculate_comparison_metrics(
             storage = storage_data[node_name]
             
             # Update earnings per TB calculation if we have earnings data
-            if comparison_type in ["earnings", "overall"] and "total_earnings" in metrics and metrics["total_earnings"] > 0:
+            te = metrics.get("total_earnings")
+            if comparison_type in ["earnings", "overall"] and isinstance(te, (int, float)) and te > 0:
                 if storage.get("used_bytes"):
                     used_space_tb = storage["used_bytes"] / (1024 ** 4)
-                    if used_space_tb > 0:
-                        metrics["earnings_per_tb"] = metrics["total_earnings"] / used_space_tb
+                    if used_space_tb and used_space_tb > 0:
+                        metrics["earnings_per_tb"] = te / used_space_tb
             
             # Update storage efficiency metrics
             if comparison_type in ["efficiency", "overall"]:
