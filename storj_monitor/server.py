@@ -463,6 +463,21 @@ async def calculate_comparison_metrics(
             except Exception:
                 pass
         earnings_lookup = dict(agg)
+        # Fallback: if DB returns no rows for current month (e.g., race with writer),
+        # pull totals from in-memory earnings cache used by the Financial card.
+        try:
+            cache = app_state.get("earnings_cache", {})
+            for n in node_names:
+                v = earnings_lookup.get(n)
+                if not isinstance(v, (int, float)) or v <= 0:
+                    payload = cache.get((n, current_period))
+                    if payload and isinstance(payload.get("data"), list) and payload["data"]:
+                        total_net = sum(float(item.get("total_net") or 0.0) for item in payload["data"])
+                        if total_net > 0:
+                            earnings_lookup[n] = total_net
+        except Exception:
+            # Non-fatal; just means fallback cache wasn't available
+            pass
         log.info(f"[Comparison Debug] Batch earnings aggregation prepared for {len(earnings_lookup)} node(s)")
 
     # Batch-load latest reputation for all nodes; use as fallback if per-node call returns empty
@@ -550,15 +565,16 @@ async def calculate_comparison_metrics(
 
         # Earnings overlay
         if comparison_type in ["earnings", "overall"]:
-            if metrics.get("total_earnings") is None:
+            # If per-node call didn't find earnings, overlay from batch DB/cache results
+            if (metrics.get("total_earnings") is None) or (metrics.get("total_earnings") == 0):
                 te = earnings_lookup.get(name)
-                if isinstance(te, (int, float)):
+                if isinstance(te, (int, float)) and te > 0:
                     metrics["total_earnings"] = te
 
             # Compute earnings_per_tb if not set and we have storage + earnings
             te_val = metrics.get("total_earnings")
             if (
-                (metrics.get("earnings_per_tb") is None)
+                (metrics.get("earnings_per_tb") is None or not isinstance(metrics.get("earnings_per_tb"), (int, float)))
                 and isinstance(te_val, (int, float))
                 and te_val > 0
             ):
