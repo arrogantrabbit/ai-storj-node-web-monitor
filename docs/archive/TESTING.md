@@ -7,16 +7,16 @@ This project uses [`pytest`](https://docs.pytest.org/) for testing with a >80% c
 ## Test Infrastructure
 
 ### Testing Stack
-- pytest - Test framework
-- pytest-asyncio - Async test support
-- pytest-cov - Coverage reporting
-- pytest-mock - Mocking utilities
-- ruff - Code formatting and linting
+- **pytest** - Test framework
+- **pytest-asyncio** - Async test support
+- **pytest-cov** - Coverage reporting
+- **pytest-mock** - Mocking utilities
+- **ruff** - Code formatting and linting
 
 ### Configuration
-Test configuration is defined in [pytest.ini](../pytest.ini):
-- Test discovery in [tests/](../tests/) directory
-- Automatic async mode for asyncio tests
+Test configuration is defined in [`pytest.ini`](../pytest.ini):
+- Test discovery in [`tests/`](../tests/) directory
+- Automatic async mode for `asyncio` tests
 - Coverage reporting with 80% minimum threshold
 - HTML and terminal coverage reports
 
@@ -120,7 +120,7 @@ async def test_api_client_initialization():
 ```
 
 ### Using Fixtures
-Fixtures are defined in [conftest.py](../tests/conftest.py):
+Fixtures are defined in [`conftest.py`](../tests/conftest.py):
 
 ```python
 def test_with_database(temp_db):
@@ -151,24 +151,24 @@ async def test_with_mock_api():
 ## Available Fixtures
 
 ### Database Fixtures
-- temp_db - Temporary SQLite database with schema
-- sample_event - Sample traffic event data
-- sample_reputation_data - Sample reputation data
-- sample_storage_snapshot - Sample storage snapshot
-- sample_alert - Sample alert data
+- `temp_db` - Temporary SQLite database with schema
+- `sample_event` - Sample traffic event data
+- `sample_reputation_data` - Sample reputation data
+- `sample_storage_snapshot` - Sample storage snapshot
+- `sample_alert` - Sample alert data
 
 ### Mock Fixtures
-- mock_api_client - Mock Storj API client
-- mock_aiohttp_session - Mock aiohttp session
-- mock_geoip_reader - Mock GeoIP reader
-- mock_email_sender - Mock email sender
-- mock_webhook_sender - Mock webhook sender
+- `mock_api_client` - Mock Storj API client
+- `mock_aiohttp_session` - Mock aiohttp session
+- `mock_geoip_reader` - Mock GeoIP reader
+- `mock_email_sender` - Mock email sender
+- `mock_webhook_sender` - Mock webhook sender
 
 ### Configuration Fixtures
-- test_config - Test configuration overrides
-- nodes_config - Sample nodes configuration
+- `test_config` - Test configuration overrides
+- `nodes_config` - Sample nodes configuration
 
-See [conftest.py](../tests/conftest.py) for complete fixture list and documentation.
+See [`conftest.py`](../tests/conftest.py) for complete fixture list and documentation.
 
 ## Code Quality
 
@@ -199,7 +199,7 @@ uv run ruff format --check storj_monitor/ tests/
 ## Coverage Requirements
 
 ### Minimum Coverage
-- Overall Project: 80% minimum
+- **Overall Project**: 80% minimum
 - Tests will fail if coverage drops below 80%
 
 ### Checking Coverage
@@ -217,7 +217,7 @@ HTML coverage report shows:
 
 ### Improving Coverage
 To improve coverage:
-1. Run tests with --cov-report=term-missing to see uncovered lines
+1. Run tests with `--cov-report=term-missing` to see uncovered lines
 2. Write tests for uncovered code paths
 3. Focus on critical paths and edge cases
 4. Add integration tests for complex flows
@@ -234,25 +234,25 @@ Test individual functions and classes in isolation:
 - Fast execution
 - Isolated dependencies
 - Clear failure messages
-- Located in tests/test_*.py
+- Located in `tests/test_*.py`
 
 ### Integration Tests
 Test multiple components working together:
 - End-to-end workflows
 - Database interactions
 - WebSocket communication
-- Located in tests/integration/
+- Located in `tests/integration/`
 
 ### Key Integration Test Areas
-1. End-to-End Monitoring ([test_end_to_end_monitoring.py](../tests/integration/test_end_to_end_monitoring.py))
+1. **End-to-End Monitoring** ([`test_end_to_end_monitoring.py`](../tests/integration/test_end_to_end_monitoring.py))
    - Log parsing → Database → Statistics → Alerts → Notifications
    
-2. Database Migrations ([test_database_migrations.py](../tests/integration/test_database_migrations.py))
+2. **Database Migrations** ([`test_database_migrations.py`](../tests/integration/test_database_migrations.py))
    - Schema creation and upgrades
    - Data integrity
    - Index creation
    
-3. WebSocket Communication ([test_websocket_communication.py](../tests/integration/test_websocket_communication.py))
+3. **WebSocket Communication** ([`test_websocket_communication.py`](../tests/integration/test_websocket_communication.py))
    - Message handling
    - Real-time updates
    - Connection management
@@ -387,9 +387,9 @@ pytest -n auto
 ## Best Practices
 
 ### Test Naming
-- Use descriptive names: test_function_does_expected_thing
-- Include test type in integration tests: test_end_to_end_workflow
-- Group related tests in classes: class TestDatabaseOperations:
+- Use descriptive names: `test_function_does_expected_thing`
+- Include test type in integration tests: `test_end_to_end_workflow`
+- Group related tests in classes: `class TestDatabaseOperations:`
 
 ### Test Structure
 Follow AAA pattern:
@@ -441,22 +441,22 @@ mock_function.assert_called_once_with(expected_arg)
 - Check for concurrent writes
 
 ### Async Test Issues
-- Verify @pytest.mark.asyncio decorator
-- Check asyncio_mode = auto in pytest.ini
-- Ensure async fixtures use async def
+- Verify `@pytest.mark.asyncio` decorator
+- Check `asyncio_mode = auto` in pytest.ini
+- Ensure async fixtures use `async def`
 
 ### Coverage Not Meeting Threshold
 ```bash
 pytest --cov=storj_monitor --cov-report=term-missing
 ```
-Look for lines marked with !!!! (not covered)
+Look for lines marked with `!!!!` (not covered)
 
 ## Additional Resources
 
-- pytest Documentation
-- pytest-asyncio Documentation
-- pytest-cov Documentation
-- Ruff Documentation
+- [pytest Documentation](https://docs.pytest.org/)
+- [pytest-asyncio Documentation](https://pytest-asyncio.readthedocs.io/)
+- [pytest-cov Documentation](https://pytest-cov.readthedocs.io/)
+- [Ruff Documentation](https://docs.astral.sh/ruff/)
 
 ## Summary
 

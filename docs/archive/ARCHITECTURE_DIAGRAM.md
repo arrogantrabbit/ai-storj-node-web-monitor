@@ -506,33 +506,33 @@ graph TD
 ### Phase 1: Critical Foundation (Weeks 1-6)
 
 #### Backend Tasks
-- [ ] Create [storj_api_client.py](storj_api_client.py)
+- [ ] Create [`storj_api_client.py`](storj_api_client.py)
   - [ ] Implement API endpoint wrapper
   - [ ] Add connection retry logic
   - [ ] Create polling scheduler
-- [ ] Create [storage_tracker.py](storage_tracker.py)
+- [ ] Create [`storage_tracker.py`](storage_tracker.py)
   - [ ] Poll capacity data every 5 minutes
   - [ ] Calculate growth rate
   - [ ] Implement forecasting algorithm
-- [ ] Create [reputation_tracker.py](reputation_tracker.py)
+- [ ] Create [`reputation_tracker.py`](reputation_tracker.py)
   - [ ] Poll reputation scores every 5 minutes
   - [ ] Track score history
   - [ ] Implement alert thresholds
 - [ ] Database schema updates
-  - [ ] Add storage_snapshots table
-  - [ ] Add reputation_history table
-  - [ ] Add duration_ms column to events
+  - [ ] Add `storage_snapshots` table
+  - [ ] Add `reputation_history` table
+  - [ ] Add `duration_ms` column to events
 - [ ] Testing
   - [ ] Unit tests for new modules
   - [ ] Integration tests with real node API
   - [ ] Performance validation
 
 #### Frontend Tasks
-- [ ] Create [StorageHealthCard.js](StorageHealthCard.js)
+- [ ] Create [`StorageHealthCard.js`](StorageHealthCard.js)
   - [ ] Capacity gauge visualization
   - [ ] Growth trend chart
   - [ ] Alert indicators
-- [ ] Create [ReputationCard.js](ReputationCard.js)
+- [ ] Create [`ReputationCard.js`](ReputationCard.js)
   - [ ] Score display per satellite
   - [ ] Trend indicators
   - [ ] Risk warnings
@@ -544,25 +544,25 @@ graph TD
 ### Phase 2: High Value Features (Weeks 7-14)
 
 #### Backend Tasks
-- [ ] Create [financial_tracker.py](financial_tracker.py)
+- [ ] Create [`financial_tracker.py`](financial_tracker.py)
   - [ ] Implement earnings calculations
   - [ ] Create pricing configuration
   - [ ] Historical earnings tracking
-- [ ] Create [performance_analyzer.py](performance_analyzer.py)
+- [ ] Create [`performance_analyzer.py`](performance_analyzer.py)
   - [ ] Calculate latency percentiles
   - [ ] Detect slow operations
   - [ ] Performance trending
 - [ ] Database updates
-  - [ ] Add earnings_estimates table
+  - [ ] Add `earnings_estimates` table
   - [ ] Optimize query performance
 - [ ] Testing
 
 #### Frontend Tasks
-- [ ] Create [EarningsCard.js](EarningsCard.js)
+- [ ] Create [`EarningsCard.js`](EarningsCard.js)
   - [ ] Current month display
   - [ ] Historical chart
   - [ ] Per-satellite breakdown
-- [ ] Create [LatencyCard.js](LatencyCard.js)
+- [ ] Create [`LatencyCard.js`](LatencyCard.js)
   - [ ] Percentile metrics
   - [ ] Histogram visualization
   - [ ] Slow operation list
@@ -571,33 +571,33 @@ graph TD
 ### Phase 3: Intelligence Layer (Weeks 15-20)
 
 #### Backend Tasks
-- [ ] Create [analytics_engine.py](analytics_engine.py)
+- [ ] Create [`analytics_engine.py`](analytics_engine.py)
   - [ ] Statistical analysis algorithms
   - [ ] Pattern recognition
   - [ ] Trend analysis
-- [ ] Create [anomaly_detector.py](anomaly_detector.py)
+- [ ] Create [`anomaly_detector.py`](anomaly_detector.py)
   - [ ] Z-score calculations
   - [ ] Baseline establishment
   - [ ] Anomaly classification
-- [ ] Create [alert_manager.py](alert_manager.py)
+- [ ] Create [`alert_manager.py`](alert_manager.py)
   - [ ] Alert evaluation logic
   - [ ] Severity classification
   - [ ] Alert deduplication
-- [ ] Create [notification_handler.py](notification_handler.py)
+- [ ] Create [`notification_handler.py`](notification_handler.py)
   - [ ] Email integration
   - [ ] Webhook integration
   - [ ] Notification routing
 - [ ] Database updates
-  - [ ] Add insights table
+  - [ ] Add `insights` table
   - [ ] Alert history tracking
 - [ ] Comprehensive testing
 
 #### Frontend Tasks
-- [ ] Create [InsightsCard.js](InsightsCard.js)
+- [ ] Create [`InsightsCard.js`](InsightsCard.js)
   - [ ] Anomaly display
   - [ ] Recommendations
   - [ ] Forecasts
-- [ ] Create [AlertsPanel.js](AlertsPanel.js)
+- [ ] Create [`AlertsPanel.js`](AlertsPanel.js)
   - [ ] Active alerts list
   - [ ] Alert history
   - [ ] Alert configuration UI
